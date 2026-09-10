@@ -17,7 +17,7 @@ Two scripts, both under `scripts/`:
 
 | Script | Runs on | Does |
 |---|---|---|
-| `exe-run.sh` | your machine | `ssh exe.dev new` (or `cp` from a base VM), pushes the key and the installer over SSH, clones the ref, runs the installer, optionally snapshots |
+| `exe-run.sh` | your machine | `ssh exe.dev new --json` (or `cp` from a base VM), pushes the key and the installer over SSH, clones the ref, runs the installer, optionally snapshots (`--snapshot`) or deletes on pass (`--rm`) |
 | `e2e-install.sh` | the VM (or any Debian/Ubuntu box, or a CI runner) | the headless install + ping; exits 0 on pass |
 
 ## When to use
@@ -34,8 +34,23 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 
 ## Prerequisites
 
-- An exe.dev account with `ssh exe.dev` working from your machine (the VM
-  gets a `<name>.exe.xyz` hostname; SSH and the HTTPS proxy come with it).
+- An exe.dev account with `ssh exe.dev` working from your machine. exe.dev
+  has two SSH destinations: `ssh exe.dev <cmd>` is the **lobby** (VM
+  lifecycle only — no shell, no scp) and `ssh <ssh_dest>` is the **VM**
+  (full shell). Pin the key for both so non-interactive runs never stall on
+  key selection:
+
+  ```
+  Host exe.dev *.exe.xyz
+    IdentitiesOnly yes
+    IdentityFile ~/.ssh/id_ed25519
+  ```
+
+  exe.dev publishes its own agent skill (`using-exe-dev`, in
+  `skill/SKILL.md` of github.com/boldsoftware/exe.dev) and docs at
+  https://exe.dev/docs.md (index) / https://exe.dev/docs/all.md (one page).
+  `ssh exe.dev help <command>` is the authoritative flag reference; this
+  skill only adds the NanoClaw side.
 - An Anthropic API key or OAuth token in a local file, default
   `~/.nanoclaw-e2e/anthropic_key`. It goes to the VM over stdin into a
   `0600` file; the installer seeds it into the OneCLI vault exactly as
@@ -86,9 +101,12 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
    existing vault secret, `container` rebuilds only what changed,
    `init-cli-agent` reuses the group and wiring.
 
-4. **Poke at it.** `ssh <name>.exe.xyz`, then in `~/nanoclaw`:
-   `pnpm run chat hi`, `bin/ncl groups list`, `tail -f logs/nanoclaw.log`.
-   The VM persists until you delete it from exe.dev.
+4. **Poke at it.** `ssh <ssh_dest>` (printed at the end; `ssh exe.dev ls
+   --json` lists it), then in `~/nanoclaw`: `pnpm run chat hi`,
+   `bin/ncl groups list`, `tail -f logs/nanoclaw.log`.
+
+5. **Delete it.** `ssh exe.dev rm <name>` — or pass `--rm` to the driver to
+   delete on a pass (a failed VM is always kept so you can look at it).
 
 ### Running the installer somewhere else
 
@@ -164,6 +182,16 @@ block every step prints (`setup/status.ts`).
   `setup/auth.ts` accepts it (it then `execFileSync`s `onecli`, no shell), so
   it is visible to `ps` on the VM for that step. Fine for a disposable VM;
   use `NANOCLAW_ONECLI_API_HOST` with a pre-seeded remote vault if not.
+- **Don't synthesize the VM hostname.** `new --json` / `cp --json` return
+  `ssh_dest`; modern VMs report `<name>.exe.xyz`, legacy ones
+  `vm+<name>@vm.exe.xyz`. The driver parses the field (falling back to
+  `ls --json`) and hands it to ssh verbatim.
+- **First contact blocks on the host-key prompt** in a non-interactive
+  shell with nothing visible. Every VM connection in the driver carries
+  `-o StrictHostKeyChecking=accept-new`.
+- **The lobby is not a shell.** `scp`/`sftp`/commands against `exe.dev`
+  fail; files go to the VM destination, and the driver uses
+  `ssh <vm> 'cat > file' < local` (exe.dev's documented scp-less path).
 - **exe.dev `--setup-script` is capped at 10 KiB** and runs at first boot,
   before you can hand it a secret safely. The driver therefore SSHes in after
   boot instead — no size limit, secrets over stdin.
@@ -184,6 +212,6 @@ block every step prints (`setup/status.ts`).
 
 ## Teardown
 
-Delete the VM from exe.dev when done (its persistent disk holds the vault
-secret). Nothing is left in this repo: the skill is instruction plus its own
+`ssh exe.dev rm <name>` when done — the VM's persistent disk holds the vault
+secret. Nothing is left in this repo: the skill is instruction plus its own
 `scripts/`, so there is no `REMOVE.md`.
