@@ -234,7 +234,9 @@ PING_OUT="$(timeout 150 pnpm --silent run chat ping 2>"$LOGS/ping.err")"
 PING_RC=$?
 set -e
 printf '%s\n' "$PING_OUT" | tee "$LOGS/ping.out"
-if printf '%s\n%s' "$PING_OUT" "$(cat "$LOGS/ping.err")" | grep -qiE 'Invalid bearer token|authentication[_ ]error|Failed to authenticate|Please run /login|Not logged in|Invalid API key'; then
+# Read the saved streams directly: an early grep -q match in a pipeline can
+# SIGPIPE its writer and hide the match when pipefail is enabled.
+if grep -iE 'Invalid bearer token|authentication[_ ]error|Failed to authenticate|Please run /login|Not logged in|Invalid API key' "$LOGS/ping.out" "$LOGS/ping.err" >/dev/null; then
   PING_RESULT=auth_error
   die "ping reply is an auth error — check the vault secret" 2
 fi

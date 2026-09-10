@@ -297,7 +297,84 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         result_file = self.root / "result.json"
         run = self.run_driver("--rm", "--result-file", str(result_file))
         self.assertEqual(run.returncode, 74, run.stderr)
-        self.assertFalse(result_file.exists())
+        result = json.loads(result_file.read_text())
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_code"], 74)
+        self.assertEqual(result["phase"], "export")
+        self.assertIsNone(result["commit"])
+        self.assertEqual(result["requested_commit"], self.commit)
+        self.assert_retained()
+
+    def test_reused_local_result_cannot_keep_pass_after_failed_checkout(self):
+        result_file = self.root / "result.json"
+        first = self.run_driver("--result-file", str(result_file))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(json.loads(result_file.read_text())["status"], "pass")
+        latest = self.commit_change("not-pushed")
+        fresh_vm = self.root / "fresh-vm"
+        fresh_vm.mkdir()
+        self.env["MOCK_VM_HOME"] = str(fresh_vm)
+        second = self.run_driver("--rm", "--result-file", str(result_file))
+        self.assertEqual(second.returncode, 128, second.stderr)
+        result = json.loads(result_file.read_text())
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["phase"], "checkout")
+        self.assertEqual(result["exit_code"], second.returncode)
+        self.assertEqual(result["requested_commit"], latest)
+        self.assertIsNone(result["commit"])
+        self.assertFalse((fresh_vm / "observed.json").exists())
+        self.assert_retained()
+
+    def test_early_failures_replace_old_local_pass(self):
+        result_file = self.root / "result.json"
+        self.env["MOCK_CREATED"] = "name test-vm is not available"
+        for args, rc, phase, requested in (
+            (("--ref", "missing-ref"), 65, "preflight", None),
+            (("--key-file", str(self.root / "missing-key")), 66, "preflight", self.commit),
+            ((), 69, "create", self.commit),
+        ):
+            with self.subTest(args=args):
+                result_file.write_text('{"schema_version":1,"status":"pass","commit":"old"}')
+                run = self.run_driver(*args, "--rm", "--result-file", str(result_file))
+                self.assertEqual(run.returncode, rc, run.stderr)
+                result = json.loads(result_file.read_text())
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["phase"], phase)
+                self.assertEqual(result["exit_code"], rc)
+                self.assertEqual(result["requested_commit"], requested)
+                self.assertIsNone(result["commit"])
+                self.assert_no_vm_contact()
+
+    def test_local_result_is_invalidated_before_vm_creation(self):
+        result_file = self.root / "result.json"
+        result_file.write_text('{"status":"pass","commit":"old"}')
+        ssh = self.bin / "ssh"
+        ssh.write_text(PYTHON + "import json, sys\n"
+                       + "result = json.load(open(" + repr(str(result_file)) + "))\n"
+                       + "sys.exit(0 if result['status'] == 'running' else 98)\n")
+        run = self.run_driver("--result-file", str(result_file))
+        self.assertEqual(run.returncode, 69, run.stderr)
+        self.assertIn("creation was not confirmed", run.stderr)
+
+    def test_failed_installer_result_preserves_probe_details(self):
+        self.env["MOCK_INSTALL_RC"] = "2"
+        result_file = self.root / "result.json"
+        run = self.run_driver("--rm", "--result-file", str(result_file))
+        self.assertEqual(run.returncode, 2, run.stderr)
+        result = json.loads(result_file.read_text())
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_code"], 2)
+        self.assertEqual(result["commit"], self.commit)
+        self.assert_retained()
+
+    def test_snapshot_failure_preserves_completed_test_result(self):
+        self.env["MOCK_SNAPSHOT_RC"] = "1"
+        result_file = self.root / "result.json"
+        run = self.run_driver("--rm", "--snapshot", "saved-vm", "--result-file", str(result_file))
+        self.assertEqual(run.returncode, 70, run.stderr)
+        result = json.loads(result_file.read_text())
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["commit"], self.commit)
         self.assert_retained()
 
     def test_checkout_failure_invalidates_base_result(self):
@@ -311,8 +388,9 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         run = self.run_driver("--base", "base-vm", "--rm", "--result-file", str(result_file))
         self.assertEqual(run.returncode, 65, run.stderr)
         result = json.loads(result_file.read_text())
-        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["status"], "failed")
         self.assertEqual(result["phase"], "checkout")
+        self.assertEqual(result["exit_code"], 65)
         self.assertEqual(result["requested_commit"], self.commit)
         self.assert_retained()
 
@@ -434,6 +512,25 @@ sys.exit(0)
                 self.assertEqual(run.returncode, rc, run.stderr)
                 self.assertEqual(self.result()["ping"], ping)
                 self.assertEqual(self.result()["status"], "failed")
+
+    def test_large_auth_error_output_never_passes(self):
+        for stream in ("MOCK_PING", "MOCK_PING_ERR"):
+            with self.subTest(stream=stream):
+                self.env.pop("MOCK_PING", None)
+                self.env.pop("MOCK_PING_ERR", None)
+                self.env[stream] = "Invalid API key\n" + "x" * 100000
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertEqual(self.result()["ping"], "auth_error")
+                self.assertEqual(self.result()["status"], "failed")
+                self.assertNotIn("STATUS: pass", run.stdout)
+
+    def test_large_successful_reply_still_passes(self):
+        self.env["MOCK_PING"] = "pong\n" + "x" * 100000
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["status"], "pass")
+        self.assertEqual(self.result()["ping"], "ok")
 
     def test_auth_create_redacts_key_and_accepts_missing_check(self):
         key = self.root / "fake-key"

@@ -16,7 +16,7 @@
 #   --cpu       CPU count (default 4)
 #   --memory    memory size (default 8GB)
 #   --disk      disk size (default 40GB)
-#   --result-file  save result.json locally before snapshot/removal
+#   --result-file  record this invocation locally, then export installer result
 #
 # The installer comes from this skill, not the NanoClaw checkout being tested.
 # Keys and forwarded installer settings travel over SSH stdin.
@@ -52,17 +52,60 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for cmd in git ssh python3; do command -v "$cmd" >/dev/null || fail "$cmd is required" 69; done
+command -v python3 >/dev/null || fail "python3 is required" 69
+COMMIT="" PHASE=preflight RESULT_EXPORTED=0
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_driver_result() {
+  python3 - "$RESULT_FILE" "$1" "$2" "$REF" "$COMMIT" "$PHASE" "$STARTED_AT" <<'PY'
+import datetime, json, os, sys, tempfile
+path, status, rc, ref, commit, phase, started = sys.argv[1:]
+result = {
+    "schema_version": 1,
+    "status": status,
+    "exit_code": int(rc) if rc else None,
+    "commit": None,
+    "requested_ref": ref,
+    "requested_commit": commit or None,
+    "phase": phase,
+    "started_at": started,
+    "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat() if rc else None,
+}
+fd, temporary = tempfile.mkstemp(prefix=".e2e-result-", dir=os.path.dirname(os.path.abspath(path)))
+try:
+    with os.fdopen(fd, "w") as out:
+        json.dump(result, out, indent=2)
+        out.write("\n")
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+}
+finish_driver_result() {
+  local rc=$?
+  trap - EXIT
+  if [ "$RESULT_EXPORTED" -eq 0 ]; then
+    [ "$rc" -ne 0 ] || rc=74
+    write_driver_result failed "$rc" || echo "[exe-run] could not finalize local result: $RESULT_FILE" >&2
+  fi
+  exit "$rc"
+}
+if [ -n "$RESULT_FILE" ]; then
+  [ -d "$(dirname "$RESULT_FILE")" ] && [ -w "$(dirname "$RESULT_FILE")" ] \
+    && [ ! -d "$RESULT_FILE" ] || fail "--result-file needs a writable parent directory and a file path"
+  # Invalidate an old local pass before preflight or VM work can fail. Until
+  # a matching installer result is exported, failures get a driver report;
+  # commit stays null because no tested revision has been confirmed.
+  write_driver_result running "" || fail "could not initialize local result: $RESULT_FILE" 74
+  trap finish_driver_result EXIT
+fi
+for cmd in git ssh; do command -v "$cmd" >/dev/null || fail "$cmd is required" 69; done
 grep -q '"name": *"nanoclaw"' package.json 2>/dev/null \
   || fail "run this from the root of a NanoClaw checkout" 65
 COMMIT="$(git rev-parse --verify --end-of-options "$REF^{commit}")" \
   || fail "cannot resolve local ref: $REF" 65
 [ -n "$REPO" ] || REPO="$(git remote get-url origin)"
 [ -r "$KEY_FILE" ] && [ -s "$KEY_FILE" ] || fail "key file is unreadable or empty: $KEY_FILE" 66
-if [ -n "$RESULT_FILE" ]; then
-  [ -d "$(dirname "$RESULT_FILE")" ] && [ -w "$(dirname "$RESULT_FILE")" ] \
-    && [ ! -d "$RESULT_FILE" ] || fail "--result-file needs a writable parent directory and a file path"
-fi
 [ -n "$NAME" ] || NAME="nanoclaw-e2e-${COMMIT:0:7}-$(python3 -c 'import secrets; print(secrets.token_hex(3))')"
 # SSH joins lobby arguments into a command string. Permit only literal names
 # and resource values here; repository URLs are shell-quoted separately below.
@@ -98,6 +141,7 @@ print(dest)
 }
 
 echo "[exe-run] vm=$NAME ref=$REF commit=$COMMIT repo=$REPO"
+PHASE=create
 if [ -n "$BASE" ]; then
   CREATED="$(ssh -o BatchMode=yes exe.dev cp "$BASE" "$NAME" --cpu="$CPU" --memory="$MEMORY" --disk="$DISK" --json)" \
     || fail "copy failed; VM creation was not confirmed" 69
@@ -110,6 +154,7 @@ HOST="$(printf '%s' "$CREATED" | created_host "$NAME")" \
   || fail "$NAME creation was not confirmed (name taken or invalid response); no VM will be contacted or removed" 69
 
 VM=(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=5 "$HOST")
+PHASE=connect
 echo "[exe-run] waiting for ssh $HOST"
 READY=0
 for _ in $(seq 1 60); do
@@ -119,6 +164,7 @@ done
 [ "$READY" -eq 1 ] || fail "$HOST not reachable; kept $NAME for inspection" 69
 
 # chmod also covers a file inherited from a base VM; umask alone does not.
+PHASE=upload
 "${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e; cat > ~/.nanoclaw-e2e/anthropic_key; chmod 600 ~/.nanoclaw-e2e/anthropic_key' < "$KEY_FILE"
 "${VM[@]}" 'set -e; cat > ~/e2e-install.sh; chmod +x ~/e2e-install.sh' < "$HERE/e2e-install.sh"
 
@@ -136,6 +182,7 @@ for name in (
 PY
 
 REPO_QUOTED="$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$REPO")"
+PHASE=checkout
 set +e
 "${VM[@]}" "set -e
   if [ -d ~/nanoclaw/.git ]; then
@@ -159,6 +206,7 @@ RC=$?
 set -e
 
 if [ -n "$RESULT_FILE" ]; then
+  [ "$RC" -ne 0 ] || PHASE=export
   if "${VM[@]}" 'cat ~/nanoclaw/logs/e2e/result.json' | python3 -c '
 import json, os, sys, tempfile
 path, expected, rc = sys.argv[1:]
@@ -168,8 +216,8 @@ if not isinstance(result, dict) or result.get("schema_version") != 1:
 if int(rc) == 0:
     if result.get("commit") != expected or result.get("status") != "pass" or result.get("exit_code") != 0:
         sys.exit("E2E result does not match the completed run")
-elif result.get("status") == "pass":
-    sys.exit("refusing to export a stale pass for a failed run")
+elif result.get("commit") != expected or result.get("status") != "failed" or result.get("exit_code") != int(rc):
+    sys.exit("no matching completed installer result for this failed run")
 fd, temporary = tempfile.mkstemp(prefix=".e2e-result-", dir=os.path.dirname(os.path.abspath(path)))
 try:
     with os.fdopen(fd, "w") as out:
@@ -180,6 +228,7 @@ finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
 ' "$RESULT_FILE" "$COMMIT" "$RC"; then
+    RESULT_EXPORTED=1
     echo "[exe-run] saved result: $RESULT_FILE"
   else
     echo "[exe-run] could not export this run's result; keeping $NAME" >&2

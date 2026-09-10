@@ -114,18 +114,26 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
    `3` the host never opened `data/cli.sock` or the socket was unreachable.
    The driver uses `64` for invalid arguments, `65` for checkout/ref errors,
    `66` for an unreadable key, `69` for unconfirmed VM creation/reachability,
-   `70` for unconfirmed snapshot creation, and `74` for result export failure;
+   `70` for unconfirmed snapshot creation, and `74` for local result writing/export failure;
    other command failures can return their own nonzero exit code.
 
    After installer preflight, `logs/e2e/result.json` records pass/failure,
    exit code, tested commit, tracked changes present at start, phase, service
    type, ping classification and timestamps. An in-progress run has status
    `running`. It replaces a previous run's result and contains no credentials
-   or reply text. `--result-file` saves it locally before snapshot/removal;
-   a failed export keeps the VM. A checkout failure on a base VM leaves a
-   `running` record with phase `checkout` and the requested commit, replacing
-   any old pass. Failures before installer preflight on a fresh VM may have
-   no result file.
+   or reply text. With `--result-file`, after argument parsing and destination
+   validation the driver replaces any old local report with `running` before
+   checking the checkout, credentials or VM. It exports a matching completed
+   installer result before snapshot/removal. Otherwise it records the driver
+   failure, exit code, phase and requested ref/commit; `commit` is null because
+   no tested revision was confirmed. An interrupted run may remain `running`.
+   A failed export keeps the VM. Once exported, the installer result describes
+   the test; snapshot/removal errors are reported by the driver's exit code.
+
+   On the VM, a checkout failure on a base leaves a `running` record with phase
+   `checkout` and the requested commit, replacing any old pass. Failures before
+   installer preflight on a fresh VM may have no remote result file; the local
+   driver report still records the failure.
 
 3. **Bake a base VM** once the run is green, then clone it for every later run:
 
