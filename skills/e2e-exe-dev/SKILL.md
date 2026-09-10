@@ -1,6 +1,8 @@
 ---
 name: e2e-exe-dev
 description: "Provision an exe.dev VM and run a headless NanoClaw install on it end to end — Node/pnpm, Docker, OneCLI, vault secret, agent image, service, a cli-channel agent — then assert the same ping round-trip the setup wizard uses. Use to test a branch or PR on a real machine, to reproduce an install failure, or to bake a reusable base VM. Triggers on \"e2e test on exe.dev\", \"install nanoclaw on a vm\", \"headless install\", \"test this branch end to end\", \"exe.dev\"."
+license: MIT
+compatibility: Requires bash, git, ssh and python3 on the operator machine; the target is a Debian/Ubuntu host with sudo and Docker. An exe.dev account is needed only for the bundled driver.
 ---
 
 # e2e on exe.dev
@@ -13,12 +15,13 @@ install logic to drift — and replaces each prompt with an env var or a
 pre-seeded state. The assertion is the wizard's first-chat probe
 (`setup/lib/agent-ping.ts`): `pnpm run chat ping` must return a reply.
 
-Installed as the `nanoclaw-e2e` plugin from
-[nanocoai/nanoclaw-dev-tools](https://github.com/nanocoai/nanoclaw-dev-tools);
-invoke as `/nanoclaw-e2e:e2e-exe-dev`. Run the driver **from the root of the
-NanoClaw checkout you want tested** — it reads that checkout's `origin` and
-`HEAD`. `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code when the plugin is
-loaded; from a plain shell, substitute the plugin's install path.
+Ships in [nanocoai/nanoclaw-dev-tools](https://github.com/nanocoai/nanoclaw-dev-tools)
+as `skills/e2e-exe-dev`, in the portable [Agent Skills](https://agentskills.io)
+format. Install it into any agent with `npx skills add nanocoai/nanoclaw-dev-tools`,
+or in Claude Code with `/plugin install nanoclaw-e2e@nanoclaw-dev-tools` (there it
+is invoked as `/nanoclaw-e2e:e2e-exe-dev`). Paths below are relative to this
+skill's directory. Run the driver **from the root of the NanoClaw checkout you
+want tested** — it reads that checkout's `origin` and `HEAD`.
 
 Two scripts, both under `scripts/`:
 
@@ -73,8 +76,8 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 1. **Run it** from the checkout root, on the branch you want tested:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh                 # HEAD, new VM
-   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh --ref origin/main --name nc-main
+   scripts/exe-run.sh                 # HEAD, new VM
+   scripts/exe-run.sh --ref origin/main --name nc-main
    ```
 
    `--ref` can be any commit — the installer is pushed from *this* checkout,
@@ -99,8 +102,8 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 3. **Bake a base VM** once the run is green, then clone it for every later run:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh --snapshot nanoclaw-e2e-base
-   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh --base nanoclaw-e2e-base --ref my-branch
+   scripts/exe-run.sh --snapshot nanoclaw-e2e-base
+   scripts/exe-run.sh --base nanoclaw-e2e-base --ref my-branch
    ```
 
    VM names are global across exe.dev (they become `<name>.exe.xyz`), so
@@ -124,7 +127,7 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 
 ```bash
 git clone <repo> nanoclaw && cd nanoclaw
-NANOCLAW_E2E_KEY_FILE=/path/to/key bash "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/e2e-install.sh
+NANOCLAW_E2E_KEY_FILE=/path/to/key bash scripts/e2e-install.sh
 ```
 
 Env it honors: `NANOCLAW_E2E_ROOT`, `NANOCLAW_E2E_KEY_FILE`,
