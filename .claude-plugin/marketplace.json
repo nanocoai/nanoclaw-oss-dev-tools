@@ -1,0 +1,14 @@
+{
+  "name": "nanoclaw-dev-tools",
+  "owner": {
+    "name": "Nano Co",
+    "url": "https://github.com/nanocoai"
+  },
+  "plugins": [
+    {
+      "name": "nanoclaw-e2e",
+      "source": "./plugins/nanoclaw-e2e",
+      "description": "Install NanoClaw end to end on a throwaway machine and assert the ping round-trip — works on any Debian/Ubuntu box or CI runner, with an exe.dev VM as the convenient path."
+    }
+  ]
+}
