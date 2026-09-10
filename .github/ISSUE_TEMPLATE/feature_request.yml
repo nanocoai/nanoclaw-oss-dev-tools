@@ -1,0 +1,23 @@
+name: Tool or improvement proposal
+description: Suggest a contributor tool or an improvement to an existing skill.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Contributor task
+      description: What are you trying to do, and what makes it difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Describe the behavior or workflow that would help.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Relevant context
+      description: Link related NanoClaw issues, setup code, or existing tools. Note platform or credential requirements if relevant.

@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a problem in a development or testing skill.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report tooling problems here. For a vulnerability, use [private reporting](https://github.com/nanocoai/nanoclaw-oss-dev-tools/security/advisories/new).
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe the expected behavior and the result you observed.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the command or agent request and the relevant options, with secrets removed.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and revisions
+      description: Include the versions you know; an exact commit is useful when available.
+      value: |
+        - Tooling plugin version or commit:
+        - NanoClaw commit or ref:
+        - Operator OS and agent:
+        - Target OS:
+        - Fresh VM, cached VM, or standalone installer:
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Paste the result JSON or failing setup status block. Remove credentials, private hostnames and unrelated logs.
+      render: text

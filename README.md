@@ -1,73 +1,127 @@
-# nanoclaw-oss-dev-tools
+# NanoClaw OSS Dev Tools
 
-Portable development and testing tools for contributors to [NanoClaw OSS](https://github.com/nanocoai/nanoclaw). Shipped as [Agent Skills](https://agentskills.io) that install into any coding agent (Codex, OpenCode, Pi, Cursor, Claude Code, …).
+[![CI](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Install
+Portable development and testing skills for [NanoClaw](https://github.com/nanocoai/nanoclaw) contributors.
 
-Skills here follow the [Agent Skills](https://agentskills.io) format, so any agent that reads `SKILL.md` can use them.
+Reproduce a clean install, test a branch on a real machine, and check that a
+message reaches the agent and gets a reply. The tools drive NanoClaw's existing
+setup steps and record the exact commit tested.
 
-**Any agent** (Codex, OpenCode, Pi, Cursor, Claude Code, …) — the [`skills`](https://github.com/vercel-labs/skills) CLI symlinks them into each agent's skill directory:
+[Skill reference](skills/e2e-exe-dev/SKILL.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
+## What's included
+
+| Skill | Use it for |
+|---|---|
+| [e2e-exe-dev](skills/e2e-exe-dev/SKILL.md) | A headless NanoClaw install and real model ping on a fresh machine, or a repeat run from a cached exe.dev VM. |
+
+Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
+Codex, Claude Code, OpenCode, or another agent that supports the format. The
+installer can also run directly on a Debian/Ubuntu machine or CI runner.
+
+## Quick start
+
+### 1. Install the skill
+
+With Node.js and npm available, install for your user account and choose your
+agent when prompted:
+
+```bash
+npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-exe-dev
 ```
-npx skills add nanocoai/nanoclaw-oss-dev-tools        # pick agents and skills interactively
-npx skills add nanocoai/nanoclaw-oss-dev-tools --all  # every skill, every agent
-```
 
-**Claude Code** can also take it as a plugin marketplace:
+`--global` makes the skill available across checkouts. Omit it to install into
+one project. The [skills CLI](https://github.com/vercel-labs/skills) supports both
+symlink and copy installation.
 
-```
+<details>
+<summary>Install as a Claude Code plugin</summary>
+
+Run these commands inside Claude Code:
+
+```text
 /plugin marketplace add nanocoai/nanoclaw-oss-dev-tools
 /plugin install nanoclaw-e2e@nanoclaw-oss-dev-tools
 ```
 
-Either way the skills then apply in every NanoClaw checkout, worktree or fork on that machine. Update with `npx skills update` or `/plugin marketplace update nanoclaw-oss-dev-tools`.
+Invoke it with `/nanoclaw-e2e:e2e-exe-dev`.
 
-In Codex, use `$e2e-exe-dev` in a task opened on the NanoClaw checkout you want
-tested, or ask to test that checkout end to end. The skill's installed
-directory is separate from that checkout; its instructions explain how to
-invoke the scripts by their full path.
+</details>
 
-## Skills
+### 2. Prepare a NanoClaw checkout
 
-| Plugin | Skill | What it does |
-|---|---|---|
-| `nanoclaw-e2e` | `e2e-exe-dev` (Claude Code: `/nanoclaw-e2e:e2e-exe-dev`) | Headless NanoClaw install on a fresh machine, composed from the setup wizard's own steps, ending in the wizard's ping round-trip. Runs on any Debian/Ubuntu host or CI runner; the bundled driver provisions an [exe.dev](https://exe.dev) VM for you if you have an account. |
+Open the **NanoClaw checkout you want tested** in your agent. The skill's
+installation directory and the checkout under test are separate locations.
 
-## Conventions
+For the exe.dev workflow, you need:
 
-- **No secrets in this repo, ever.** Tools read credentials from files on the operator's machine (the e2e driver reads `~/.nanoclaw-e2e/anthropic_key`) and never echo them.
-- **Works anywhere first, exe.dev second.** A tool that needs a machine must run on a plain Debian/Ubuntu box; exe.dev is the convenient path, not a requirement.
-- **Verified against the NanoClaw source it drives.** Each skill's `SKILL.md` cites the file that defines every command it calls; re-verify after `setup/` changes — it moves fast.
-- **Portable first.** Reference files relative to the skill directory, never an agent-specific variable; keep `SKILL.md` under 500 lines. New tool = new directory under `skills/`; bump `version` in `.claude-plugin/plugin.json` on every change (Claude Code users only receive updates when it changes).
+- Bash, Git, SSH and Python 3 on the machine launching the test.
+- Working `ssh exe.dev` access.
+- An Anthropic API key or OAuth token in a local file, normally
+  `~/.nanoclaw-e2e/anthropic_key`, with permissions `0600`.
+- A commit that the VM can fetch from the checkout's repository.
 
-## Layout
+The target machine must be Debian/Ubuntu with sudo access. The installer handles
+Node.js, pnpm, Docker, OneCLI and the agent image. See the
+[prerequisites](skills/e2e-exe-dev/SKILL.md#prerequisites) for details.
 
-```
-skills/<skill>/SKILL.md            the skill, Agent Skills format
-skills/<skill>/scripts/            its code
-.claude-plugin/plugin.json         Claude Code plugin manifest (points at ./skills/)
-.claude-plugin/marketplace.json    Claude Code marketplace catalog
-AGENTS.md                          orientation for agents opening this repo
-tests/test_e2e.py                  offline driver and installer regression tests
+### 3. Run a test
+
+In Codex, ask:
+
+```text
+$e2e-exe-dev Test this NanoClaw checkout on a fresh exe.dev VM and save the result locally.
 ```
 
-## Development checks
+In other agents, ask them to use the `e2e-exe-dev` skill for the same task.
+For shell commands, cached VMs, snapshots and standalone installs, follow the
+[workflow](skills/e2e-exe-dev/SKILL.md#workflow).
+
+The driver resolves the requested ref to an exact commit. A passing installer
+result includes a real agent reply and successful service verification. Results
+are written to `logs/e2e/result.json` on the target; `--result-file` saves a local
+report. Failed runs retain their VM for inspection. Snapshot and removal errors
+are reported separately from the completed installer result.
+
+## Validation
+
+[CI](.github/workflows/ci.yml) runs shell syntax checks, plugin JSON validation and
+the offline regression suite on Linux and macOS. Those checks use simulated SSH
+and setup commands, with no credentials or VMs.
+
+Fresh and cached live installations were verified on **2026-09-10** at NanoClaw
+commit [`74224f62`](https://github.com/nanocoai/nanoclaw/commit/74224f62a6c08418acccc727114ab02f92e403bf).
+Both produced real model replies and passed final service verification. See the
+[compatibility evidence](skills/e2e-exe-dev/SKILL.md#compatibility-evidence), including
+the copy-response fix found during that run. Re-check compatibility when NanoClaw's
+setup code changes.
+
+## Update
+
+For a global skills CLI installation:
 
 ```bash
-for script in skills/*/scripts/*.sh; do bash -n "$script"; done
-python3 -m unittest discover -s tests -v
+npx skills update e2e-exe-dev --global
 ```
 
-Tests use temporary local Git repositories and simulated SSH, Docker and wizard
-commands, with no real credentials or VM provisioning. A temporary Unix socket
-requires an environment that permits local socket creation. Live setup
-compatibility and the last reviewed NanoClaw SHA are recorded in the skill.
+For a Claude Code plugin installation:
 
-The [CI workflow](.github/workflows/ci.yml) runs shell syntax checks, plugin
-manifest validation and the offline regression suite on Linux and macOS for
-every pull request and push to `main`. It uses Python 3.12 and needs no secrets
-or exe.dev account. Live VM installation and inference remain a separate check.
+```text
+/plugin marketplace update nanoclaw-oss-dev-tools
+```
+
+## Contribute
+
+Bug fixes, clearer instructions and new contributor tools are welcome. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md) for the repository layout, local checks, skill
+conventions and versioning. Use the [issue forms](https://github.com/nanocoai/nanoclaw-oss-dev-tools/issues/new/choose)
+for tooling bugs and proposals.
+
+For vulnerabilities, follow [SECURITY.md](SECURITY.md). This project follows the
+NanoClaw community's [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE), maintained by [Nano Co](https://github.com/nanocoai).
