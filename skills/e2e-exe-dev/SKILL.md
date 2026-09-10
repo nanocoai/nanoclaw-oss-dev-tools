@@ -15,10 +15,10 @@ install logic to drift — and replaces each prompt with an env var or a
 pre-seeded state. The assertion is the wizard's first-chat probe
 (`setup/lib/agent-ping.ts`): `pnpm run chat ping` must return a reply.
 
-Ships in [nanocoai/nanoclaw-dev-tools](https://github.com/nanocoai/nanoclaw-dev-tools)
+Ships in [nanocoai/nanoclaw-oss-dev-tools](https://github.com/nanocoai/nanoclaw-oss-dev-tools)
 as `skills/e2e-exe-dev`, in the portable [Agent Skills](https://agentskills.io)
-format. Install it into any agent with `npx skills add nanocoai/nanoclaw-dev-tools`,
-or in Claude Code with `/plugin install nanoclaw-e2e@nanoclaw-dev-tools` (there it
+format. Install it into any agent with `npx skills add nanocoai/nanoclaw-oss-dev-tools`,
+or in Claude Code with `/plugin install nanoclaw-e2e@nanoclaw-oss-dev-tools` (there it
 is invoked as `/nanoclaw-e2e:e2e-exe-dev`). Paths below are relative to this
 skill's directory. Run the driver **from the root of the NanoClaw checkout you
 want tested** — it reads that checkout's `origin` and `HEAD`.
@@ -241,4 +241,4 @@ block every step prints (`setup/status.ts`).
 
 `ssh exe.dev rm <name>` when done — the VM's persistent disk holds the vault
 secret. Nothing is written into the NanoClaw checkout; uninstall the plugin
-with `/plugin uninstall nanoclaw-e2e@nanoclaw-dev-tools`.
+with `/plugin uninstall nanoclaw-e2e@nanoclaw-oss-dev-tools`.

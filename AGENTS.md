@@ -1,6 +1,6 @@
-# nanoclaw-dev-tools
+# nanoclaw-oss-dev-tools
 
-Tooling for people who work on NanoClaw, shipped as portable skills.
+Portable development and testing tools for contributors to NanoClaw OSS.
 
 - Skills live in `skills/<name>/` in the Agent Skills format (`SKILL.md` + `scripts/`).
 - Each skill is meant to run from the root of a NanoClaw checkout and cites the NanoClaw source it drives; re-verify after `setup/` changes.

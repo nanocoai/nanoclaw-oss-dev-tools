@@ -1,6 +1,6 @@
-# nanoclaw-dev-tools
+# nanoclaw-oss-dev-tools
 
-Tooling for people who work *on* [NanoClaw](https://github.com/nanocoai/nanoclaw) — contributors, maintainers, the core team — shipped as portable [Agent Skills](https://agentskills.io) that install into any coding agent (Codex, OpenCode, Pi, Cursor, Claude Code, …). Nothing here ships to NanoClaw users; it stays out of the product tree so it never conflicts with your PR.
+Portable development and testing tools for contributors to [NanoClaw OSS](https://github.com/nanocoai/nanoclaw). Shipped as [Agent Skills](https://agentskills.io) that install into any coding agent (Codex, OpenCode, Pi, Cursor, Claude Code, …).
 
 ## Install
 
@@ -9,18 +9,18 @@ Skills here follow the [Agent Skills](https://agentskills.io) format, so any age
 **Any agent** (Codex, OpenCode, Pi, Cursor, Claude Code, …) — the [`skills`](https://github.com/vercel-labs/skills) CLI symlinks them into each agent's skill directory:
 
 ```
-npx skills add nanocoai/nanoclaw-dev-tools        # pick agents and skills interactively
-npx skills add nanocoai/nanoclaw-dev-tools --all  # every skill, every agent
+npx skills add nanocoai/nanoclaw-oss-dev-tools        # pick agents and skills interactively
+npx skills add nanocoai/nanoclaw-oss-dev-tools --all  # every skill, every agent
 ```
 
 **Claude Code** can also take it as a plugin marketplace:
 
 ```
-/plugin marketplace add nanocoai/nanoclaw-dev-tools
-/plugin install nanoclaw-e2e@nanoclaw-dev-tools
+/plugin marketplace add nanocoai/nanoclaw-oss-dev-tools
+/plugin install nanoclaw-e2e@nanoclaw-oss-dev-tools
 ```
 
-Either way the skills then apply in every NanoClaw checkout, worktree or fork on that machine. Update with `npx skills update` or `/plugin marketplace update nanoclaw-dev-tools`.
+Either way the skills then apply in every NanoClaw checkout, worktree or fork on that machine. Update with `npx skills update` or `/plugin marketplace update nanoclaw-oss-dev-tools`.
 
 ## Skills
 
