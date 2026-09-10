@@ -193,17 +193,23 @@ installer runs. The driver always uses `~/nanoclaw` on its VM.
 
 ## Compatibility evidence
 
-Source contracts reviewed on **2026-09-10** against NanoClaw
-[`2c754a2234390fcc597273cef6344d99e8ac03d0`](https://github.com/nanocoai/nanoclaw/tree/2c754a2234390fcc597273cef6344d99e8ac03d0).
-This records a source review, not a passing live E2E run. Offline regression
-tests cover the driver and result classification.
+Fresh and cached VM installations passed on **2026-09-10** against NanoClaw
+[`74224f62a6c08418acccc727114ab02f92e403bf`](https://github.com/nanocoai/nanoclaw/tree/74224f62a6c08418acccc727114ab02f92e403bf).
+Both produced real model replies, `SERVICE: running`, and successful final
+verification using the nohup fallback. The cached run reused OneCLI, the
+vault credential, Docker build layers and the existing agent wiring.
 
-**Known upstream limitation at that SHA:** `setup/service.ts` can choose
-nohup when systemd exists but its user bus is unavailable. `setup/verify.ts`
-only reads the nohup PID file when the detected manager is not systemd, so
-it can fail verification after a successful ping on those hosts. Keep that
-failure visible. Re-check this branch of the verifier before claiming an
-exe.dev run passes.
+The fresh install passed with skill version `0.2.3`, but its subsequent
+snapshot returned driver exit `70`: exe.dev created the copy using a response
+shape that the driver did not recognize. Version `0.2.4` accepts that shape
+only when its source and destination names match the request. The corrected
+driver's live cached-copy run completed with exit `0`; offline regressions
+also cover snapshot confirmation and mismatched copy responses.
+
+Older NanoClaw refs, including `2c754a2234390fcc597273cef6344d99e8ac03d0`,
+could fail verification after a successful ping when systemd's user bus was
+unavailable. The live-tested ref fixes this by consulting the nohup PID file
+when no service is found. Check the selected ref before assuming compatibility.
 
 ## What the installer calls, and why each call is shaped that way
 
@@ -241,8 +247,8 @@ block every step prints (`setup/status.ts`).
   is PID 1 but `systemctl --user` fails ("Failed to connect to bus"), so
   `service` falls back to nohup. `verify.ts` used to check `nanoclaw.pid`
   only when there was no systemd at all and reported `SERVICE: not_found`
-  here. This limitation is still present at the source-review SHA above;
-  verify the selected NanoClaw ref rather than assuming it has been fixed.
+  here. The live-tested SHA above fixes this by checking the PID file whenever
+  no service is found; older NanoClaw refs may still have the limitation.
 - **A non-interactive SSH shell has no `~/.local/bin` on PATH** — `pnpm`,
   `node`, `onecli` all live there. Prefix ad-hoc commands on the VM with
   `export PATH="$HOME/.local/bin:$PATH"`; the installer does this itself.
@@ -275,11 +281,13 @@ block every step prints (`setup/status.ts`).
   `setup/auth.ts` accepts it (it then `execFileSync`s `onecli`, no shell), so
   it is visible to `ps` on the VM for that step. Fine for a disposable VM;
   use `NANOCLAW_ONECLI_API_HOST` with a pre-seeded remote vault if not.
-- **Don't synthesize the VM hostname.** `new --json` / `cp --json` return
-  `ssh_dest`; modern VMs report `<name>.exe.xyz`, legacy ones
-  `vm+<name>@vm.exe.xyz`. The driver requires the returned VM name to match
-  the requested name and hands its destination to SSH. It never falls back
-  to `ls --json` to infer creation success.
+- **Don't synthesize the VM hostname.** `new --json` returns `vm_name` and
+  `ssh_dest`; the current `cp --json` response uses `name`, `source` and
+  `ssh_host`. The driver checks the requested destination name and, for that
+  copy format, the source name too. It also accepts the older `vm_name`
+  response shape. Modern destinations look like `<name>.exe.xyz`, legacy
+  ones like `vm+<name>@vm.exe.xyz`; the driver passes the returned destination
+  to SSH. It never falls back to `ls --json` to infer creation success.
 - **First contact blocks on the host-key prompt** in a non-interactive
   shell with nothing visible. Every VM connection in the driver carries
   `-o StrictHostKeyChecking=accept-new`.
@@ -303,7 +311,7 @@ block every step prints (`setup/status.ts`).
 | exit `2` with an auth-error reply | the reply text in `logs/e2e/ping.out` | wrong or expired key in the vault; `onecli secrets` to fix, then re-run (auth step short-circuits, so delete the bad secret first) |
 | exit `2`, no reply at all | `logs/nanoclaw.log` around the ping timestamp, `bin/ncl sessions list` | container failed to spawn (OneCLI "not applied"), or the agent errored — container logs are gone after exit, so check the outbound DB: `pnpm exec tsx scripts/q.ts data/v2-sessions/<group>/<session>/outbound.db "select * from messages_out"` |
 | `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`); or `SERVICE: not_found` on a nohup-started host — see the source-review limitation above |
-| `snapshot … was not created` / `NAME was not created` | the lobby line right above it | the VM name is taken globally — choose another |
+| `snapshot … creation was not confirmed` / `NAME creation was not confirmed` | the lobby response right above it | name taken, malformed response, or copy source/destination mismatch — check before retrying |
 
 ## Teardown
 

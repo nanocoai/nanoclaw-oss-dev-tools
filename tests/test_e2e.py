@@ -205,6 +205,50 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.assertEqual(run.returncode, 69)
         self.assert_no_vm_contact()
 
+    def test_current_copy_response_confirms_base_and_snapshot(self):
+        self.env["MOCK_CREATED"] = json.dumps({
+            "name": "test-vm", "source": "base-vm",
+            "ssh_host": "test-vm.exe.xyz", "state": "starting",
+        })
+        self.env["MOCK_SNAPSHOT"] = json.dumps({
+            "name": "saved-vm", "source": "test-vm",
+            "ssh_host": "saved-vm.exe.xyz", "state": "starting",
+        })
+        run = self.run_driver("--base", "base-vm", "--snapshot", "saved-vm", "--rm")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("snapshot confirmed: saved-vm", run.stdout)
+        self.assertIn(["exe.dev", "rm", "test-vm"], self.calls())
+
+    def test_copy_response_requires_matching_source_and_name(self):
+        for metadata in (
+            {"name": "test-vm", "source": "other-base"},
+            {"name": "test-vm"},
+            {"name": "other-vm", "source": "base-vm"},
+            {"vm_name": "test-vm", "source": "other-base"},
+        ):
+            with self.subTest(metadata=metadata):
+                self.env["MOCK_CREATED"] = json.dumps({**metadata, "ssh_host": "test-vm.exe.xyz"})
+                run = self.run_driver("--base", "base-vm", "--rm")
+                self.assertEqual(run.returncode, 69, run.stderr)
+                self.assert_no_vm_contact()
+
+    def test_copy_response_is_not_accepted_for_new(self):
+        self.env["MOCK_CREATED"] = json.dumps({
+            "name": "test-vm", "source": "base-vm", "ssh_host": "test-vm.exe.xyz",
+        })
+        run = self.run_driver("--rm")
+        self.assertEqual(run.returncode, 69, run.stderr)
+        self.assert_no_vm_contact()
+
+    def test_snapshot_response_requires_matching_source(self):
+        self.env["MOCK_SNAPSHOT"] = json.dumps({
+            "name": "saved-vm", "source": "other-vm", "ssh_host": "saved-vm.exe.xyz",
+        })
+        run = self.run_driver("--snapshot", "saved-vm", "--rm")
+        self.assertEqual(run.returncode, 70, run.stderr)
+        self.assertIn('"source": "other-vm"', run.stderr)
+        self.assert_retained()
+
     def test_creation_validation_survives_python_optimization(self):
         self.env["PYTHONOPTIMIZE"] = "1"
         self.env["MOCK_CREATED"] = json.dumps({
