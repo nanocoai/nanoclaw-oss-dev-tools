@@ -54,10 +54,24 @@ done
 [ -r "$KEY_FILE" ] || { echo "key file not readable: $KEY_FILE" >&2; exit 66; }
 [ -n "$NAME" ] || NAME="nanoclaw-e2e-$(git rev-parse --short "$REF")"
 
-# `new --json` / `cp --json` return {"ssh_dest": …} (exe.dev/docs/api). Modern
-# VMs report "<name>.exe.xyz"; legacy ones "vm+<name>@vm.exe.xyz" — ssh takes
-# either verbatim, so never synthesize the hostname from the name.
-ssh_dest_of() { sed -n 's/.*"ssh_dest": *"\([^"]*\)".*/\1/p' | head -n1; }
+# `new --json` / `cp --json` return a VM record; `ls --json` returns
+# {"vms": [...], "team_shared_vms": [...]}. Owned VMs carry ssh_dest (and
+# ssh_host); team-shared ones only dns_name/ssh_command. Modern VMs report
+# "<name>.exe.xyz", legacy ones "vm+<name>@vm.exe.xyz" — ssh takes either
+# verbatim, so never synthesize the hostname from the name. Records nest
+# objects (access, sharing, …), so parse JSON properly rather than by regex.
+ssh_dest_of() {  # stdin: JSON; $1 (optional): vm_name to select inside a list
+  python3 -c '
+import json, sys
+want = sys.argv[1] if len(sys.argv) > 1 else None
+d = json.load(sys.stdin)
+recs = [d] if "vm_name" in d else (d.get("vms", []) + d.get("team_shared_vms", []))
+for r in recs:
+    if want and r.get("vm_name") != want: continue
+    dest = r.get("ssh_dest") or r.get("ssh_host") or r.get("dns_name")
+    if dest: print(dest); break
+' "$@"
+}
 
 echo "[exe-run] vm=$NAME ref=$REF repo=$REPO"
 if [ -n "$BASE" ]; then
@@ -65,8 +79,8 @@ if [ -n "$BASE" ]; then
 else
   CREATED="$(ssh exe.dev new --name="$NAME" --cpu="$CPU" --memory="$MEMORY" --disk="$DISK" --no-email --json | tee /dev/stderr)"
 fi
-HOST="$(printf '%s' "$CREATED" | ssh_dest_of)"
-[ -n "$HOST" ] || HOST="$(ssh exe.dev ls --json | tr -d '\n' | grep -o "{[^{}]*\"vm_name\": *\"$NAME\"[^{}]*}" | ssh_dest_of)"
+HOST="$(printf '%s' "$CREATED" | ssh_dest_of "$NAME" 2>/dev/null || true)"
+[ -n "$HOST" ] || HOST="$(ssh exe.dev ls --json | ssh_dest_of "$NAME")"
 [ -n "$HOST" ] || { echo "[exe-run] could not resolve ssh_dest for $NAME (try: ssh exe.dev ls --json)" >&2; exit 69; }
 
 # First contact with a fresh VM would otherwise block on the host-key prompt.
