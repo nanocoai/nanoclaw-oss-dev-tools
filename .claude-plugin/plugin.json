@@ -1,7 +1,7 @@
 {
   "name": "nanoclaw-e2e",
   "description": "Install NanoClaw end to end on a throwaway machine and assert the ping round-trip — works on any Debian/Ubuntu box or CI runner, with an exe.dev VM as the convenient path.",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "author": {
     "name": "Nano Co",
     "url": "https://github.com/nanocoai"

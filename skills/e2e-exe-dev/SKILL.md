@@ -2,7 +2,7 @@
 name: e2e-exe-dev
 description: "Provision an exe.dev VM and run a headless NanoClaw install on it end to end — Node/pnpm, Docker, OneCLI, vault secret, agent image, service, a cli-channel agent — then assert the same ping round-trip the setup wizard uses. Use to test a branch or PR on a real machine, to reproduce an install failure, or to bake a reusable base VM. Triggers on \"e2e test on exe.dev\", \"install nanoclaw on a vm\", \"headless install\", \"test this branch end to end\", \"exe.dev\"."
 license: MIT
-compatibility: Requires bash, git, ssh and python3 on the operator machine; the target is a Debian/Ubuntu host with sudo and Docker. An exe.dev account is needed only for the bundled driver.
+compatibility: Requires bash, git, ssh and python3 on the operator machine; the target is a Debian/Ubuntu host with sudo, git and python3. Docker is installed by setup if missing. An exe.dev account is needed only for the bundled driver.
 ---
 
 # e2e on exe.dev
@@ -19,9 +19,10 @@ Ships in [nanocoai/nanoclaw-oss-dev-tools](https://github.com/nanocoai/nanoclaw-
 as `skills/e2e-exe-dev`, in the portable [Agent Skills](https://agentskills.io)
 format. Install it into any agent with `npx skills add nanocoai/nanoclaw-oss-dev-tools`,
 or in Claude Code with `/plugin install nanoclaw-e2e@nanoclaw-oss-dev-tools` (there it
-is invoked as `/nanoclaw-e2e:e2e-exe-dev`). Paths below are relative to this
-skill's directory. Run the driver **from the root of the NanoClaw checkout you
-want tested** — it reads that checkout's `origin` and `HEAD`.
+is invoked as `/nanoclaw-e2e:e2e-exe-dev`). In Codex, invoke `$e2e-exe-dev`.
+Resolve the scripts relative to this `SKILL.md`, then run them **from the root
+of the NanoClaw checkout you want tested**. The installed skill and the
+checkout being tested are separate directories.
 
 Two scripts, both under `scripts/`:
 
@@ -73,46 +74,86 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 
 ## Workflow
 
-1. **Run it** from the checkout root, on the branch you want tested:
+1. **Run it** from the checkout root, on the branch you want tested. Set
+   `E2E_SKILL_DIR` to the actual directory containing this `SKILL.md`:
 
    ```bash
-   scripts/exe-run.sh                 # HEAD, new VM
-   scripts/exe-run.sh --ref origin/main --name nc-main
+   E2E_SKILL_DIR=/absolute/path/to/installed/e2e-exe-dev
+   cd /absolute/path/to/nanoclaw
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh"  # HEAD, new VM
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --ref origin/main --name nc-main
    ```
 
-   `--ref` can be any commit — the installer is pushed from *this* checkout,
-   so refs that predate the skill are testable too.
+   For a disposable run with a retained local report, add
+   `--result-file /path/to/result.json --rm` (the parent directory must exist).
+
+   `--ref` resolves in the local checkout to an exact commit before creating
+   a VM. Fetch locally first if you want an updated `origin/main`. The VM
+   fetches that SHA from `--repo` (default: local `origin`), checks it out
+   detached, and verifies `HEAD` matches. The commit must be fetchable from
+   that repository; local-only commits and uncommitted edits are not uploaded.
+   The installer comes from the installed skill, so compatible older NanoClaw
+   refs can be tested too.
 
 2. **Read the result.** The last thing printed on success is
 
    ```
    === NANOCLAW E2E: RESULT ===
    STATUS: pass
+   COMMIT: <full tested SHA>
    SERVICE_TYPE: systemd-user | systemd-system | nohup
    PING: ok
    REPLY: <first 200 chars of the agent's reply>
+   RESULT: logs/e2e/result.json
    === END ===
    ```
 
    Exit codes: `0` pass · `1` a step failed (its `=== NANOCLAW SETUP: … ===`
    block is printed right above the failure; raw output in
    `~/nanoclaw/logs/e2e/<step>.log` on the VM) · `2` no reply / auth error ·
-   `3` the host never opened `data/cli.sock`.
+   `3` the host never opened `data/cli.sock` or the socket was unreachable.
+   The driver uses `64` for invalid arguments, `65` for checkout/ref errors,
+   `66` for an unreadable key, `69` for unconfirmed VM creation/reachability,
+   `70` for unconfirmed snapshot creation, and `74` for local result writing/export failure;
+   other command failures can return their own nonzero exit code.
+
+   After installer preflight, `logs/e2e/result.json` records pass/failure,
+   exit code, tested commit, tracked changes present at start, phase, service
+   type, ping classification and timestamps. An in-progress run has status
+   `running`. It replaces a previous run's result and contains no credentials
+   or reply text. With `--result-file`, after argument parsing and destination
+   validation the driver replaces any old local report with `running` before
+   checking the checkout, credentials or VM. It exports a matching completed
+   installer result before snapshot/removal. Otherwise it records the driver
+   failure, exit code, phase and requested ref/commit; `commit` is null because
+   no tested revision was confirmed. An interrupted run may remain `running`.
+   A failed export keeps the VM. Once exported, the installer result describes
+   the test; snapshot/removal errors are reported by the driver's exit code.
+
+   On the VM, a checkout failure on a base leaves a `running` record with phase
+   `checkout` and the requested commit, replacing any old pass. Failures before
+   installer preflight on a fresh VM may have no remote result file; the local
+   driver report still records the failure.
 
 3. **Bake a base VM** once the run is green, then clone it for every later run:
 
    ```bash
-   scripts/exe-run.sh --snapshot nanoclaw-e2e-base
-   scripts/exe-run.sh --base nanoclaw-e2e-base --ref my-branch
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --snapshot my-nanoclaw-e2e-base
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --base my-nanoclaw-e2e-base --ref my-branch
    ```
 
    VM names are global across exe.dev (they become `<name>.exe.xyz`), so
-   pick a distinctive snapshot name — plain `nanoclaw-base` is already taken.
+   pick a distinctive snapshot name. Default run names include a random
+   suffix. A taken name or invalid create/copy response stops the run; an
+   existing VM is never adopted as a replacement. A failed snapshot keeps
+   the tested VM, even with `--rm`.
 
    Every step is idempotent against the cloned state: `onecli --reuse` when
    `.env` already has `ONECLI_URL`, `auth --check` short-circuits on an
    existing vault secret, `container` rebuilds only what changed,
-   `init-cli-agent` reuses the group and wiring.
+   `init-cli-agent` reuses the group and wiring. Cached checkouts are pointed
+   at the requested repository and exact SHA; tracked edits in a base
+   checkout cause a failure instead of being overwritten.
 
 4. **Poke at it.** `ssh <ssh_dest>` (printed at the end; `ssh exe.dev ls
    --json` lists it), then in `~/nanoclaw`: `pnpm run chat hi`,
@@ -126,9 +167,15 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 `e2e-install.sh` has no exe.dev dependency. On a CI runner or any fresh box:
 
 ```bash
-git clone <repo> nanoclaw && cd nanoclaw
-NANOCLAW_E2E_KEY_FILE=/path/to/key bash scripts/e2e-install.sh
+git clone https://github.com/nanocoai/nanoclaw-oss-dev-tools.git
+E2E_SKILL_DIR="$(pwd)/nanoclaw-oss-dev-tools/skills/e2e-exe-dev"
+git clone https://github.com/nanocoai/nanoclaw.git
+cd nanoclaw
+NANOCLAW_E2E_KEY_FILE=/path/to/key bash "$E2E_SKILL_DIR/scripts/e2e-install.sh"
 ```
+
+The target needs `git` and `python3` before starting the installer. The exe.dev
+driver installs these if missing; provision them yourself on other hosts.
 
 Env it honors: `NANOCLAW_E2E_ROOT`, `NANOCLAW_E2E_KEY_FILE`,
 `NANOCLAW_ONECLI_API_HOST` + `NANOCLAW_ONECLI_API_TOKEN` (remote gateway
@@ -137,6 +184,26 @@ instead of a local install — the same vars `setup/auto.ts` reads),
 `NANOCLAW_E2E_KEEP_AGENT` (default `1`), `NANOCLAW_E2E_FORCE_AUTH` (`1`
 replaces an existing vault secret with the key file — token rotation on a
 `--base` VM whose snapshot still holds the old one).
+
+The driver forwards the remote gateway settings, display name, timezone,
+keep-agent and force-auth settings over stdin into a private environment
+file, which is removed after loading. `NANOCLAW_E2E_KEY_FILE` (or `--key-file`)
+selects the local key to upload; `NANOCLAW_E2E_ROOT` applies to standalone
+installer runs. The driver always uses `~/nanoclaw` on its VM.
+
+## Compatibility evidence
+
+Source contracts reviewed on **2026-09-10** against NanoClaw
+[`2c754a2234390fcc597273cef6344d99e8ac03d0`](https://github.com/nanocoai/nanoclaw/tree/2c754a2234390fcc597273cef6344d99e8ac03d0).
+This records a source review, not a passing live E2E run. Offline regression
+tests cover the driver and result classification.
+
+**Known upstream limitation at that SHA:** `setup/service.ts` can choose
+nohup when systemd exists but its user bus is unavailable. `setup/verify.ts`
+only reads the nohup PID file when the detected manager is not systemd, so
+it can fail verification after a successful ping on those hosts. Keep that
+failure visible. Re-check this branch of the verifier before claiming an
+exe.dev run passes.
 
 ## What the installer calls, and why each call is shaped that way
 
@@ -154,7 +221,7 @@ installer adds sequencing and assertions only.
 | 7 | `--step mounts --empty` | The wizard's own args (`setup/auto.ts`); `skipped` on re-runs is fine |
 | 8 | `--step timezone --tz <zone>` | `setup/timezone.ts` validates with `isValidTimezone` and writes `TZ` to `.env` |
 | 9 | `--step service`, then `./start-nanoclaw.sh` iff `SERVICE_TYPE: nohup` | `setup/service.ts`: builds, **stamps the upgrade marker** (so the host's tripwire passes), installs a system unit as root / user unit otherwise / nohup wrapper without user systemd |
-| 10 | `scripts/init-cli-agent.ts --display-name … --agent-name "E2E Agent" --folder e2e-agent` | Creates the `cli:local` owner, an agent group and the wiring to the cli messaging group; runs migrations itself, safe alongside the running host |
+| 10 | `scripts/init-cli-agent.ts --display-name … --agent-name "E2E Agent" --folder e2e-agent` | Creates the `cli:local` scratch user, an agent group and the wiring to the cli messaging group; runs migrations itself, safe alongside the running host |
 | 11 | `pnpm --silent run chat ping` | `scripts/chat.ts`: exit 0 + reply = ok, 2 = socket unreachable, 3 = no reply within its 120 s stop; the auth-error patterns are the ones `agent-ping.ts` classifies |
 | 12 | `--step verify` | `setup/verify.ts`: `success` iff service running ∧ credentials present ∧ (groups > 0 ∨ wiring pending); exits 1 otherwise |
 
@@ -174,8 +241,8 @@ block every step prints (`setup/status.ts`).
   is PID 1 but `systemctl --user` fails ("Failed to connect to bus"), so
   `service` falls back to nohup. `verify.ts` used to check `nanoclaw.pid`
   only when there was no systemd at all and reported `SERVICE: not_found`
-  here; it now consults the pid file whenever the manager finds nothing
-  (regression test: `setup/verify-nohup.test.ts`).
+  here. This limitation is still present at the source-review SHA above;
+  verify the selected NanoClaw ref rather than assuming it has been fixed.
 - **A non-interactive SSH shell has no `~/.local/bin` on PATH** — `pnpm`,
   `node`, `onecli` all live there. Prefix ad-hoc commands on the VM with
   `export PATH="$HOME/.local/bin:$PATH"`; the installer does this itself.
@@ -210,8 +277,9 @@ block every step prints (`setup/status.ts`).
   use `NANOCLAW_ONECLI_API_HOST` with a pre-seeded remote vault if not.
 - **Don't synthesize the VM hostname.** `new --json` / `cp --json` return
   `ssh_dest`; modern VMs report `<name>.exe.xyz`, legacy ones
-  `vm+<name>@vm.exe.xyz`. The driver parses the field (falling back to
-  `ls --json`) and hands it to ssh verbatim.
+  `vm+<name>@vm.exe.xyz`. The driver requires the returned VM name to match
+  the requested name and hands its destination to SSH. It never falls back
+  to `ls --json` to infer creation success.
 - **First contact blocks on the host-key prompt** in a non-interactive
   shell with nothing visible. Every VM connection in the driver carries
   `-o StrictHostKeyChecking=accept-new`.
@@ -234,11 +302,12 @@ block every step prints (`setup/status.ts`).
 | exit `3` (no `data/cli.sock`) | `logs/nanoclaw.error.log` | host crashed at start — read the first ERROR; the upgrade tripwire is not it (`service` stamped the marker) |
 | exit `2` with an auth-error reply | the reply text in `logs/e2e/ping.out` | wrong or expired key in the vault; `onecli secrets` to fix, then re-run (auth step short-circuits, so delete the bad secret first) |
 | exit `2`, no reply at all | `logs/nanoclaw.log` around the ping timestamp, `bin/ncl sessions list` | container failed to spawn (OneCLI "not applied"), or the agent errored — container logs are gone after exit, so check the outbound DB: `pnpm exec tsx scripts/q.ts data/v2-sessions/<group>/<session>/outbound.db "select * from messages_out"` |
-| `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`); or `SERVICE: not_found` on a nohup-started host — fixed in `setup/verify.ts`, so a checkout older than that fix reports this falsely |
+| `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`); or `SERVICE: not_found` on a nohup-started host — see the source-review limitation above |
 | `snapshot … was not created` / `NAME was not created` | the lobby line right above it | the VM name is taken globally — choose another |
 
 ## Teardown
 
 `ssh exe.dev rm <name>` when done — the VM's persistent disk holds the vault
-secret. Nothing is written into the NanoClaw checkout; uninstall the plugin
+secret. A standalone installer writes setup state and logs into its target
+checkout; the driver runs setup on the VM. Uninstall the plugin
 with `/plugin uninstall nanoclaw-e2e@nanoclaw-oss-dev-tools`.

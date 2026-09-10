@@ -22,6 +22,11 @@ npx skills add nanocoai/nanoclaw-oss-dev-tools --all  # every skill, every agent
 
 Either way the skills then apply in every NanoClaw checkout, worktree or fork on that machine. Update with `npx skills update` or `/plugin marketplace update nanoclaw-oss-dev-tools`.
 
+In Codex, use `$e2e-exe-dev` in a task opened on the NanoClaw checkout you want
+tested, or ask to test that checkout end to end. The skill's installed
+directory is separate from that checkout; its instructions explain how to
+invoke the scripts by their full path.
+
 ## Skills
 
 | Plugin | Skill | What it does |
@@ -43,7 +48,20 @@ skills/<skill>/scripts/            its code
 .claude-plugin/plugin.json         Claude Code plugin manifest (points at ./skills/)
 .claude-plugin/marketplace.json    Claude Code marketplace catalog
 AGENTS.md                          orientation for agents opening this repo
+tests/test_e2e.py                  offline driver and installer regression tests
 ```
+
+## Development checks
+
+```bash
+bash -n skills/e2e-exe-dev/scripts/exe-run.sh skills/e2e-exe-dev/scripts/e2e-install.sh
+python3 -m unittest discover -s tests -v
+```
+
+Tests use temporary local Git repositories and simulated SSH, Docker and wizard
+commands, with no real credentials or VM provisioning. A temporary Unix socket
+requires an environment that permits local socket creation. Live setup
+compatibility and the last reviewed NanoClaw SHA are recorded in the skill.
 
 ## License
 
