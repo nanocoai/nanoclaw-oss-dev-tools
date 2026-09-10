@@ -2,7 +2,7 @@
 # e2e-install.sh — headless NanoClaw install + CLI-channel ping, for e2e runs.
 #
 # Runs ON the target machine (an exe.dev VM, a CI runner, any Debian/Ubuntu
-# box with sudo). Composes the setup wizard's own step processes — the exact
+# box with sudo, git and python3). Composes the setup wizard's own steps — the
 # `pnpm exec tsx setup/index.ts --step <name>` spawn setup/lib/runner.ts uses —
 # in the wizard's order (setup/auto.ts), with every prompt replaced by an env
 # var or pre-seeded state. Ends with the same round-trip the wizard's
@@ -27,11 +27,13 @@
 # and logs/e2e/<step>.log) · 2 ping got no reply · 3 CLI socket unreachable.
 
 set -euo pipefail
+command -v python3 >/dev/null || { echo "[e2e] FAIL: python3 is required for result.json" >&2; exit 1; }
 
 # The checkout to install: NANOCLAW_E2E_ROOT, else the current directory.
 # (The script ships in a plugin, so its own location says nothing about it.)
 ROOT="${NANOCLAW_E2E_ROOT:-$PWD}"
 cd "$ROOT"
+ROOT="$PWD"
 grep -q '"name": *"nanoclaw"' package.json 2>/dev/null \
   || { echo "[e2e] FAIL: $ROOT is not a NanoClaw checkout (no package.json named nanoclaw); set NANOCLAW_E2E_ROOT" >&2; exit 1; }
 export NANOCLAW_NO_DIAGNOSTICS=1 NANOCLAW_SKIP_CLAUDE_ASSIST=1
@@ -46,6 +48,53 @@ mkdir -p "$LOGS"
 say() { printf '\n[e2e] %s\n' "$*"; }
 die() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit "${2:-1}"; }
 
+# Record the source before setup changes any generated files. A failed run
+# replaces any previous result inherited from a base VM.
+SOURCE_COMMIT="$(git rev-parse --verify HEAD)" || die "cannot identify the checkout commit"
+SOURCE_DIRTY=false
+git diff --quiet HEAD -- || SOURCE_DIRTY=true
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+PHASE=bootstrap RESULT_STATUS=failed SERVICE_TYPE="" PING_RESULT=not_run
+write_result() {
+  local rc=$?
+  trap - EXIT
+  set +e
+  python3 - "$LOGS/result.json" "$SOURCE_COMMIT" "$SOURCE_DIRTY" \
+    "$RESULT_STATUS" "$rc" "$PHASE" "$SERVICE_TYPE" "$PING_RESULT" "$STARTED_AT" <<'PY'
+import datetime, json, os, sys, tempfile
+path, commit, dirty, status, rc, phase, service, ping, started = sys.argv[1:]
+result = {
+    "schema_version": 1,
+    "status": status if int(rc) == 0 else "failed",
+    "exit_code": int(rc),
+    "commit": commit,
+    "tracked_changes_at_start": dirty == "true",
+    "phase": phase,
+    "service_type": service or None,
+    "ping": ping,
+    "started_at": started,
+    "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}
+fd, temporary = tempfile.mkstemp(prefix=".result-", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w") as out:
+        json.dump(result, out, indent=2)
+        out.write("\n")
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+  if [ "$?" -ne 0 ]; then
+    echo "[e2e] FAIL: could not write logs/e2e/result.json" >&2
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  exit "$rc"
+}
+trap write_result EXIT
+# Invalidate a previous pass before running bootstrap (including if killed).
+printf '{"schema_version":1,"status":"running","commit":"%s"}\n' "$SOURCE_COMMIT" > "$LOGS/result.json"
+
 # Run one wizard step exactly as setup/lib/runner.ts spawns it, capture the
 # last `=== NANOCLAW SETUP: … === … === END ===` block (setup/status.ts) and
 # expose its fields via $STATUS / field(). Returns the step's exit code.
@@ -53,6 +102,7 @@ LAST_BLOCK=""
 STATUS=""
 step() {
   local name="$1"; shift
+  PHASE="$name"
   local out="$LOGS/$name.log"
   # Never echo a secret: the auth step carries the token as `--value <tok>`.
   local shown="" prev=""
@@ -60,10 +110,17 @@ step() {
   say "step $name$shown"
   set +e
   pnpm exec tsx setup/index.ts --step "$name" "$@" </dev/null 2>&1 | tee "$out"
-  local rc=${PIPESTATUS[0]}
+  local pipeline_status=("${PIPESTATUS[@]}")
+  local rc=${pipeline_status[0]}
+  [ "$rc" -ne 0 ] || rc=${pipeline_status[1]}
   set -e
   LAST_BLOCK="$(awk '/^=== NANOCLAW SETUP: /{b=""} {b=b $0 "\n"} /^=== END ===/{last=b} END{printf "%s", last}' "$out")"
   STATUS="$(field STATUS)"
+  # A zero exit without a successful status block is not a completed step.
+  case "$name:$STATUS" in
+    *:success|auth:missing|auth:skipped|mounts:skipped) ;;
+    *) [ "$rc" -ne 0 ] || rc=1 ;;
+  esac
   echo "[e2e] $name -> exit=$rc status=${STATUS:-none}"
   return "$rc"
 }
@@ -86,6 +143,7 @@ fi
 command -v pnpm >/dev/null 2>&1 || die "pnpm not on PATH after setup.sh"
 
 # ── 2. Docker: install if missing (setup's own script), make the socket usable ─
+PHASE=docker
 # setup/container.ts does this for its own step, but the onecli step (a
 # docker-compose install) needs the daemon first — so handle it once, here.
 if ! command -v docker >/dev/null 2>&1; then
@@ -153,6 +211,7 @@ if [ "$SERVICE_TYPE" = "nohup" ]; then
 fi
 
 # ── 4. Wire an agent to the always-on cli channel and ping it ─────────────────
+PHASE=init-cli-agent
 say "init-cli-agent"
 pnpm exec tsx scripts/init-cli-agent.ts \
   --display-name "${NANOCLAW_DISPLAY_NAME:-E2E}" --agent-name "E2E Agent" --folder e2e-agent \
@@ -160,6 +219,7 @@ pnpm exec tsx scripts/init-cli-agent.ts \
 [ "${PIPESTATUS[0]}" -eq 0 ] || die "init-cli-agent failed"
 
 say "waiting for data/cli.sock"
+PHASE=socket
 for _ in $(seq 1 60); do [ -S data/cli.sock ] && break; sleep 1; done
 [ -S data/cli.sock ] || die "host never opened data/cli.sock — see logs/nanoclaw.error.log" 3
 
@@ -167,35 +227,44 @@ for _ in $(seq 1 60); do [ -S data/cli.sock ] && break; sleep 1; done
 # 3 = no reply (chat.ts has its own 120s hard stop); auth failures show up in
 # the reply text.
 say "ping (first container boot: 30–60s)"
+PHASE=ping
+PING_RESULT=no_reply
 set +e
 PING_OUT="$(timeout 150 pnpm --silent run chat ping 2>"$LOGS/ping.err")"
 PING_RC=$?
 set -e
 printf '%s\n' "$PING_OUT" | tee "$LOGS/ping.out"
 if printf '%s\n%s' "$PING_OUT" "$(cat "$LOGS/ping.err")" | grep -qiE 'Invalid bearer token|authentication[_ ]error|Failed to authenticate|Please run /login|Not logged in|Invalid API key'; then
+  PING_RESULT=auth_error
   die "ping reply is an auth error — check the vault secret" 2
 fi
 case "$PING_RC" in
-  0) [ -n "$PING_OUT" ] || die "ping exited 0 with an empty reply" 2 ;;
-  2) die "CLI socket unreachable (chat.ts exit 2)" 3 ;;
+  0) [ -n "$(printf '%s' "$PING_OUT" | tr -d '[:space:]')" ] || die "ping exited 0 with an empty reply" 2 ;;
+  2) PING_RESULT=socket_error; die "CLI socket unreachable (chat.ts exit 2)" 3 ;;
   *) die "no reply from the agent (chat.ts exit $PING_RC) — logs/nanoclaw.log, logs/e2e/ping.err" 2 ;;
 esac
+PING_RESULT=ok
 
 if [ "${NANOCLAW_E2E_KEEP_AGENT:-1}" = 0 ]; then
+  PHASE=delete-cli-agent
   pnpm exec tsx scripts/delete-cli-agent.ts --folder e2e-agent
 fi
 
 # ── 5. The wizard's end-of-run health check ───────────────────────────────────
 step verify || die "verify reported ${STATUS:-failure}"
+RESULT_STATUS=pass
+PHASE=complete
 
 cat <<SUMMARY
 
 === NANOCLAW E2E: RESULT ===
 STATUS: pass
+COMMIT: $SOURCE_COMMIT
 ROOT: $ROOT
 SERVICE_TYPE: $SERVICE_TYPE
 PING: ok
 REPLY: $(printf '%s' "$PING_OUT" | head -c 200 | tr '\n' ' ')
 LOG: logs/e2e/
+RESULT: logs/e2e/result.json
 === END ===
 SUMMARY
