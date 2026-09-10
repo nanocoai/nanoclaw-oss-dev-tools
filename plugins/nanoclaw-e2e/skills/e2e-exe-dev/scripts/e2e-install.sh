@@ -9,8 +9,8 @@
 # first-chat step performs (`pnpm run chat ping`, setup/lib/agent-ping.ts).
 #
 # Inputs (env):
-#   NANOCLAW_E2E_ROOT          checkout to install (default: the repo this
-#                              script lives in)
+#   NANOCLAW_E2E_ROOT          checkout to install (default: the current
+#                              directory, which must be a NanoClaw checkout)
 #   NANOCLAW_E2E_KEY_FILE      file holding an Anthropic API key / OAuth token
 #                              (default ~/.nanoclaw-e2e/anthropic_key). Only
 #                              read when the vault has no anthropic secret yet.
@@ -28,8 +28,12 @@
 
 set -euo pipefail
 
-ROOT="${NANOCLAW_E2E_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
+# The checkout to install: NANOCLAW_E2E_ROOT, else the current directory.
+# (The script ships in a plugin, so its own location says nothing about it.)
+ROOT="${NANOCLAW_E2E_ROOT:-$PWD}"
 cd "$ROOT"
+grep -q '"name": *"nanoclaw"' package.json 2>/dev/null \
+  || { echo "[e2e] FAIL: $ROOT is not a NanoClaw checkout (no package.json named nanoclaw); set NANOCLAW_E2E_ROOT" >&2; exit 1; }
 export NANOCLAW_NO_DIAGNOSTICS=1 NANOCLAW_SKIP_CLAUDE_ASSIST=1
 # setup/verify.ts counts any GITHUB_TOKEN in the environment as a configured
 # channel (its has() reads process.env) — keep the report about this install.

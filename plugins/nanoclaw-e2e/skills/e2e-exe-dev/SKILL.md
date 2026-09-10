@@ -13,6 +13,13 @@ install logic to drift — and replaces each prompt with an env var or a
 pre-seeded state. The assertion is the wizard's first-chat probe
 (`setup/lib/agent-ping.ts`): `pnpm run chat ping` must return a reply.
 
+Installed as the `nanoclaw-e2e` plugin from
+[nanocoai/nanoclaw-dev-tools](https://github.com/nanocoai/nanoclaw-dev-tools);
+invoke as `/nanoclaw-e2e:e2e-exe-dev`. Run the driver **from the root of the
+NanoClaw checkout you want tested** — it reads that checkout's `origin` and
+`HEAD`. `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code when the plugin is
+loaded; from a plain shell, substitute the plugin's install path.
+
 Two scripts, both under `scripts/`:
 
 | Script | Runs on | Does |
@@ -66,8 +73,8 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 1. **Run it** from the checkout root, on the branch you want tested:
 
    ```bash
-   .claude/skills/e2e-exe-dev/scripts/exe-run.sh                 # HEAD, new VM
-   .claude/skills/e2e-exe-dev/scripts/exe-run.sh --ref origin/main --name nc-main
+   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh                 # HEAD, new VM
+   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh --ref origin/main --name nc-main
    ```
 
    `--ref` can be any commit — the installer is pushed from *this* checkout,
@@ -92,8 +99,8 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 3. **Bake a base VM** once the run is green, then clone it for every later run:
 
    ```bash
-   .claude/skills/e2e-exe-dev/scripts/exe-run.sh --snapshot nanoclaw-e2e-base
-   .claude/skills/e2e-exe-dev/scripts/exe-run.sh --base nanoclaw-e2e-base --ref my-branch
+   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh --snapshot nanoclaw-e2e-base
+   "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/exe-run.sh --base nanoclaw-e2e-base --ref my-branch
    ```
 
    VM names are global across exe.dev (they become `<name>.exe.xyz`), so
@@ -117,7 +124,7 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 
 ```bash
 git clone <repo> nanoclaw && cd nanoclaw
-NANOCLAW_E2E_KEY_FILE=/path/to/key bash .claude/skills/e2e-exe-dev/scripts/e2e-install.sh
+NANOCLAW_E2E_KEY_FILE=/path/to/key bash "${CLAUDE_PLUGIN_ROOT}"/skills/e2e-exe-dev/scripts/e2e-install.sh
 ```
 
 Env it honors: `NANOCLAW_E2E_ROOT`, `NANOCLAW_E2E_KEY_FILE`,
@@ -230,5 +237,5 @@ block every step prints (`setup/status.ts`).
 ## Teardown
 
 `ssh exe.dev rm <name>` when done — the VM's persistent disk holds the vault
-secret. Nothing is left in this repo: the skill is instruction plus its own
-`scripts/`, so there is no `REMOVE.md`.
+secret. Nothing is written into the NanoClaw checkout; uninstall the plugin
+with `/plugin uninstall nanoclaw-e2e@nanoclaw-dev-tools`.

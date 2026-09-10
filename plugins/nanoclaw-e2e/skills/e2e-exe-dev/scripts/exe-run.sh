@@ -30,6 +30,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+grep -q '"name": *"nanoclaw"' package.json 2>/dev/null \
+  || { echo "run this from the root of a NanoClaw checkout (it reads that checkout's origin and HEAD)" >&2; exit 65; }
 REF="$(git rev-parse HEAD)"
 REPO="$(git remote get-url origin)"
 KEY_FILE="$HOME/.nanoclaw-e2e/anthropic_key"
