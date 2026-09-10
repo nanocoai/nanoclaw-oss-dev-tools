@@ -79,9 +79,12 @@ if [ -n "$BASE" ]; then
 else
   CREATED="$(ssh exe.dev new --name="$NAME" --cpu="$CPU" --memory="$MEMORY" --disk="$DISK" --no-email --json | tee /dev/stderr)"
 fi
+# The lobby answers a taken name with a plain "name … is not available" line
+# and no record (VM names are global across exe.dev, like hostnames), so an
+# empty resolution here means the VM was not created.
 HOST="$(printf '%s' "$CREATED" | ssh_dest_of "$NAME" 2>/dev/null || true)"
 [ -n "$HOST" ] || HOST="$(ssh exe.dev ls --json | ssh_dest_of "$NAME")"
-[ -n "$HOST" ] || { echo "[exe-run] could not resolve ssh_dest for $NAME (try: ssh exe.dev ls --json)" >&2; exit 69; }
+[ -n "$HOST" ] || { echo "[exe-run] $NAME was not created (name taken? see the lobby output above; try another --name)" >&2; exit 69; }
 
 # First contact with a fresh VM would otherwise block on the host-key prompt.
 VM=(ssh -o StrictHostKeyChecking=accept-new "$HOST")
@@ -111,6 +114,10 @@ set -e
 if [ "$RC" -eq 0 ] && [ -n "$SNAPSHOT" ]; then
   echo "[exe-run] snapshotting $NAME -> $SNAPSHOT"
   ssh exe.dev cp "$NAME" "$SNAPSHOT"
+  if [ -z "$(ssh exe.dev ls --json | ssh_dest_of "$SNAPSHOT")" ]; then
+    echo "[exe-run] snapshot $SNAPSHOT was not created (name taken? pick a globally unique one)" >&2
+    RC=70
+  fi
 fi
 if [ "$RC" -eq 0 ] && [ "$RM" -eq 1 ]; then
   echo "[exe-run] deleting $NAME"

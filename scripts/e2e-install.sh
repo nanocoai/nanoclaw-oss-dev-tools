@@ -20,6 +20,8 @@
 #   NANOCLAW_E2E_TZ            IANA zone written to .env (default: UTC)
 #   NANOCLAW_E2E_KEEP_AGENT    1 (default) keeps the e2e agent so `verify` sees
 #                              a registered group; 0 deletes it after the ping
+#   NANOCLAW_E2E_FORCE_AUTH    1 replaces an existing vault secret with the key
+#                              file (token rotation on a --base VM)
 #
 # Exit codes: 0 pass · 1 a step failed (see the status block above the failure
 # and logs/e2e/<step>.log) · 2 ping got no reply · 3 CLI socket unreachable.
@@ -48,7 +50,10 @@ STATUS=""
 step() {
   local name="$1"; shift
   local out="$LOGS/$name.log"
-  say "step $name $*"
+  # Never echo a secret: the auth step carries the token as `--value <tok>`.
+  local shown="" prev=""
+  for a in "$@"; do [ "$prev" = "--value" ] && a="<redacted>"; shown="$shown $a"; prev="$a"; done
+  say "step $name$shown"
   set +e
   pnpm exec tsx setup/index.ts --step "$name" "$@" </dev/null 2>&1 | tee "$out"
   local rc=${PIPESTATUS[0]}
@@ -111,7 +116,13 @@ export PATH="$HOME/.local/bin:$PATH"; hash -r
 # Auth: the wizard's runAuthStep short-circuits when the vault already holds an
 # anthropic secret; mirror that, otherwise seed it the way setup/auth.ts does.
 step auth --check || true
-if [ "$STATUS" = "missing" ]; then
+# NANOCLAW_E2E_FORCE_AUTH=1 replaces an existing vault secret (e.g. after
+# rotating the token on a --base VM whose snapshot still holds the old one).
+if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ] && [ "$STATUS" = "success" ]; then
+  [ -r "$KEY_FILE" ] || die "NANOCLAW_E2E_FORCE_AUTH=1 but $KEY_FILE is unreadable"
+  step auth --create --force --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create --force failed"
+  [ "$STATUS" = "success" ] || die "auth --create --force reported $STATUS"
+elif [ "$STATUS" = "missing" ]; then
   [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
   # --value rides argv into the step (which then execFileSync's onecli) — it
   # is visible to `ps` on this machine for the duration. Disposable VMs only.

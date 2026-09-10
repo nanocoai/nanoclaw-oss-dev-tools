@@ -92,9 +92,12 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 3. **Bake a base VM** once the run is green, then clone it for every later run:
 
    ```bash
-   .claude/skills/e2e-exe-dev/scripts/exe-run.sh --snapshot nanoclaw-base
-   .claude/skills/e2e-exe-dev/scripts/exe-run.sh --base nanoclaw-base --ref my-branch
+   .claude/skills/e2e-exe-dev/scripts/exe-run.sh --snapshot nanoclaw-e2e-base
+   .claude/skills/e2e-exe-dev/scripts/exe-run.sh --base nanoclaw-e2e-base --ref my-branch
    ```
+
+   VM names are global across exe.dev (they become `<name>.exe.xyz`), so
+   pick a distinctive snapshot name — plain `nanoclaw-base` is already taken.
 
    Every step is idempotent against the cloned state: `onecli --reuse` when
    `.env` already has `ONECLI_URL`, `auth --check` short-circuits on an
@@ -121,7 +124,9 @@ Env it honors: `NANOCLAW_E2E_ROOT`, `NANOCLAW_E2E_KEY_FILE`,
 `NANOCLAW_ONECLI_API_HOST` + `NANOCLAW_ONECLI_API_TOKEN` (remote gateway
 instead of a local install — the same vars `setup/auto.ts` reads),
 `NANOCLAW_DISPLAY_NAME`, `NANOCLAW_E2E_TZ` (default `UTC`),
-`NANOCLAW_E2E_KEEP_AGENT` (default `1`).
+`NANOCLAW_E2E_KEEP_AGENT` (default `1`), `NANOCLAW_E2E_FORCE_AUTH` (`1`
+replaces an existing vault secret with the key file — token rotation on a
+`--base` VM whose snapshot still holds the old one).
 
 ## What the installer calls, and why each call is shaped that way
 
@@ -155,8 +160,19 @@ block every step prints (`setup/status.ts`).
   built on it and never touches `nanoclaw.sh`/`setup:auto`.
 - **No user systemd ⇒ nothing starts.** `setupNohupFallback` writes
   `start-nanoclaw.sh` and reports `SERVICE_LOADED: false`; it does not run
-  it. The installer starts it. `verify.ts` recognises the resulting
-  `nanoclaw.pid`.
+  it. The installer starts it. exe.dev VMs are exactly this shape: systemd
+  is PID 1 but `systemctl --user` fails ("Failed to connect to bus"), so
+  `service` falls back to nohup. `verify.ts` used to check `nanoclaw.pid`
+  only when there was no systemd at all and reported `SERVICE: not_found`
+  here; it now consults the pid file whenever the manager finds nothing
+  (regression test: `setup/verify-nohup.test.ts`).
+- **A non-interactive SSH shell has no `~/.local/bin` on PATH** — `pnpm`,
+  `node`, `onecli` all live there. Prefix ad-hoc commands on the VM with
+  `export PATH="$HOME/.local/bin:$PATH"`; the installer does this itself.
+- **Treat the token as exposed once it has been in any log.** The installer
+  redacts `--value` in its own output, but the OAuth token is long-lived:
+  rotate it (revoke, `claude setup-token`) after a run whose logs left the
+  machine, and re-seed base VMs with `NANOCLAW_E2E_FORCE_AUTH=1`.
 - **Keep the agent, or `verify` fails.** The wizard deletes its `ping_test`
   group after the ping (`scripts/delete-cli-agent.ts`) *before* running
   `verify`, which then relies on a channel deferring its wiring. With no
@@ -208,7 +224,8 @@ block every step prints (`setup/status.ts`).
 | exit `3` (no `data/cli.sock`) | `logs/nanoclaw.error.log` | host crashed at start — read the first ERROR; the upgrade tripwire is not it (`service` stamped the marker) |
 | exit `2` with an auth-error reply | the reply text in `logs/e2e/ping.out` | wrong or expired key in the vault; `onecli secrets` to fix, then re-run (auth step short-circuits, so delete the bad secret first) |
 | exit `2`, no reply at all | `logs/nanoclaw.log` around the ping timestamp, `bin/ncl sessions list` | container failed to spawn (OneCLI "not applied"), or the agent errored — container logs are gone after exit, so check the outbound DB: `pnpm exec tsx scripts/q.ts data/v2-sessions/<group>/<session>/outbound.db "select * from messages_out"` |
-| `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`), or the service isn't detectable the way it was started |
+| `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`); or `SERVICE: not_found` on a nohup-started host — fixed in `setup/verify.ts`, so a checkout older than that fix reports this falsely |
+| `snapshot … was not created` / `NAME was not created` | the lobby line right above it | the VM name is taken globally — choose another |
 
 ## Teardown
 
