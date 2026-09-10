@@ -129,7 +129,20 @@ try:
     record = json.load(sys.stdin)
 except ValueError:
     sys.exit(1)
-if not isinstance(record, dict) or record.get("vm_name") != sys.argv[1]:
+if not isinstance(record, dict):
+    sys.exit(1)
+expected, source = sys.argv[1:]
+name = record.get("vm_name")
+if source:
+    # Current cp responses use name/source; older records use vm_name.
+    # The copy-specific shape must confirm both ends of the operation.
+    if "vm_name" not in record:
+        name = record.get("name")
+        if record.get("source") != source:
+            sys.exit(1)
+    elif "source" in record and record["source"] != source:
+        sys.exit(1)
+if name != expected:
     sys.exit(1)
 dest = record.get("ssh_dest") or record.get("ssh_host") or record.get("dns_name")
 if not isinstance(dest, str) or not dest or dest.startswith("-"):
@@ -137,7 +150,7 @@ if not isinstance(dest, str) or not dest or dest.startswith("-"):
 if any(c.isspace() or ord(c) < 32 for c in dest):
     sys.exit(1)
 print(dest)
-' "$1"
+' "$1" "$2"
 }
 
 echo "[exe-run] vm=$NAME ref=$REF commit=$COMMIT repo=$REPO"
@@ -150,7 +163,7 @@ else
     || fail "VM creation failed" 69
 fi
 printf '%s\n' "$CREATED" >&2
-HOST="$(printf '%s' "$CREATED" | created_host "$NAME")" \
+HOST="$(printf '%s' "$CREATED" | created_host "$NAME" "$BASE")" \
   || fail "$NAME creation was not confirmed (name taken or invalid response); no VM will be contacted or removed" 69
 
 VM=(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=5 "$HOST")
@@ -238,8 +251,14 @@ fi
 
 if [ "$RC" -eq 0 ] && [ -n "$SNAPSHOT" ]; then
   echo "[exe-run] snapshotting $NAME -> $SNAPSHOT"
-  if COPIED="$(ssh -o BatchMode=yes exe.dev cp "$NAME" "$SNAPSHOT" --json)" \
-    && printf '%s' "$COPIED" | created_host "$SNAPSHOT" >/dev/null; then
+  if COPIED="$(ssh -o BatchMode=yes exe.dev cp "$NAME" "$SNAPSHOT" --json)"; then
+    COPY_RC=0
+  else
+    COPY_RC=$?
+  fi
+  printf '%s\n' "$COPIED" >&2
+  if [ "$COPY_RC" -eq 0 ] \
+    && printf '%s' "$COPIED" | created_host "$SNAPSHOT" "$NAME" >/dev/null; then
     echo "[exe-run] snapshot confirmed: $SNAPSHOT"
   else
     echo "[exe-run] snapshot $SNAPSHOT creation was not confirmed; keeping $NAME" >&2

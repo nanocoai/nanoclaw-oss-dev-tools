@@ -54,7 +54,7 @@ tests/test_e2e.py                  offline driver and installer regression tests
 ## Development checks
 
 ```bash
-bash -n skills/e2e-exe-dev/scripts/exe-run.sh skills/e2e-exe-dev/scripts/e2e-install.sh
+for script in skills/*/scripts/*.sh; do bash -n "$script"; done
 python3 -m unittest discover -s tests -v
 ```
 
@@ -62,6 +62,11 @@ Tests use temporary local Git repositories and simulated SSH, Docker and wizard
 commands, with no real credentials or VM provisioning. A temporary Unix socket
 requires an environment that permits local socket creation. Live setup
 compatibility and the last reviewed NanoClaw SHA are recorded in the skill.
+
+The [CI workflow](.github/workflows/ci.yml) runs shell syntax checks, plugin
+manifest validation and the offline regression suite on Linux and macOS for
+every pull request and push to `main`. It uses Python 3.12 and needs no secrets
+or exe.dev account. Live VM installation and inference remain a separate check.
 
 ## License
 
