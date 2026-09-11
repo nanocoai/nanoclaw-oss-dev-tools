@@ -11,6 +11,11 @@ For an installation on an existing Mac, locally or over SSH, use
 [`e2e-macos`](../e2e-macos/SKILL.md). This skill's target workflow is Linux;
 its installer is shared with the Mac driver and its LaunchAgent helper.
 
+For the real public interactive installer, use the companion
+[e2e-wizard](../e2e-wizard/SKILL.md) and this driver's `--interactive` mode.
+The workflow below remains the headless test; its setup repairs and acceptance
+results do not qualify the wizard.
+
 Installs NanoClaw on a disposable exe.dev VM without a human at the keyboard
 and proves the whole loop: message in over the cli channel → host → container
 → Claude → reply out. It reuses the setup wizard's own step processes

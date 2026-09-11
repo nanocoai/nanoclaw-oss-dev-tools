@@ -17,10 +17,16 @@ tags were published for those versions.
 
 ### Added
 
-- A catalog of all three E2E skills, with prerequisites, entry points, exact
+- A catalog of all four E2E skills, with prerequisites, entry points, exact
   live-test evidence and remaining coverage gaps.
 - macOS test-environment notes covering physical hardware, VM and cloud options,
   the deferred MacinCloud evaluation and the merged readiness fix.
+- `e2e-wizard`, an opt-in `--interactive` exe.dev mode and a Proxmox adapter
+  for the public setup wizard, with a real PTY/emulator, strict retained-agent and service proof,
+  sanitized evidence export and fail-closed VM retention.
+- Offline wizard regressions for terminal redraws, reply proof, cancellation,
+  timeouts, process cleanup, redaction, archive validation and lifecycle reuse.
+
 - Two readiness-ordering regressions and live macOS SSH validation with a real
   agent reply and preserved shared services and gateway state.
 

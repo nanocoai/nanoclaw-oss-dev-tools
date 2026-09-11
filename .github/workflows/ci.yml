@@ -46,5 +46,8 @@ jobs:
           for path in Path(".claude-plugin").glob("*.json"):
               json.loads(path.read_text())
           PY
+      - name: Install terminal emulator for wizard tests
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r skills/e2e-wizard/requirements.txt
       - name: Run offline regression tests
         run: python -m unittest discover -s tests -v
