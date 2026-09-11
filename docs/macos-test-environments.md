@@ -7,7 +7,7 @@ an M4 Pro Mac mini passed with the readiness fix now merged in plugin 0.4.1.
 ## Options considered
 
 These are options for macOS testing, not additional implemented skills. The
-[skill catalog](skills-catalog.md) lists the three tools that actually exist.
+[skill catalog](skills-catalog.md) lists the available tools.
 
 | Option | Potential use | Decision and limits |
 |---|---|---|
