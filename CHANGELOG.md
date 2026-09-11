@@ -7,10 +7,20 @@ The initial history below was reconstructed from manifest versions and commits.
 Those entries link to source history; they do not imply that GitHub releases or
 tags were published for those versions.
 
-## [Unreleased]
+## Unreleased
+
+## 0.3.0 - 2026-09-11
 
 ### Added
 
+- `e2e-proxmox`: a fresh unprivileged Debian 13 LXC driver using the shared
+  NanoClaw installer, exact commit selection, guarded container ownership and
+  a local result report. All test guests are retained for inspection.
+- Offline Proxmox driver regressions, including uncertain creation, existing
+  guest protection, credential transport and stale result rejection.
+- Live Proxmox VE 9.2.18 / Debian 13 LXC evidence with a real model reply and
+  successful verification, including regressions for DNS/APT readiness and
+  Docker-group membership before systemd user-session startup.
 - Contribution, security and community guidance, plus bug-report, feature-request
   and pull-request templates.
 - Grouped weekly update proposals for pinned GitHub Actions dependencies.
@@ -88,7 +98,6 @@ tags were published for those versions.
 - Setup, CLI-agent ping and verification composed from NanoClaw's existing steps,
   with instructions from the first live exe.dev run.
 
-[Unreleased]: https://github.com/nanocoai/nanoclaw-oss-dev-tools/compare/efef015f0ddc54c2c2498cf44ababb7f3e1a958b...HEAD
 [0.2.4]: https://github.com/nanocoai/nanoclaw-oss-dev-tools/compare/f56a09a34390d4d64a7ac99212c060f7ed6c9b18...efef015f0ddc54c2c2498cf44ababb7f3e1a958b
 [0.2.3]: https://github.com/nanocoai/nanoclaw-oss-dev-tools/compare/63a6073588f06d11e873f82cd7f3029afccbc8ed...f56a09a34390d4d64a7ac99212c060f7ed6c9b18
 [0.2.2]: https://github.com/nanocoai/nanoclaw-oss-dev-tools/compare/a10bbe32b828b324ab70d26e56f421fd479fc942...63a6073588f06d11e873f82cd7f3029afccbc8ed
