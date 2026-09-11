@@ -1,0 +1,124 @@
+{
+  "name": "fresh-cli",
+  "source_commit": "705c6b9e627ac36a8b4bbc280e5804c6debf9a25",
+  "description": "Fresh Claude installation through the public wizard, with a retained terminal agent and no external messaging channel.",
+  "prompts": [
+    {
+      "id": "start",
+      "prompt": "How would you like to begin?",
+      "select": "Standard setup",
+      "required": true
+    },
+    {
+      "id": "agent",
+      "prompt": "How should we create your first agent?",
+      "select": "Fresh agent",
+      "required": true
+    },
+    {
+      "id": "echo",
+      "prompt": "Enable Echo\u2019s hardened agent image? Open the perks dashboard in your browser?",
+      "select": "No"
+    },
+    {
+      "id": "image",
+      "prompt": "Where should your assistant's sandbox image come from?",
+      "select": "Build it here"
+    },
+    {
+      "id": "auth",
+      "prompt": "How would you like to connect to Claude?",
+      "select_from": "auth_option",
+      "required": true
+    },
+    {
+      "id": "credential",
+      "prompt_from": "credential_prompt",
+      "text_from": "credential",
+      "required": true
+    },
+    {
+      "id": "echo-reminder",
+      "prompt": "Before starting NanoClaw, enable Echo\u2019s hardened image? Open the perks dashboard?",
+      "select": "No"
+    },
+    {
+      "id": "name",
+      "prompt": "What should your assistant call you?",
+      "text_from": "display_name",
+      "required": true
+    },
+    {
+      "id": "next",
+      "prompt": "What next?",
+      "select": "Pause here and chat with your agent from the terminal",
+      "required": true
+    },
+    {
+      "id": "chat",
+      "prompt": "Try a quick hello \u2014 or press Enter to continue setup",
+      "text_from": "challenge",
+      "required": true
+    },
+    {
+      "id": "chat-end",
+      "prompt": "Another message? Press Enter to continue setup",
+      "text": "",
+      "require_reply": true,
+      "required": true
+    },
+    {
+      "id": "timezone-utc",
+      "prompt": "Your system reports UTC as the timezone. Is that right, or are you somewhere else?",
+      "select": "Keep UTC"
+    },
+    {
+      "id": "timezone-unknown",
+      "prompt": "Your system didn't expose a timezone. Which one are you in?",
+      "select": "Leave it as UTC"
+    },
+    {
+      "id": "channel",
+      "prompt": "Want to chat with your assistant from your phone?",
+      "select": "Skip for now",
+      "required": true
+    },
+    {
+      "id": "slack-reminder",
+      "prompt": "Before you finish, enable Slack for your agent too? Open the perks dashboard?",
+      "select": "No"
+    }
+  ],
+  "required_steps": [
+    "bootstrap",
+    "environment",
+    "container",
+    "onecli",
+    "auth",
+    "mounts",
+    "service",
+    "cli-agent",
+    "cleanup-cli-agent",
+    "create-terminal-agent",
+    "timezone",
+    "verify"
+  ],
+  "required_inputs": {
+    "start_choice": "default",
+    "template_source": "none",
+    "first_chat_choice": "chat",
+    "channel_choice": "skip"
+  },
+  "verify": {
+    "STATUS": "success",
+    "SERVICE": "running",
+    "CREDENTIALS": "configured",
+    "CONTAINER_RUNTIME": "docker",
+    "MOUNT_ALLOWLIST": "configured",
+    "IMAGE_SOURCE": "local",
+    "IMAGE_SOURCE_ACTUAL": "local",
+    "CONFIGURED_CHANNELS": "",
+    "CHANNEL_AUTH": "{}"
+  },
+  "completed_text": "You're ready! Chat with"
+}

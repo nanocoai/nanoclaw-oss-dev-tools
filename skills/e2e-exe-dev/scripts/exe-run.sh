@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# exe-run.sh — create (or clone) an exe.dev VM and run e2e-install.sh on it.
+# exe-run.sh — create (or clone) an exe.dev VM and run a NanoClaw E2E test.
 #
 # Run from the NanoClaw checkout root, using this installed script's full path.
 #
@@ -17,6 +17,9 @@
 #   --memory    memory size (default 8GB)
 #   --disk      disk size (default 40GB)
 #   --result-file  record this invocation locally, then export installer result
+#   --interactive  drive the real public wizard (fresh VM, requires --result-file)
+#   --artifacts-dir  sanitized wizard evidence (default <result-file>.artifacts)
+#   --wizard-timeout  total PTY timeout in seconds (default 1200)
 #
 # The installer comes from this skill, not the NanoClaw checkout being tested.
 # Keys and forwarded installer settings travel over SSH stdin.
@@ -27,12 +30,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REF=HEAD REPO="" KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
 NAME="" BASE="" SNAPSHOT="" RM=0 CPU=4 MEMORY=8GB DISK=40GB
-RESULT_FILE=""
+RESULT_FILE="" INTERACTIVE=0 ARTIFACTS_DIR="" WIZARD_TIMEOUT=1200
+WIZARD_DIR="$HERE/../../e2e-wizard"
+RUN_ID=""
 
 fail() { echo "[exe-run] $1" >&2; exit "${2:-64}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name|--ref|--repo|--key-file|--base|--snapshot|--cpu|--memory|--disk|--result-file)
+    --name|--ref|--repo|--key-file|--base|--snapshot|--cpu|--memory|--disk|--result-file|--artifacts-dir|--wizard-timeout)
       [ $# -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] || fail "$1 requires a value" ;;
   esac
   case "$1" in
@@ -47,7 +52,10 @@ while [ $# -gt 0 ]; do
     --memory) MEMORY="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
     --result-file) RESULT_FILE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,23p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --interactive) INTERACTIVE=1; shift ;;
+    --artifacts-dir) ARTIFACTS_DIR="$2"; shift 2 ;;
+    --wizard-timeout) WIZARD_TIMEOUT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) fail "unknown flag: $1" ;;
   esac
 done
@@ -98,6 +106,21 @@ if [ -n "$RESULT_FILE" ]; then
   # commit stays null because no tested revision has been confirmed.
   write_driver_result running "" || fail "could not initialize local result: $RESULT_FILE" 74
   trap finish_driver_result EXIT
+fi
+if [ "$INTERACTIVE" -eq 1 ]; then
+  [ -n "$RESULT_FILE" ] || fail "--interactive requires --result-file"
+  [ -z "$BASE" ] || fail "the fresh wizard scenario does not accept --base"
+  [[ "$WIZARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail "invalid wizard timeout"
+  [ -n "$ARTIFACTS_DIR" ] || ARTIFACTS_DIR="$RESULT_FILE.artifacts"
+  [ ! -e "$ARTIFACTS_DIR" ] && [ ! -L "$ARTIFACTS_DIR" ] && [ -d "$(dirname "$ARTIFACTS_DIR")" ] \
+    && [ -w "$(dirname "$ARTIFACTS_DIR")" ] || fail "wizard artifacts need a new path with a writable parent"
+  for file in requirements.txt scenarios/fresh-cli.json scripts/wizard-run.py scripts/wizard-install.sh scripts/collect-wizard.py; do
+    [ -r "$WIZARD_DIR/$file" ] || fail "install the companion e2e-wizard skill: missing $file" 66
+  done
+  command -v tar >/dev/null || fail "tar is required for wizard evidence" 69
+  RUN_ID="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+elif [ -n "$ARTIFACTS_DIR" ] || [ "$WIZARD_TIMEOUT" != 1200 ]; then
+  fail "wizard artifact/timeout options require --interactive"
 fi
 for cmd in git ssh; do command -v "$cmd" >/dev/null || fail "$cmd is required" 69; done
 grep -q '"name": *"nanoclaw"' package.json 2>/dev/null \
@@ -179,12 +202,20 @@ done
 # chmod also covers a file inherited from a base VM; umask alone does not.
 PHASE=upload
 "${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e; cat > ~/.nanoclaw-e2e/anthropic_key; chmod 600 ~/.nanoclaw-e2e/anthropic_key' < "$KEY_FILE"
-"${VM[@]}" 'set -e; cat > ~/e2e-install.sh; chmod +x ~/e2e-install.sh' < "$HERE/e2e-install.sh"
+if [ "$INTERACTIVE" -eq 1 ]; then
+  COPYFILE_DISABLE=1 tar -C "$WIZARD_DIR" -cf - requirements.txt scenarios/fresh-cli.json \
+    scripts/wizard-run.py scripts/wizard-install.sh scripts/collect-wizard.py | \
+    "${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e/wizard; tar -xf - -C ~/.nanoclaw-e2e/wizard'
+else
+  "${VM[@]}" 'set -e; cat > ~/e2e-install.sh; chmod +x ~/e2e-install.sh' < "$HERE/e2e-install.sh"
+fi
 
 # Forward only documented settings. A remote gateway token must never appear
 # in an SSH command, process argument or driver log.
-python3 - <<'PY' | "${VM[@]}" 'set -e; umask 077; cat > ~/.nanoclaw-e2e/run-env.sh; chmod 600 ~/.nanoclaw-e2e/run-env.sh'
-import os, shlex
+python3 - "$INTERACTIVE" <<'PY' | "${VM[@]}" 'set -e; umask 077; cat > ~/.nanoclaw-e2e/run-env.sh; chmod 600 ~/.nanoclaw-e2e/run-env.sh'
+import os, shlex, sys
+if sys.argv[1] == "1":
+    sys.exit(0)  # The wizard takes every product choice through its UI.
 for name in (
     "NANOCLAW_ONECLI_API_HOST", "NANOCLAW_ONECLI_API_TOKEN",
     "NANOCLAW_DISPLAY_NAME", "NANOCLAW_E2E_TZ",
@@ -196,6 +227,10 @@ PY
 
 REPO_QUOTED="$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$REPO")"
 PHASE=checkout
+INSTALL_COMMAND='NANOCLAW_E2E_ROOT=$HOME/nanoclaw bash ~/e2e-install.sh'
+if [ "$INTERACTIVE" -eq 1 ]; then
+  INSTALL_COMMAND="bash ~/.nanoclaw-e2e/wizard/scripts/wizard-install.sh --run-id '$RUN_ID' --timeout '$WIZARD_TIMEOUT'"
+fi
 set +e
 "${VM[@]}" "set -e
   if [ -d ~/nanoclaw/.git ]; then
@@ -214,11 +249,24 @@ set +e
   test \"\$(git -C ~/nanoclaw rev-parse HEAD)\" = '$COMMIT'
   . ~/.nanoclaw-e2e/run-env.sh
   rm ~/.nanoclaw-e2e/run-env.sh
-  cd ~/nanoclaw && NANOCLAW_E2E_ROOT=\$HOME/nanoclaw bash ~/e2e-install.sh"
+  cd ~/nanoclaw && $INSTALL_COMMAND"
 RC=$?
 set -e
 
-if [ -n "$RESULT_FILE" ]; then
+if [ "$INTERACTIVE" -eq 1 ]; then
+  PHASE=export
+  # Only the runner-owned sanitized directory crosses SSH. Validate archive
+  # membership, checksums, credentials and this run before publishing a pass.
+  if "${VM[@]}" 'COPYFILE_DISABLE=1 tar -C ~/nanoclaw/logs/e2e-wizard -cf - .' | \
+    python3 "$WIZARD_DIR/scripts/collect-wizard.py" \
+      --artifacts-dir "$ARTIFACTS_DIR" --result-file "$RESULT_FILE" \
+      --commit "$COMMIT" --run-id "$RUN_ID" --exit-code "$RC" --key-file "$KEY_FILE"; then
+    RESULT_EXPORTED=1
+  else
+    echo "[exe-run] could not export sanitized wizard evidence; keeping $NAME" >&2
+    [ "$RC" -ne 0 ] || RC=74
+  fi
+elif [ -n "$RESULT_FILE" ]; then
   [ "$RC" -ne 0 ] || PHASE=export
   if "${VM[@]}" 'cat ~/nanoclaw/logs/e2e/result.json' | python3 -c '
 import json, os, sys, tempfile

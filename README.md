@@ -18,6 +18,7 @@ setup steps and record the exact commit tested.
 | [e2e-exe-dev](skills/e2e-exe-dev/SKILL.md) | A headless NanoClaw install and real model ping on a fresh machine, or a repeat run from a cached exe.dev VM. |
 | [e2e-proxmox](skills/e2e-proxmox/SKILL.md) | The same install and model ping in a new unprivileged Debian 13 LXC on your Proxmox host, with a retained guest and local report. |
 | [e2e-macos](skills/e2e-macos/SKILL.md) | A native install and model ping on an existing Mac, locally or over SSH, with a separate checkout and preservation checks for existing services and OneCLI. |
+| [e2e-wizard](skills/e2e-wizard/SKILL.md) | Drive the real public setup wizard through a PTY on a fresh exe.dev VM or Proxmox LXC, with a retained agent reply, service proof and sanitized evidence. |
 
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
 Codex, Claude Code, OpenCode, or another agent that supports the format. The
@@ -32,6 +33,8 @@ The commands below use exe.dev. For other targets, follow the
 [local/SSH Mac workflow](skills/e2e-macos/SKILL.md).
 The [macOS test environment notes](docs/macos-test-environments.md) record the
 physical-hardware plan and the deferred MacinCloud evaluation.
+To test the public interactive installer, follow the
+[wizard workflow](skills/e2e-wizard/SKILL.md); the commands below test headless setup.
 
 ### 1. Install the skill
 

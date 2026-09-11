@@ -29,13 +29,17 @@ share a directory or relying on one agent's environment variables.
 
 ## Local checks
 
-The regression suite uses Python's standard library, Bash and Git. CI uses
+The regression suite uses Python, Bash and Git. Wizard tests also use the
+hash-pinned terminal emulator dependency. CI uses
 Python 3.12 on Linux and macOS. A local Unix socket must be permitted by your
 execution environment.
 
 From this repository's root:
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes --only-binary=:all: -r skills/e2e-wizard/requirements.txt
 for script in skills/*/scripts/*.sh; do bash -n "$script" || exit; done
 python3 -m unittest discover -s tests -v
 git diff --check
