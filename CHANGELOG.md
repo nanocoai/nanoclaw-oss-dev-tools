@@ -9,6 +9,25 @@ tags were published for those versions.
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-11
+
+### Added
+
+- `e2e-macos` for native NanoClaw installation tests on an existing Mac, locally
+  or over SSH, with a fresh persistent checkout and explicit OneCLI gateway choice.
+- A per-checkout LaunchAgent helper that preserves other services and the global
+  `ncl` link, plus before/after checks for shared services, containers and credentials.
+- Offline regressions for Mac transport, ownership, existing gateway protection,
+  service isolation, exact source/result identity and retained failure evidence.
+- Live local macOS 26.6.1 / arm64 evidence with a real CLI-agent reply,
+  successful NanoClaw verification and shared-state preservation checks.
+
+### Changed
+
+- The shared E2E installer handles Mac Docker readiness separately from Linux,
+  supports explicit gateway reuse without credential imports, and bounds the model
+  probe using Python instead of requiring GNU `timeout`.
+
 ## 0.3.0 - 2026-09-11
 
 ### Added

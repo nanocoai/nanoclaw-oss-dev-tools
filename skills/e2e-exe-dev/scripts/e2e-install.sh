@@ -2,7 +2,8 @@
 # e2e-install.sh — headless NanoClaw install + CLI-channel ping, for e2e runs.
 #
 # Runs ON the target machine (an exe.dev VM, a CI runner, any Debian/Ubuntu
-# box with sudo, git and python3). Composes the setup wizard's own steps — the
+# box with sudo, git and python3; the e2e-macos driver prepares a Mac).
+# Composes the setup wizard's own steps — the
 # `pnpm exec tsx setup/index.ts --step <name>` spawn setup/lib/runner.ts uses —
 # in the wizard's order (setup/auto.ts), with every prompt replaced by an env
 # var or pre-seeded state. Ends with the same round-trip the wizard's
@@ -22,6 +23,10 @@
 #                              a registered group; 0 deletes it after the ping
 #   NANOCLAW_E2E_FORCE_AUTH    1 replaces an existing vault secret with the key
 #                              file (token rotation on a --base VM)
+#   NANOCLAW_E2E_ONECLI_MODE   auto (default), reuse, or install; Mac drivers
+#                              require an explicit existing/new gateway choice
+#   NANOCLAW_E2E_REQUIRE_EXISTING_AUTH  1 forbids creating/replacing a vault secret
+#   NANOCLAW_E2E_MACOS_SERVICE_HELPER  e2e-macos's per-checkout LaunchAgent helper
 #
 # Exit codes: 0 pass · 1 a step failed (see the status block above the failure
 # and logs/e2e/<step>.log) · 2 ping got no reply · 3 CLI socket unreachable.
@@ -41,6 +46,17 @@ export NANOCLAW_NO_DIAGNOSTICS=1 NANOCLAW_SKIP_CLAUDE_ASSIST=1
 # channel (its has() reads process.env) — keep the report about this install.
 unset GITHUB_TOKEN
 export PATH="$HOME/.local/bin:$PATH"
+PLATFORM="$(uname -s)"
+if [ "$PLATFORM" = Darwin ]; then
+  [ -f "${NANOCLAW_E2E_MACOS_SERVICE_HELPER:-}" ] || {
+    echo '[e2e] FAIL: use e2e-macos for native Mac runs; its service helper is required' >&2
+    exit 1
+  }
+fi
+case "${NANOCLAW_E2E_ONECLI_MODE:-auto}" in
+  auto|reuse|install) ;;
+  *) echo '[e2e] FAIL: invalid NANOCLAW_E2E_ONECLI_MODE' >&2; exit 1 ;;
+esac
 KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
 LOGS="$ROOT/logs/e2e"
 mkdir -p "$LOGS"
@@ -128,6 +144,43 @@ field() {
   printf '%s' "$LAST_BLOCK" | awk -v k="$1: " 'index($0, k)==1 {print substr($0, length(k)+1)}' | tail -n1
 }
 
+# macOS does not ship GNU timeout. Bound the chat process and its children
+# with Python, already required for result.json, on every platform.
+run_bounded() {
+  python3 - "$@" <<'PY'
+import os, signal, subprocess, sys
+seconds = float(sys.argv[1])
+process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+
+def stop_group():
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    # A child can keep stdout open after its parent exits. Terminate the whole
+    # group even when the leader has already responded to SIGTERM.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+try:
+    code = process.wait(timeout=seconds)
+except subprocess.TimeoutExpired:
+    stop_group()
+    code = 124
+except KeyboardInterrupt:
+    stop_group()
+    code = 130
+sys.exit(code if code >= 0 else 128 - code)
+PY
+}
+
 # ── 1. Basics: Node 22 + pnpm + `pnpm install --frozen-lockfile` ──────────────
 # setup.sh is the launcher's prompt-free bootstrap (nanoclaw.sh runs it under a
 # spinner); it calls setup/install-node.sh when Node is missing or < 22.
@@ -146,27 +199,35 @@ command -v pnpm >/dev/null 2>&1 || die "pnpm not on PATH after setup.sh"
 PHASE=docker
 # setup/container.ts does this for its own step, but the onecli step (a
 # docker-compose install) needs the daemon first — so handle it once, here.
-if ! command -v docker >/dev/null 2>&1; then
-  bash setup/install-docker.sh 2>&1 | tee "$LOGS/install-docker.log"
-fi
-if ! docker info >/dev/null 2>&1; then
-  sudo systemctl start docker 2>/dev/null || sudo service docker start 2>/dev/null || true
-fi
-if ! docker info >/dev/null 2>&1; then
-  if [ "${NANOCLAW_E2E_SG:-}" = 1 ]; then die "docker socket still not accessible under sg docker"; fi
-  if [ "$(id -u)" -eq 0 ]; then die "docker daemon not reachable"; fi
-  # Supplementary groups are fixed at login; re-exec with docker as the
-  # primary group (same trick as setup/container.ts).
-  if ! id -nG | tr ' ' '\n' | grep -qx docker; then sudo usermod -aG docker "$USER"; fi
-  say "re-executing under sg docker"
-  export NANOCLAW_E2E_SG=1
-  exec sg docker -c "bash $(printf '%q' "${BASH_SOURCE[0]}")"
+if [ "$PLATFORM" = Darwin ]; then
+  docker info >/dev/null 2>&1 || die "Docker is not ready; prepare Docker on the target Mac before running e2e-macos"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    bash setup/install-docker.sh 2>&1 | tee "$LOGS/install-docker.log"
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    sudo systemctl start docker 2>/dev/null || sudo service docker start 2>/dev/null || true
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    if [ "${NANOCLAW_E2E_SG:-}" = 1 ]; then die "docker socket still not accessible under sg docker"; fi
+    if [ "$(id -u)" -eq 0 ]; then die "docker daemon not reachable"; fi
+    # Supplementary groups are fixed at login; re-exec with docker as the
+    # primary group (same trick as setup/container.ts).
+    if ! id -nG | tr ' ' '\n' | grep -qx docker; then sudo usermod -aG docker "$USER"; fi
+    say "re-executing under sg docker"
+    export NANOCLAW_E2E_SG=1
+    exec sg docker -c "bash $(printf '%q' "${BASH_SOURCE[0]}")"
+  fi
 fi
 
 # ── 3. Wizard steps, in setup/auto.ts order ───────────────────────────────────
 step environment || die "environment step failed"
 
-if [ -n "${NANOCLAW_ONECLI_API_HOST:-}" ]; then
+if [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = reuse ]; then
+  step onecli --reuse || die "onecli (reuse) failed"
+elif [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = install ]; then
+  step onecli || die "onecli install failed"
+elif [ -n "${NANOCLAW_ONECLI_API_HOST:-}" ]; then
   step onecli --remote-url "$NANOCLAW_ONECLI_API_HOST" || die "onecli (remote) failed"
 elif command -v onecli >/dev/null 2>&1 && [ -f .env ] && grep -q '^ONECLI_URL=' .env; then
   step onecli --reuse || die "onecli (reuse) failed"
@@ -178,6 +239,10 @@ export PATH="$HOME/.local/bin:$PATH"; hash -r
 # Auth: the wizard's runAuthStep short-circuits when the vault already holds an
 # anthropic secret; mirror that, otherwise seed it the way setup/auth.ts does.
 step auth --check || true
+if [ "${NANOCLAW_E2E_REQUIRE_EXISTING_AUTH:-0}" = 1 ]; then
+  [ "$STATUS" = success ] || die "the selected gateway has no usable existing Anthropic credential; it was not changed"
+  [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" != 1 ] || die "credential replacement is disabled for this shared gateway"
+fi
 # NANOCLAW_E2E_FORCE_AUTH=1 replaces an existing vault secret (e.g. after
 # rotating the token on a --base VM whose snapshot still holds the old one).
 if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ] && [ "$STATUS" = "success" ]; then
@@ -203,8 +268,14 @@ step timezone --tz "${NANOCLAW_E2E_TZ:-UTC}" || die "timezone step failed"
 # Service: stamps the upgrade marker, builds, installs systemd (system unit as
 # root, user unit otherwise) or — with no user systemd — only WRITES the nohup
 # wrapper without starting it (SERVICE_LOADED: false). Start it ourselves.
-step service || die "service step failed"
-SERVICE_TYPE="$(field SERVICE_TYPE)"
+if [ "$PLATFORM" = Darwin ]; then
+  PHASE=service
+  python3 "$NANOCLAW_E2E_MACOS_SERVICE_HELPER" 2>&1 | tee "$LOGS/service.log"
+  SERVICE_TYPE=launchd
+else
+  step service || die "service step failed"
+  SERVICE_TYPE="$(field SERVICE_TYPE)"
+fi
 if [ "$SERVICE_TYPE" = "nohup" ]; then
   say "no systemd — starting via ./start-nanoclaw.sh"
   bash ./start-nanoclaw.sh
@@ -230,7 +301,7 @@ say "ping (first container boot: 30–60s)"
 PHASE=ping
 PING_RESULT=no_reply
 set +e
-PING_OUT="$(timeout 150 pnpm --silent run chat ping 2>"$LOGS/ping.err")"
+PING_OUT="$(run_bounded 150 pnpm --silent run chat ping 2>"$LOGS/ping.err")"
 PING_RC=$?
 set -e
 printf '%s\n' "$PING_OUT" | tee "$LOGS/ping.out"

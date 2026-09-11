@@ -6,6 +6,7 @@ No real VMs, external network, Docker daemon or credentials are used.
 
 import json
 import os
+import signal
 from pathlib import Path
 import shutil
 import socket
@@ -465,10 +466,14 @@ class InstallerTests(Sandbox):
         self.addCleanup(self.sock.close)
         self.sock.bind(str(self.checkout / "data/cli.sock"))
         self.executable("docker", "#!/bin/sh\nexit 0\n")
+        self.executable("uname", "#!/bin/sh\necho Linux\n")
         self.executable("timeout", '#!/bin/sh\nshift\nexec "$@"\n')
         self.executable("pnpm", PYTHON + r'''
 import os, sys
 args = sys.argv[1:]
+if os.environ.get("MOCK_STEP_CALLS"):
+    with open(os.environ["MOCK_STEP_CALLS"], "a") as calls:
+        calls.write(repr(args) + "\n")
 if "--step" in args:
     name = args[args.index("--step") + 1]
     if os.environ.get("MOCK_NO_BLOCK") == name:
@@ -591,6 +596,93 @@ sys.exit(0)
         run = self.run_installer()
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertTrue(self.result()["tracked_changes_at_start"])
+
+    def macos(self):
+        self.executable("uname", "#!/bin/sh\necho Darwin\n")
+        helper = self.root / "macos-service.py"
+        helper.write_text('print("native service started")\n')
+        self.env["NANOCLAW_E2E_MACOS_SERVICE_HELPER"] = str(helper)
+        calls = self.root / "step-calls"
+        self.env["MOCK_STEP_CALLS"] = str(calls)
+        return helper, calls
+
+    def test_mac_uses_owned_service_helper_and_no_gnu_timeout(self):
+        _, calls = self.macos()
+        self.executable("timeout", "#!/bin/sh\nexit 99\n")
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["service_type"], "launchd")
+        self.assertNotIn("'--step', 'service'", calls.read_text())
+        self.assertIn("native service started", run.stdout)
+
+    def test_mac_refuses_unready_docker_without_linux_repair_commands(self):
+        self.macos()
+        self.executable("docker", "#!/bin/sh\nexit 1\n")
+        sentinel = self.root / "linux-repair"
+        self.executable("sudo", '#!/bin/sh\ntouch "' + str(sentinel) + '"\nexit 1\n')
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertEqual(self.result()["phase"], "docker")
+        self.assertFalse(sentinel.exists())
+
+    def test_mac_service_failure_cannot_reach_ping_or_pass(self):
+        helper, calls = self.macos()
+        helper.write_text('import sys\nsys.exit(8)\n')
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 8)
+        self.assertEqual(self.result()["phase"], "service")
+        self.assertEqual(self.result()["ping"], "not_run")
+        self.assertNotIn("'chat'", calls.read_text())
+
+    def test_explicit_gateway_reuse_never_falls_back_to_install(self):
+        _, calls = self.macos()
+        self.env["NANOCLAW_E2E_ONECLI_MODE"] = "reuse"
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("'--step', 'onecli', '--reuse'", calls.read_text())
+
+    def test_shared_gateway_missing_credential_is_never_seeded(self):
+        _, calls = self.macos()
+        key = self.root / "credential"
+        key.write_text("MUST_NOT_IMPORT")
+        self.env.update(NANOCLAW_E2E_REQUIRE_EXISTING_AUTH="1", MOCK_AUTH_STATUS="missing",
+                        NANOCLAW_E2E_KEY_FILE=str(key))
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertNotIn("--create", calls.read_text())
+        self.assertNotIn("MUST_NOT_IMPORT", run.stdout + run.stderr)
+
+    def test_shared_gateway_force_auth_is_refused(self):
+        _, calls = self.macos()
+        self.env.update(NANOCLAW_E2E_REQUIRE_EXISTING_AUTH="1", NANOCLAW_E2E_FORCE_AUTH="1")
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertNotIn("--create", calls.read_text())
+
+    def test_probe_timeout_kills_children_that_keep_output_open(self):
+        source = (SCRIPTS / "e2e-install.sh").read_text()
+        start = source.index("run_bounded() {")
+        end = source.index("\n}\n", start) + 3
+        function = self.root / "bounded.sh"
+        function.write_text(source[start:end] + '\nrun_bounded "$@"\n')
+        child_pid = self.root / "child-pid"
+        child = self.root / "child.py"
+        child.write_text('import os,signal,time\nfrom pathlib import Path\n'
+                         'signal.signal(signal.SIGTERM,signal.SIG_IGN)\n'
+                         + 'Path(' + repr(str(child_pid)) + ').write_text(str(os.getpid()))\ntime.sleep(30)\n')
+        parent = self.root / "parent.py"
+        parent.write_text('import subprocess,sys,time\n'
+                          + 'subprocess.Popen([sys.executable,' + repr(str(child)) + '])\ntime.sleep(30)\n')
+        try:
+            run = subprocess.run(["bash", str(function), "1", sys.executable, str(parent)],
+                                 env=self.env, capture_output=True, text=True, timeout=7)
+            self.assertEqual(run.returncode, 124, run.stderr)
+        finally:
+            if child_pid.exists():
+                try:
+                    os.kill(int(child_pid.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
 
 if __name__ == "__main__":

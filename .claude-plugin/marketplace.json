@@ -8,7 +8,7 @@
     {
       "name": "nanoclaw-e2e",
       "source": "./",
-      "description": "Install NanoClaw end to end and assert a real agent reply on exe.dev VMs, Proxmox LXC containers, or a disposable Debian/Ubuntu machine."
+      "description": "Install and verify NanoClaw with a real agent reply on exe.dev VMs, Proxmox LXCs, disposable Debian/Ubuntu machines, or existing Macs locally and over SSH."
     }
   ]
 }
