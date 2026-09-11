@@ -17,6 +17,10 @@ tags were published for those versions.
 
 ### Added
 
+- A catalog of all three E2E skills, with prerequisites, entry points, exact
+  live-test evidence and remaining coverage gaps.
+- macOS test-environment notes covering physical hardware, VM and cloud options,
+  the deferred MacinCloud evaluation and the merged readiness fix.
 - Two readiness-ordering regressions and live macOS SSH validation with a real
   agent reply and preserved shared services and gateway state.
 
