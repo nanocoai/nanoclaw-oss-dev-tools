@@ -9,19 +9,23 @@ Reproduce a clean install, test a branch on a real machine, and check that a
 message reaches the agent and gets a reply. The tools drive NanoClaw's existing
 setup steps and record the exact commit tested.
 
-[Skill reference](skills/e2e-exe-dev/SKILL.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
+[Skills](#whats-included) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
 ## What's included
 
 | Skill | Use it for |
 |---|---|
 | [e2e-exe-dev](skills/e2e-exe-dev/SKILL.md) | A headless NanoClaw install and real model ping on a fresh machine, or a repeat run from a cached exe.dev VM. |
+| [e2e-proxmox](skills/e2e-proxmox/SKILL.md) | The same install and model ping in a new unprivileged Debian 13 LXC on your Proxmox host, with a retained guest and local report. |
 
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
 Codex, Claude Code, OpenCode, or another agent that supports the format. The
 installer can also run directly on a Debian/Ubuntu machine or CI runner.
 
 ## Quick start
+
+The commands below use exe.dev. For Proxmox, follow the
+[LXC workflow and prerequisites](skills/e2e-proxmox/SKILL.md).
 
 ### 1. Install the skill
 
@@ -97,6 +101,11 @@ Both produced real model replies and passed final service verification. See the
 [compatibility evidence](skills/e2e-exe-dev/SKILL.md#compatibility-evidence), including
 the copy-response fix found during that run. Re-check compatibility when NanoClaw's
 setup code changes.
+
+A fresh unprivileged Proxmox LXC passed the same test on **2026-09-11**, using
+Proxmox VE 9.2.18, Debian 13 and the same NanoClaw commit. See the
+[Proxmox compatibility evidence](skills/e2e-proxmox/SKILL.md#compatibility-evidence)
+for the exact host, guest and service configuration.
 
 ## Update
 
