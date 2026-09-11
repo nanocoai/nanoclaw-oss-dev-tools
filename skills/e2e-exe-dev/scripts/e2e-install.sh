@@ -282,17 +282,20 @@ if [ "$SERVICE_TYPE" = "nohup" ]; then
 fi
 
 # ── 4. Wire an agent to the always-on cli channel and ping it ─────────────────
+# src/index.ts completes host migrations before opening the CLI socket.
+# init-cli-agent.ts also migrates the DB: wait first so a fresh installation
+# cannot have both processes applying the same pending migrations at once.
+say "waiting for data/cli.sock"
+PHASE=socket
+for _ in $(seq 1 60); do [ -S data/cli.sock ] && break; sleep 1; done
+[ -S data/cli.sock ] || die "host never opened data/cli.sock — see logs/nanoclaw.error.log" 3
+
 PHASE=init-cli-agent
 say "init-cli-agent"
 pnpm exec tsx scripts/init-cli-agent.ts \
   --display-name "${NANOCLAW_DISPLAY_NAME:-E2E}" --agent-name "E2E Agent" --folder e2e-agent \
   2>&1 | tee "$LOGS/init-cli-agent.log"
 [ "${PIPESTATUS[0]}" -eq 0 ] || die "init-cli-agent failed"
-
-say "waiting for data/cli.sock"
-PHASE=socket
-for _ in $(seq 1 60); do [ -S data/cli.sock ] && break; sleep 1; done
-[ -S data/cli.sock ] || die "host never opened data/cli.sock — see logs/nanoclaw.error.log" 3
 
 # Same probe as setup/lib/agent-ping.ts: exit 0 + stdout = ok, 2 = socket,
 # 3 = no reply (chat.ts has its own 120s hard stop); auth failures show up in

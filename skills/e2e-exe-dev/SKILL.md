@@ -231,7 +231,7 @@ installer adds sequencing and assertions only.
 | 7 | `--step mounts --empty` | The wizard's own args (`setup/auto.ts`); `skipped` on re-runs is fine |
 | 8 | `--step timezone --tz <zone>` | `setup/timezone.ts` validates with `isValidTimezone` and writes `TZ` to `.env` |
 | 9 | `--step service`, then `./start-nanoclaw.sh` iff `SERVICE_TYPE: nohup` | `setup/service.ts`: builds, **stamps the upgrade marker** (so the host's tripwire passes), installs a system unit as root / user unit otherwise / nohup wrapper without user systemd |
-| 10 | `scripts/init-cli-agent.ts --display-name … --agent-name "E2E Agent" --folder e2e-agent` | Creates the `cli:local` scratch user, an agent group and the wiring to the cli messaging group; runs migrations itself, safe alongside the running host |
+| 10 | Wait for `data/cli.sock`, then `scripts/init-cli-agent.ts --display-name … --agent-name "E2E Agent" --folder e2e-agent` | `src/index.ts` finishes host migrations before opening the CLI socket. Only then run the initializer, which also migrates the DB, to create the `cli:local` scratch user, agent group and wiring without racing fresh host migrations. |
 | 11 | `pnpm --silent run chat ping` | `scripts/chat.ts`: exit 0 + reply = ok, 2 = socket unreachable, 3 = no reply within its 120 s stop; the auth-error patterns are the ones `agent-ping.ts` classifies |
 | 12 | `--step verify` | `setup/verify.ts`: `success` iff service running ∧ credentials present ∧ (groups > 0 ∨ wiring pending); exits 1 otherwise |
 
