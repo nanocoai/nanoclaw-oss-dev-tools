@@ -184,8 +184,8 @@ NanoClaw SHA, local/SSH mode and successful model/service evidence when claiming
 live compatibility; a dry run or simulated SSH test is not that evidence.
 
 On 2026-09-11, local read-only preflight passed on macOS 26.6.1 / arm64 with
-Docker Desktop running, Node 26 and an existing OneCLI vault, targeting the
-NanoClaw commit above. The 86-test offline suite passed, including 24 Mac-specific
+Docker Desktop running and Node 26, targeting the NanoClaw commit above.
+The 86-test offline suite passed, including 24 Mac-specific
 tests. Native installation/model inference and real SSH execution have not yet
 been qualified with this skill; SSH authentication was unavailable on the
 candidate target. No reboot or cold-prerequisite behavior is claimed.
