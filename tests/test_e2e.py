@@ -496,6 +496,11 @@ if "chat" in args:
     print(os.environ.get("MOCK_PING", "pong"))
     print(os.environ.get("MOCK_PING_ERR", ""), file=sys.stderr)
     sys.exit(int(os.environ.get("MOCK_PING_RC", "0")))
+if "scripts/init-cli-agent.ts" in args and os.environ.get("MOCK_MIGRATIONS_READY"):
+    from pathlib import Path
+    if not Path(os.environ["MOCK_MIGRATIONS_READY"]).exists():
+        print("host migrations are still running", file=sys.stderr)
+        sys.exit(73)
 sys.exit(0)
 ''')
 
@@ -632,6 +637,38 @@ sys.exit(0)
         self.assertEqual(run.returncode, 8)
         self.assertEqual(self.result()["phase"], "service")
         self.assertEqual(self.result()["ping"], "not_run")
+        self.assertNotIn("'chat'", calls.read_text())
+
+    def test_agent_initialization_waits_for_host_migrations(self):
+        self.macos()
+        self.sock.close()
+        (self.checkout / "data/cli.sock").unlink()
+        ready = self.root / "migrations-ready"
+        self.env["MOCK_MIGRATIONS_READY"] = str(ready)
+        # NanoClaw opens its CLI socket only after host migrations complete.
+        # Advance that simulated startup during the installer's first wait.
+        self.executable("sleep", PYTHON + '''
+import os, socket
+from pathlib import Path
+Path(os.environ["MOCK_MIGRATIONS_READY"]).touch()
+with socket.socket(socket.AF_UNIX) as sock:
+    sock.bind("data/cli.sock")
+''')
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue(ready.exists())
+        self.assertEqual(self.result()["ping"], "ok")
+
+    def test_unready_host_cannot_initialize_agent_or_send_ping(self):
+        _, calls = self.macos()
+        self.sock.close()
+        (self.checkout / "data/cli.sock").unlink()
+        self.executable("sleep", "#!/bin/sh\nexit 0\n")
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 3, run.stderr)
+        self.assertEqual(self.result()["phase"], "socket")
+        self.assertEqual(self.result()["ping"], "not_run")
+        self.assertNotIn("scripts/init-cli-agent.ts", calls.read_text())
         self.assertNotIn("'chat'", calls.read_text())
 
     def test_explicit_gateway_reuse_never_falls_back_to_install(self):

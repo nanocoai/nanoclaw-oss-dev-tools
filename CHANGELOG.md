@@ -9,6 +9,17 @@ tags were published for those versions.
 
 ## Unreleased
 
+### Fixed
+
+- Wait for the host's CLI socket before initializing the E2E agent, avoiding
+  concurrent fresh-database migrations on older NanoClaw revisions. Stop before
+  agent initialization or a model request if the host never becomes ready.
+
+### Added
+
+- Two readiness-ordering regressions and live macOS SSH validation with a real
+  agent reply and preserved shared services and gateway state.
+
 ## 0.4.0 - 2026-09-11
 
 ### Added

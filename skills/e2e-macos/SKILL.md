@@ -202,7 +202,25 @@ available and no restart. Sanitized installer result:
 }
 ```
 
-The 86-test offline suite passed, including 24 Mac-specific tests, and hosted
-CI passed on Ubuntu and macOS. Live SSH installation remains unqualified;
-its transport is covered offline. No reboot or cold-prerequisite behavior is
-claimed.
+The initial 86-test offline suite passed, including 24 Mac-specific tests, and
+hosted CI passed on Ubuntu and macOS for that delivery.
+
+On 2026-09-11, a **live SSH run passed** on a Mac mini with Apple M4 Pro,
+24 GiB RAM, macOS 26.6.2 / arm64, Node 26.8.2 and Docker Desktop's local
+Linux daemon (Docker Engine 29.7.2). The same NanoClaw commit was tested in a
+fresh checkout with existing prerequisites and warm image/dependency caches.
+The complete driver run took about 44 seconds and proved a real CLI-agent
+reply, successful verification, a running LaunchAgent and unchanged shared
+state, including the previously running services and containers.
+
+This SSH qualification used the shared installer waiting for `data/cli.sock`
+**before** `init-cli-agent.ts`. The first
+attempt with 0.4.0 failed before the model probe because host and initializer
+concurrently applied fresh SQLite migrations (`agent_destinations` already
+existed). Host logs confirmed the overlap. The failed checkout was retained;
+the pass came from a separate fresh checkout, with no NanoClaw source patch or
+manual database repair. The two new regressions failed before this ordering
+fix and passed afterward; the complete local suite passed **88 tests**.
+
+Intel/older macOS, reboot/logout recovery and cold prerequisite setup remain
+unqualified.
