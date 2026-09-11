@@ -22,12 +22,16 @@ setup steps and record the exact commit tested.
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
 Codex, Claude Code, OpenCode, or another agent that supports the format. The
 installer can also run directly on a Debian/Ubuntu machine or CI runner.
+See the [skill catalog](docs/skills-catalog.md) for entry points, prerequisites,
+live validation and remaining coverage gaps.
 
 ## Quick start
 
 The commands below use exe.dev. For other targets, follow the
 [Proxmox LXC workflow](skills/e2e-proxmox/SKILL.md) or the
 [local/SSH Mac workflow](skills/e2e-macos/SKILL.md).
+The [macOS test environment notes](docs/macos-test-environments.md) record the
+physical-hardware plan and the deferred MacinCloud evaluation.
 
 ### 1. Install the skill
 
@@ -108,6 +112,13 @@ A fresh unprivileged Proxmox LXC passed the same test on **2026-09-11**, using
 Proxmox VE 9.2.18, Debian 13 and the same NanoClaw commit. See the
 [Proxmox compatibility evidence](skills/e2e-proxmox/SKILL.md#compatibility-evidence)
 for the exact host, guest and service configuration.
+
+Native macOS installations passed locally and over SSH on **2026-09-11**, with
+real model replies, running LaunchAgents and preserved existing services and
+gateway state. The SSH run used the host-readiness fix now merged in plugin
+version 0.4.1. See the [catalog's Mac evidence](docs/skills-catalog.md#e2e-macos)
+for exact configurations, the separate upstream migration-fix validation and
+remaining gaps.
 
 ## Update
 
