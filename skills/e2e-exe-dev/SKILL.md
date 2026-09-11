@@ -7,6 +7,10 @@ compatibility: Requires bash, git, ssh and python3 on the operator machine; the 
 
 # e2e on exe.dev
 
+For an installation on an existing Mac, locally or over SSH, use
+[`e2e-macos`](../e2e-macos/SKILL.md). This skill's target workflow is Linux;
+its installer is shared with the Mac driver and its LaunchAgent helper.
+
 Installs NanoClaw on a disposable exe.dev VM without a human at the keyboard
 and proves the whole loop: message in over the cli channel → host → container
 → Claude → reply out. It reuses the setup wizard's own step processes

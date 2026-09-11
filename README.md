@@ -17,6 +17,7 @@ setup steps and record the exact commit tested.
 |---|---|
 | [e2e-exe-dev](skills/e2e-exe-dev/SKILL.md) | A headless NanoClaw install and real model ping on a fresh machine, or a repeat run from a cached exe.dev VM. |
 | [e2e-proxmox](skills/e2e-proxmox/SKILL.md) | The same install and model ping in a new unprivileged Debian 13 LXC on your Proxmox host, with a retained guest and local report. |
+| [e2e-macos](skills/e2e-macos/SKILL.md) | A native install and model ping on an existing Mac, locally or over SSH, with a separate checkout and preservation checks for existing services and OneCLI. |
 
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
 Codex, Claude Code, OpenCode, or another agent that supports the format. The
@@ -24,8 +25,9 @@ installer can also run directly on a Debian/Ubuntu machine or CI runner.
 
 ## Quick start
 
-The commands below use exe.dev. For Proxmox, follow the
-[LXC workflow and prerequisites](skills/e2e-proxmox/SKILL.md).
+The commands below use exe.dev. For other targets, follow the
+[Proxmox LXC workflow](skills/e2e-proxmox/SKILL.md) or the
+[local/SSH Mac workflow](skills/e2e-macos/SKILL.md).
 
 ### 1. Install the skill
 
