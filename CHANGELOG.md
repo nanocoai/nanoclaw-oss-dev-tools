@@ -19,6 +19,8 @@ tags were published for those versions.
   `ncl` link, plus before/after checks for shared services, containers and credentials.
 - Offline regressions for Mac transport, ownership, existing gateway protection,
   service isolation, exact source/result identity and retained failure evidence.
+- Live local macOS 26.6.1 / arm64 evidence with a real CLI-agent reply,
+  successful NanoClaw verification and shared-state preservation checks.
 
 ### Changed
 

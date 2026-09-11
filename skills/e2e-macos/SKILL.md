@@ -183,9 +183,26 @@ Mac service dispatch, and shared-state comparison. Record the exact macOS/CPU,
 NanoClaw SHA, local/SSH mode and successful model/service evidence when claiming
 live compatibility; a dry run or simulated SSH test is not that evidence.
 
-On 2026-09-11, local read-only preflight passed on macOS 26.6.1 / arm64 with
-Docker Desktop running and Node 26, targeting the NanoClaw commit above.
-The 86-test offline suite passed, including 24 Mac-specific
-tests. Native installation/model inference and real SSH execution have not yet
-been qualified with this skill; SSH authentication was unavailable on the
-candidate target. No reboot or cold-prerequisite behavior is claimed.
+On 2026-09-11, a **live local run passed** on macOS 26.6.1 / arm64 with
+Docker Desktop running and Node 26.8.1, targeting the NanoClaw commit above.
+It completed in about 65 seconds, including the exact checkout, setup, native
+LaunchAgent, real CLI-agent reply and successful NanoClaw verification. The
+shared-state preservation checks passed. A follow-up process check confirmed
+the new service remained running from the tested checkout with its CLI socket
+available and no restart. Sanitized installer result:
+
+```json
+{
+  "status": "pass",
+  "exit_code": 0,
+  "commit": "74224f62a6c08418acccc727114ab02f92e403bf",
+  "phase": "complete",
+  "service_type": "launchd",
+  "ping": "ok"
+}
+```
+
+The 86-test offline suite passed, including 24 Mac-specific tests, and hosted
+CI passed on Ubuntu and macOS. Live SSH installation remains unqualified;
+its transport is covered offline. No reboot or cold-prerequisite behavior is
+claimed.
