@@ -7,11 +7,13 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
 import textwrap
+import time
 import unittest
 
 import test_e2e
@@ -225,6 +227,8 @@ class EvidenceTests(unittest.TestCase):
             lines += [f'=== [today] user-input → {key} ===', f'  value: {value}', '']
         lines.append('## today · completed (total 4m)')
         self.progress.write_text('\n'.join(lines) + '\n')
+        (self.root / 'logs/nanoclaw.log').write_text('host ready\n')
+        (self.root / 'logs/nanoclaw.error.log').write_text('apiToken=' + self.secret + '\n')
         (self.root / '.env').write_text('TZ=UTC\nONECLI_API_KEY=synthetic-gateway-token-12345\n')
 
     @staticmethod
@@ -265,6 +269,53 @@ class EvidenceTests(unittest.TestCase):
                     wizard.verify_live_service(self.root,service)
                 self.assertEqual(caught.exception.phase,'service')
 
+    def test_live_service_verifies_owned_nohup_process(self):
+        entrypoint = self.root / 'dist/index.js'
+        entrypoint.parent.mkdir()
+        entrypoint.write_text('import time\ntime.sleep(60)\n')
+        wrapper = self.root / 'start-nanoclaw.sh'
+        wrapper.write_text('#!/bin/bash\n')
+        wrapper.chmod(0o755)
+        process = subprocess.Popen([sys.executable, str(entrypoint)])
+        (self.root / 'nanoclaw.pid').write_text(str(process.pid) + '\n')
+        socket_path = self.root / 'data/cli.sock'
+        socket_path.parent.mkdir()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(socket_path))
+        listener.listen(1)
+        service = {
+            'SERVICE_TYPE': 'nohup', 'SERVICE_LOADED': 'true',
+            'WRAPPER_PATH': str(wrapper), 'NODE_PATH': sys.executable,
+            'PROJECT_PATH': str(self.root),
+        }
+        try:
+            service['WRAPPER_PATH'] = str(self.root / 'other-start.sh')
+            with self.assertRaises(wizard.Failure):
+                wizard.verify_live_service(self.root, service)
+            service['WRAPPER_PATH'] = str(wrapper)
+            matched_argv = None
+            previous_argv = None
+            for _ in range(100):
+                argv = wizard.process_arguments(process.pid)
+                if (argv == previous_argv and len(argv) >= 2
+                        and Path(argv[1]).resolve() == entrypoint.resolve()):
+                    matched_argv = argv
+                    break
+                previous_argv = argv
+                time.sleep(0.01)
+            self.assertIsNotNone(matched_argv)
+            service['NODE_PATH'] = matched_argv[0]
+            live = wizard.verify_live_service(self.root, service)
+            self.assertEqual(live['type'], 'nohup')
+            self.assertEqual(live['pid'], process.pid)
+            (self.root / 'nanoclaw.pid').write_text(str(os.getpid()) + '\n')
+            with self.assertRaises(wizard.Failure):
+                wizard.verify_live_service(self.root, service)
+        finally:
+            listener.close()
+            process.kill()
+            process.wait(timeout=5)
+
     def test_forged_external_raw_log_reference_is_rejected(self):
         self.progress.write_text(self.progress.read_text().replace('logs/setup-steps/12-verify.log', '/tmp/unrelated.log'))
         with self.assertRaises(wizard.Failure):
@@ -280,7 +331,10 @@ class EvidenceTests(unittest.TestCase):
 
     def export(self):
         destination = self.root / 'sanitized'
-        wizard.export_evidence(self.root, destination, None, self.result, self.secret)
+        wizard.export_evidence(
+            self.root, destination, None, self.result, self.secret,
+            'CONTAINER ID\tNAME\tIMAGE\tSTATE\tSTATUS\nfixture\tnanoclaw-host\tnanoclaw:fixture\trunning\tUp 1 minute\n',
+        )
         return destination
 
     def archive(self, destination):
@@ -295,6 +349,9 @@ class EvidenceTests(unittest.TestCase):
     def test_sanitized_export_keeps_raw_product_logs_on_target(self):
         destination = self.export()
         self.assertIn(self.secret, next(self.steps.glob('*-auth.log')).read_text())
+        self.assertEqual((destination / 'runtime-logs/nanoclaw.log').read_text(), 'host ready\n')
+        self.assertIn('[REDACTED]', (destination / 'runtime-logs/nanoclaw.error.log').read_text())
+        self.assertIn('nanoclaw-host', (destination / 'runtime-logs/docker-containers.txt').read_text())
         for path in destination.rglob('*'):
             if path.is_file():
                 self.assertNotIn(self.secret, path.read_text())
@@ -310,6 +367,20 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(wizard.Failure):
             self.export()
         self.assertFalse((self.root / 'sanitized').exists())
+
+    def test_export_rejects_symlinked_runtime_logs(self):
+        (self.root / 'logs/nanoclaw.error.log').unlink()
+        (self.root / 'logs/nanoclaw.error.log').symlink_to(self.key)
+        with self.assertRaises(wizard.Failure):
+            self.export()
+        self.assertFalse((self.root / 'sanitized').exists())
+
+    def test_export_rejects_broken_artifact_destination_symlink(self):
+        destination = self.root / 'broken-artifacts'
+        destination.symlink_to(self.root / 'missing-target')
+        with self.assertRaises(wizard.Failure):
+            wizard.export_evidence(self.root, destination, None, self.result, self.secret)
+        self.assertTrue(destination.is_symlink())
 
     def test_collector_rejects_stale_run_corruption_and_unredacted_artifacts(self):
         destination = self.export()
@@ -335,6 +406,66 @@ class EvidenceTests(unittest.TestCase):
         data.seek(0)
         with self.assertRaises(ValueError):
             collector.collect(data, self.root/'local', self.root/'result.json', 'a'*40, 'regression123', 0, self.key)
+
+    def test_collector_failed_validation_leaves_destination_retryable(self):
+        destination = self.export()
+        valid = self.archive(destination).getvalue()
+        (destination / 'terminal.txt').write_text('changed after manifest')
+        local = self.root / 'retry-local'
+        result = self.root / 'retry-result.json'
+        with self.assertRaises(collector.ValidationError) as caught:
+            collector.collect(self.archive(destination), local, result, 'a'*40, 'regression123', 0, self.key)
+        self.assertEqual(caught.exception.code, 'checksum-mismatch')
+        self.assertFalse(local.exists())
+        collector.collect(io.BytesIO(valid), local, result, 'a'*40, 'regression123', 0, self.key)
+        self.assertEqual(json.loads(result.read_text())['status'], 'pass')
+
+    def test_collector_rejects_broken_destination_symlink(self):
+        local = self.root / 'local-link'
+        local.symlink_to(self.root / 'missing-target')
+        with self.assertRaises(collector.ValidationError) as caught:
+            collector.collect(io.BytesIO(b''), local, self.root/'result.json', 'a'*40, 'regression123', 0, self.key)
+        self.assertEqual(caught.exception.code, 'destination-exists')
+
+    def test_container_status_does_not_echo_docker_errors(self):
+        from unittest.mock import patch
+        failed = subprocess.CompletedProcess([], 1, '', self.secret)
+        with patch.object(wizard.subprocess, 'run', return_value=failed):
+            status = wizard.collect_container_status()
+        self.assertIn('exit code 1', status)
+        self.assertNotIn(self.secret, status)
+
+    def test_collector_cli_reports_safe_actionable_validation_code(self):
+        destination = self.export()
+        (destination / 'terminal.txt').write_text('changed after manifest')
+        archive = self.archive(destination).read()
+        run = subprocess.run(
+            [sys.executable, str(SKILL / 'scripts/collect-wizard.py'),
+             '--artifacts-dir', str(self.root / 'cli-local'),
+             '--result-file', str(self.root / 'cli-result.json'),
+             '--commit', 'a' * 40, '--run-id', 'regression123', '--exit-code', '0',
+             '--key-file', str(self.key)],
+            input=archive, capture_output=True, timeout=10,
+        )
+        self.assertEqual(run.returncode, 74)
+        self.assertEqual(run.stderr.decode(), '[e2e-wizard] artifact validation failed: checksum-mismatch\n')
+
+        malicious = io.BytesIO()
+        with tarfile.open(fileobj=malicious, mode='w') as archive_file:
+            item = tarfile.TarInfo('../' + self.secret)
+            item.size = 1
+            archive_file.addfile(item, io.BytesIO(b'x'))
+        run = subprocess.run(
+            [sys.executable, str(SKILL / 'scripts/collect-wizard.py'),
+             '--artifacts-dir', str(self.root / 'malicious-local'),
+             '--result-file', str(self.root / 'malicious-result.json'),
+             '--commit', 'a' * 40, '--run-id', 'regression123', '--exit-code', '0',
+             '--key-file', str(self.key)],
+            input=malicious.getvalue(), capture_output=True, timeout=10,
+        )
+        self.assertEqual(run.returncode, 74)
+        self.assertEqual(run.stderr.decode(), '[e2e-wizard] artifact validation failed: unsafe-archive-member\n')
+        self.assertNotIn(self.secret, run.stderr.decode())
 
     def test_direct_result_also_redacts_generated_gateway_credentials(self):
         from unittest.mock import patch

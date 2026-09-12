@@ -410,6 +410,7 @@ def verify_live_service(root, service):
         prefix = ['systemctl'] + (['--user'] if kind == 'systemd-user' else [])
         query = subprocess.run(prefix + ['show', unit, '-p', 'MainPID', '--value'], capture_output=True, text=True, timeout=15)
         pid = query.stdout.strip()
+        query_returncode = query.returncode
     elif kind == 'launchd':
         label = service.get('SERVICE_LABEL', '')
         if not re.fullmatch(r'[a-zA-Z0-9_.-]+', label):
@@ -417,9 +418,23 @@ def verify_live_service(root, service):
         query = subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{label}'], capture_output=True, text=True, timeout=15)
         match = re.search(r'^\s*pid = (\d+)\s*$', query.stdout, re.M)
         pid = match[1] if match else ''
+        query_returncode = query.returncode
+    elif kind == 'nohup':
+        wrapper = root / 'start-nanoclaw.sh'
+        reported_wrapper = service.get('WRAPPER_PATH', '')
+        if (not reported_wrapper or Path(reported_wrapper).resolve() != wrapper.resolve()
+                or wrapper.is_symlink() or not wrapper.is_file()
+                or wrapper.stat().st_uid != os.getuid() or not os.access(wrapper, os.X_OK)):
+            raise Failure('service', 'Invalid nohup launcher for this checkout')
+        pid_file = root / 'nanoclaw.pid'
+        if (pid_file.is_symlink() or not pid_file.is_file()
+                or pid_file.stat().st_uid != os.getuid()):
+            raise Failure('service', 'Missing owned nohup PID file')
+        pid = read_limited(pid_file).strip()
+        query_returncode = 0
     else:
         raise Failure('service', 'Wizard service is not loaded by a supported manager')
-    if query.returncode != 0 or not pid.isdigit() or int(pid) <= 1:
+    if query_returncode != 0 or not pid.isdigit() or int(pid) <= 1:
         raise Failure('service', 'Service has no current process')
     argv = process_arguments(pid)
     if (len(argv) < 2 or Path(argv[1]).resolve() != (root / 'dist/index.js').resolve()
@@ -434,22 +449,54 @@ def verify_live_service(root, service):
     return {'type': kind, 'pid': int(pid), 'checkout_verified': True, 'socket_connected': True}
 
 
-def export_evidence(root, destination, terminal, result, credential):
-    if destination.exists():
+def collect_container_status():
+    """Return bounded container state without exporting container log bodies."""
+    command = [
+        'docker', 'ps', '-a', '--no-trunc', '--format',
+        '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}',
+    ]
+    header = 'CONTAINER ID\tNAME\tIMAGE\tSTATE\tSTATUS\n'
+    try:
+        run = subprocess.run(
+            command, capture_output=True, text=True, timeout=5,
+            env=child_environment(),
+        )
+    except subprocess.TimeoutExpired:
+        return header + '[docker ps timed out]\n'
+    except OSError:
+        return header + '[docker ps unavailable]\n'
+    if run.returncode != 0:
+        return header + '[docker ps failed with exit code ' + str(run.returncode) + ']\n'
+    return header + (run.stdout if run.stdout else '[no containers]\n')
+
+
+def export_evidence(root, destination, terminal, result, credential, container_status=None):
+    if destination.exists() or destination.is_symlink():
         raise Failure('export', 'Artifact directory already exists', 74)
     redactor = Redactor(private_values(root, credential))
     files = {'terminal.txt': redactor.clean(terminal.text()) if terminal else '',
              'choices.json': redactor.clean(json.dumps(terminal.choices if terminal else [], indent=2)) + '\n'}
-    logs = [root / 'logs/setup.log'] + sorted((root / 'logs/setup-steps').glob('*.log'))
+    logs = [(root / 'logs/setup.log', Path('setup-logs/setup.log'))]
+    logs += [(path, Path('setup-logs/setup-steps') / path.name)
+             for path in sorted((root / 'logs/setup-steps').glob('*.log'))]
+    logs += [
+        (root / 'logs/nanoclaw.log', Path('runtime-logs/nanoclaw.log')),
+        (root / 'logs/nanoclaw.error.log', Path('runtime-logs/nanoclaw.error.log')),
+    ]
     total = 0
-    for path in logs:
-        if not path.exists():
+    for path, exported in logs:
+        if not path.exists() and not path.is_symlink():
             continue
         content = read_limited(path)
         total += len(content.encode('utf-8'))
         if total > MAX_LOG_BYTES:
-            raise Failure('export', 'Setup evidence exceeds size limit', 74)
-        files[str(Path('setup-logs') / path.relative_to(root / 'logs'))] = redactor.clean(content)
+            raise Failure('export', 'Log evidence exceeds size limit', 74)
+        files[str(exported)] = redactor.clean(content)
+    if container_status is not None:
+        total += len(container_status.encode('utf-8'))
+        if total > MAX_LOG_BYTES:
+            raise Failure('export', 'Log evidence exceeds size limit', 74)
+        files['runtime-logs/docker-containers.txt'] = redactor.clean(container_status)
     if (root / 'logs/setup.log').is_file():
         progress = read_limited(root / 'logs/setup.log')
         result['product_failures'] = re.findall(r'^=== \[.*?\] ([\w-]+) \[.*?\] → (?:failed|aborted) ===$', progress, re.M)
@@ -544,7 +591,7 @@ def main(argv=None):
     result_redactor = Redactor([credential])
     try:
         result_redactor = Redactor(private_values(root, credential))
-        export_evidence(root, artifacts, terminal, result, credential)
+        export_evidence(root, artifacts, terminal, result, credential, collect_container_status())
         result['artifacts'] = str(artifacts)
     except Exception as error:
         result.update(status='failed', phase='export', exit_code=74, error='Sanitized evidence export failed: ' + type(error).__name__)

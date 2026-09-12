@@ -60,7 +60,9 @@ Before a live run, establish:
 Read-only inventory commands on the node include `pveversion`, `pct list`,
 `pveam list local`, `pvesm status`, and `ip -brief link show type bridge`.
 Choose the host, template, storage and bridge from actual inventory. Never use
-an existing personal/development guest as a disposable test target.
+an existing personal/development guest as a disposable test target. The driver
+creates a `nanoclaw` account with passwordless sudo inside its new test guest;
+that privilege is another reason the selected guest must be disposable.
 
 ## Run
 
@@ -87,15 +89,13 @@ that ID. Only a successful create operation plus the matching random run marker
 and required settings authorizes guest operations. An uncertain create result
 stops the run without adopting, starting or writing into a discovered guest.
 
-The new guest receives a developer account with passwordless sudo, scoped to
-that disposable container, so the shared installer can perform NanoClaw's setup
-steps. The bootstrap waits for DNS, rejects incomplete APT index refreshes, and
-adds Docker-group membership before starting the user manager. A manager started
+The bootstrap waits for DNS, rejects incomplete APT index refreshes, and adds
+Docker-group membership before starting the user manager. A manager started
 earlier retains stale groups even when a new interactive shell can use Docker.
-Credentials and the documented environment settings travel over SSH stdin
-into private files. The installer sets up Docker, OneCLI, credentials, the agent
-image, the service and a CLI agent, then requires a real reply and setup
-verification. Existing channels are not connected.
+Credentials and the documented environment settings travel over SSH stdin into
+private files. The installer sets up Docker, OneCLI, credentials, the agent image,
+the service and a CLI agent, then requires a real reply and setup verification.
+Existing channels are not connected.
 
 Supported installer settings are `NANOCLAW_ONECLI_API_HOST`,
 `NANOCLAW_ONECLI_API_TOKEN`, `NANOCLAW_DISPLAY_NAME`, `NANOCLAW_E2E_TZ` and
@@ -124,6 +124,20 @@ Inspect the test guest from the node with `pct enter <CTID>`, then
 and result are at `/opt/nanoclaw/logs/e2e/`. It contains test credentials in the
 OneCLI vault; treat it accordingly when choosing to retain or remove it.
 Cleanup needs a separately scoped request identifying the test CT.
+
+## Troubleshooting
+
+Start with the local report's `phase` and retained CT ID. Then inspect the
+recorded guest rather than rerunning into an uncertain lifecycle state.
+
+| Report or symptom | Inspect in the retained guest | What it distinguishes |
+|---|---|---|
+| `running`, timeout, or lost SSH | Node task status, `pct status <CTID>`, then the ownership marker in `pct config <CTID>` | A still-running operation from a completed failure; never adopt the guest from its name alone. |
+| `bootstrap` with DNS or APT output | Resolver state, default route, and the bootstrap output in `/opt/nanoclaw/logs/e2e/` | Guest network/template readiness from a NanoClaw setup failure. |
+| Docker works in a shell but setup cannot use it | `id nanoclaw`, the user manager environment, and Docker access through `machinectl shell nanoclaw@` | Stale supplementary groups in a user manager started before Docker membership changed. |
+| `onecli`, `auth`, or `container` | The matching step log plus `docker ps -a`; inspect container logs only on the retained private guest | Gateway/image failure from a later agent or service failure. |
+| `ping` or `verify` | `logs/nanoclaw.log`, `logs/nanoclaw.error.log`, `data/cli.sock`, and the exact installer result | A running process from a usable CLI/model path; a socket or process alone is not a pass. |
+| A retry reports a used CT ID | The previous report, node task history, and matching random run marker | A retained test guest from an unrelated or uncertain guest; choose a new ID unless ownership is proven. |
 
 ## Source contracts and validation
 

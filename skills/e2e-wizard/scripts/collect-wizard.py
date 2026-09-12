@@ -16,51 +16,112 @@ spec = importlib.util.spec_from_file_location('wizard_runner', Path(__file__).wi
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 LIMIT = 64 * 1024 * 1024
+EXACT_PATHS = {
+    'manifest.json', 'result.json', 'choices.json', 'terminal.txt',
+    'setup-logs/setup.log', 'runtime-logs/nanoclaw.log',
+    'runtime-logs/nanoclaw.error.log', 'runtime-logs/docker-containers.txt',
+}
+DIRECTORIES = ('.', 'setup-logs', 'setup-logs/setup-steps', 'runtime-logs')
+
+
+class ValidationError(ValueError):
+    """A safe, documented validation code with no remote artifact content."""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def reject(code):
+    raise ValidationError(code)
+
+
+def allowed_path(name):
+    return (name in EXACT_PATHS
+            or (name.startswith('setup-logs/setup-steps/')
+                and name.endswith('.log') and len(PurePosixPath(name).parts) == 3))
+
+
+def load_json(files, name, code):
+    if name not in files:
+        reject(code)
+    try:
+        value = json.loads(files[name].decode('utf-8'))
+    except (UnicodeDecodeError, ValueError, TypeError):
+        reject(code)
+    if not isinstance(value, dict):
+        reject(code)
+    return value
 
 
 def collect(source, destination, result_path, expected, run_id, exit_code, key_file):
     destination, result_path = Path(destination), Path(result_path)
-    if destination.exists():
-        raise ValueError('Local artifact directory already exists')
-    key = ''.join(Path(key_file).read_text().split())
+    if destination.exists() or destination.is_symlink():
+        reject('destination-exists')
+    try:
+        key = ''.join(Path(key_file).read_text().split())
+    except (OSError, UnicodeError):
+        reject('credential-unreadable')
+    if not key:
+        reject('credential-empty')
     data = source.read(LIMIT + 1)
     if len(data) > LIMIT:
-        raise ValueError('Artifact archive exceeds size limit')
+        reject('archive-too-large')
     files, total = {}, 0
-    with tarfile.open(fileobj=io.BytesIO(data), mode='r:') as archive:
-        for item in archive:
-            name = str(PurePosixPath(item.name))
-            if item.isdir() and name in ('.', 'setup-logs', 'setup-logs/setup-steps'):
-                continue
-            if not item.isfile() or name.startswith('/') or '..' in PurePosixPath(name).parts or name in files:
-                raise ValueError('Unsafe archive member')
-            if name not in ('manifest.json', 'result.json', 'choices.json', 'terminal.txt', 'setup-logs/setup.log') and not (name.startswith('setup-logs/setup-steps/') and name.endswith('.log') and len(PurePosixPath(name).parts) == 3):
-                raise ValueError('Unexpected artifact path')
-            total += item.size
-            if total > LIMIT:
-                raise ValueError('Expanded artifacts exceed size limit')
-            files[name] = archive.extractfile(item).read()
-    manifest = json.loads(files['manifest.json'])
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:') as archive:
+            for item in archive:
+                name = str(PurePosixPath(item.name))
+                if item.isdir() and name in DIRECTORIES:
+                    continue
+                if (not item.isfile() or item.size < 0 or name.startswith('/')
+                        or '..' in PurePosixPath(name).parts or name in files):
+                    reject('unsafe-archive-member')
+                if not allowed_path(name):
+                    reject('unexpected-artifact-path')
+                total += item.size
+                if total > LIMIT:
+                    reject('expanded-artifacts-too-large')
+                extracted = archive.extractfile(item)
+                if extracted is None:
+                    reject('unsafe-archive-member')
+                files[name] = extracted.read()
+    except ValidationError:
+        raise
+    except (tarfile.TarError, EOFError, OSError):
+        reject('invalid-tar-archive')
+    manifest = load_json(files, 'manifest.json', 'invalid-manifest')
     if manifest.get('schema_version') != 1 or manifest.get('run_id') != run_id or manifest.get('sanitized') is not True:
-        raise ValueError('Unconfirmed sanitized artifact identity')
-    if set(manifest['files']) != set(files) - {'manifest.json'}:
-        raise ValueError('Incomplete artifact manifest')
-    for name, digest in manifest['files'].items():
+        reject('artifact-identity-mismatch')
+    manifest_files = manifest.get('files')
+    if (not isinstance(manifest_files, dict)
+            or not all(isinstance(name, str) and isinstance(digest, str)
+                       for name, digest in manifest_files.items())):
+        reject('invalid-manifest')
+    if set(manifest_files) != set(files) - {'manifest.json'}:
+        reject('incomplete-manifest')
+    for name, digest in manifest_files.items():
         if hashlib.sha256(files[name]).hexdigest() != digest:
-            raise ValueError('Artifact checksum mismatch')
+            reject('checksum-mismatch')
     for content in files.values():
-        text = content.decode('utf-8')
+        try:
+            text = content.decode('utf-8')
+        except UnicodeDecodeError:
+            reject('invalid-artifact-text')
         if key in ''.join(text.split()) or runner.TOKEN.search(text):
-            raise ValueError('Unredacted credential in remote export')
-    result = json.loads(files['result.json'])
+            reject('credential-found')
+    result = load_json(files, 'result.json', 'invalid-result')
     expected_status = 'pass' if exit_code == 0 else 'failed'
     if result.get('schema_version') != 1 or result.get('mode') != 'wizard' or result.get('run_id') != run_id or result.get('commit') != expected or result.get('exit_code') != exit_code or result.get('status') != expected_status:
-        raise ValueError('Wizard result does not match this invocation')
+        reject('invocation-mismatch')
     required = {'terminal.txt', 'choices.json', 'result.json', 'setup-logs/setup.log'}
     if exit_code == 0:
         service = result.get('service', {})
-        if not required.issubset(files) or not result.get('wizard_completed') or not result.get('retained_reply_verified') or service.get('checkout_verified') is not True or service.get('socket_connected') is not True:
-            raise ValueError('Missing wizard acceptance evidence')
+        if (not isinstance(service, dict) or not required.issubset(files)
+                or not result.get('wizard_completed') or not result.get('retained_reply_verified')
+                or service.get('checkout_verified') is not True
+                or service.get('socket_connected') is not True):
+            reject('acceptance-evidence-missing')
     temporary = Path(tempfile.mkdtemp(prefix='.wizard-export-', dir=destination.parent))
     try:
         for name, content in files.items():
@@ -88,11 +149,14 @@ def main():
     args = parser.parse_args()
     try:
         collect(sys.stdin.buffer, args.artifacts_dir, args.result_file, args.commit, args.run_id, args.exit_code, args.key_file)
+    except ValidationError as error:
+        print('[e2e-wizard] artifact validation failed: ' + error.code, file=sys.stderr)
+        return 74
     except Exception as error:
         # Tar and parsing exceptions may contain unsanitized remote content.
         print('[e2e-wizard] artifact validation failed: ' + type(error).__name__, file=sys.stderr)
         return 74
-    print('[e2e-wizard] sanitized transcript, setup logs and result saved')
+    print('[e2e-wizard] sanitized transcript, setup/runtime diagnostics and result saved')
     return 0
 
 

@@ -116,13 +116,20 @@ Product failures remain product failures: preserve the evidence and report
 them separately. Do not start a missing nohup wrapper, rewire an agent, retry
 through an assistant repair offer, or add a setup action behind the wizard.
 
+This fresh-install scenario does not exercise later registry-backed channel or
+provider installs, their restart directives, invalid configuration recovery,
+host reboot, or gateway-file recovery after temporary storage disappears. A
+passing wizard run cannot qualify those paths; pair their focused regressions
+with a live scenario that triggers the actual lifecycle being changed.
+
 ## Evidence and privacy
 
 [The runner](scripts/wizard-run.py) retains rendered terminal text in memory
 and exports sanitized `terminal.txt`, recorded `choices.json`, `result.json`,
-setup logs and a checksum manifest. It never exports raw PTY input bytes.
-Passwords and long tokens are redacted after complete texts are assembled,
-including values split across chunks or wrapped terminal lines.
+setup logs, `logs/nanoclaw.log`, `logs/nanoclaw.error.log`, a bounded
+`docker ps -a` status snapshot, and a checksum manifest. It never exports raw
+PTY input bytes. Passwords and long tokens are redacted after complete texts
+are assembled, including values split across chunks or wrapped terminal lines.
 
 NanoClaw at the source revision below writes the pasted credential into the
 raw auth step's command header. The runner protects the target `logs/` directory
@@ -130,12 +137,29 @@ with mode `0700`, reads those logs on the target, and writes separate sanitized
 copies before transfer. It also redacts generated gateway credentials from
 known local configuration. Original product logs and the imported vault secret
 remain on the retained VM; never copy `logs/setup-steps/` directly.
+Container log bodies also remain on the retained private target because they
+can include arbitrary application or model content. The exported status snapshot
+records container identity, image, state and status without those log bodies.
 
 [The collector](scripts/collect-wizard.py) validates archive members, checksums,
 run identity, commit, exit status and credential redaction before saving the
 local report. A missing or invalid export prevents a local pass and VM removal.
 Reports can still contain host paths and application messages; review them
 before public sharing.
+
+Collector failures print a safe diagnostic code without echoing remote archive
+content. Use the code to choose the next inspection:
+
+| Code | Inspect or correct |
+|---|---|
+| `destination-exists` | Choose a new local artifact directory; the collector does not adopt or replace one. |
+| `credential-unreadable`, `credential-empty` | Correct the local authorized key path and its contents. |
+| `archive-too-large`, `expanded-artifacts-too-large` | Inspect the retained target for an unexpectedly large log or archive. |
+| `invalid-tar-archive`, `unsafe-archive-member`, `unexpected-artifact-path` | Treat the export as invalid and inspect the target-side artifact directory and transfer boundary. |
+| `invalid-manifest`, `incomplete-manifest`, `checksum-mismatch` | Re-export from the retained target; do not accept a partial or changed archive. |
+| `artifact-identity-mismatch`, `invocation-mismatch` | Compare the expected run ID, commit and exit code with the retained result. |
+| `invalid-artifact-text`, `invalid-result`, `acceptance-evidence-missing` | Inspect the target's sanitized result and required proof files. |
+| `credential-found` | Keep the remote export private and inspect the redaction inputs; no local pass is written. |
 
 ## Runtime and validation
 
@@ -165,7 +189,8 @@ live wizard qualification.
 ## Compatibility evidence
 
 On **2026-09-11**, the fresh public wizard passed on a new unprivileged Debian 13
-LXC under Proxmox VE 9.2.18, testing draft PR 3767 at the exact commit below.
+LXC under Proxmox VE 9.2.18, testing an earlier candidate of PR 3767 at the exact
+commit below.
 The wizard built the local image, configured Claude through its OAuth prompt,
 completed setup and left one retained terminal agent. That agent answered a
 random arithmetic question correctly. Final verification reported success;
@@ -173,20 +198,36 @@ the driver independently matched the systemd user service process to the tested
 checkout and connected to its CLI socket. The lifecycle and sanitized export
 took about 4 minutes 22 seconds, including OS bootstrap.
 
+Merged [PR 3767](https://github.com/nanocoai/nanoclaw/pull/3767) later added
+explicit registry tracking refs and directory-collision handling. Those follow-up
+paths were outside this run and require their own focused and live evidence.
+
 No product step failed in that run. The service startup printed a nonfatal
 missing-`pkttyagent` diagnostic; service identity, inference and final verification
 still passed. The test did not supply a product repair. An earlier run stopped
 on a driver bug involving a stale spinner diamond; the corrected parser has a
 regression and that attempt remained a failure with retained evidence.
 
-The 122 offline regressions passed on Linux and macOS. Those checks qualify
+On **2026-09-12**, another fresh Ubuntu wizard run exercised NanoClaw
+[PR 3768](https://github.com/nanocoai/nanoclaw/pull/3768) at commit
+[`8d75571abfcf2486ceeef9b302ddc21ca69955b1`](https://github.com/nanocoai/nanoclaw/commit/8d75571abfcf2486ceeef9b302ddc21ca69955b1).
+The retained agent returned the expected computed answer, and the nohup host
+kept the same PID and served an admin request after the wizard terminal exited.
+That run used a task-only adapter for nohup proof. This harness now performs the
+same owned launcher, PID, exact-entrypoint and socket checks directly, with
+offline regression coverage. The merged PR later added post-install restart
+handling for channel skills; that separate path was not part of the live run.
+
+The current 133-test offline suite passed on macOS; CI runs it on Linux and
+macOS. Those checks qualify
 terminal behavior, acceptance rules and simulated lifecycle boundaries. The
-interactive exe.dev path and a native macOS wizard install have not been live
-qualified by this run. Headless installation evidence remains with its own skills.
+distributed interactive exe.dev path without a task-only adapter and a native
+macOS wizard install have not been live qualified. Headless installation evidence
+remains with its own skills.
 
 ## Source contracts
 
-The initial scenario was checked against NanoClaw draft
+The initial scenario was checked against an earlier candidate of NanoClaw
 [PR 3767](https://github.com/nanocoai/nanoclaw/pull/3767), exact commit
 [`705c6b9e627ac36a8b4bbc280e5804c6debf9a25`](https://github.com/nanocoai/nanoclaw/commit/705c6b9e627ac36a8b4bbc280e5804c6debf9a25):
 

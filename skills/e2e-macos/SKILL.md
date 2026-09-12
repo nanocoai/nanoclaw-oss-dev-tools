@@ -163,6 +163,21 @@ LaunchAgents depend on the user's login session. Initial readiness does not
 prove recovery after logout, reboot or Docker Desktop restart. Those are
 separate tests and are not claimed by this first version.
 
+## Troubleshooting
+
+Use the local report to identify the target, checkout, gateway choice and last
+phase. Inspect the retained installation before choosing a new path for a retry.
+
+| Report or symptom | Inspect on the target Mac | What it distinguishes |
+|---|---|---|
+| Preflight reports no GUI session | `id -u`, `launchctl print gui/<uid>`, and the currently logged-in user | A valid SSH login from the GUI bootstrap namespace required by LaunchAgents. |
+| Docker is unavailable | Docker Desktop state, `docker info`, and the preflight's recorded runtime | A missing prerequisite from a NanoClaw installer failure; the driver does not start or repair Docker. |
+| Gateway reuse fails | The report's selected gateway mode and the target user's OneCLI health/credential state | Existing gateway availability; reinstalling or replacing it requires a separate explicit choice. |
+| The install path or service label already exists | The path, recorded plist, `.git/nanoclaw-e2e/service.json`, and the matching process arguments | A retained prior run from an unrelated checkout; the driver never adopts it. |
+| `agent`, `ping`, or `verify` fails | `logs/e2e/`, `logs/nanoclaw.log`, `logs/nanoclaw.error.log`, and `data/cli.sock` | Host/database readiness from model, socket, or final-verification failure. |
+| Shared-state comparison fails | The report's before/after assets, service PIDs, containers, gateway URL and vault inventory | A concurrent operator change from an E2E-owned change; do not call the install a pass. |
+| Timeout or lost SSH | The retained process, LaunchAgent target, checkout HEAD and result identities | Work still running from a completed failure; use a new path unless the previous lifecycle is fully understood. |
+
 ## Source contracts and validation
 
 The initial implementation follows NanoClaw
