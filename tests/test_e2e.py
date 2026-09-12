@@ -534,12 +534,14 @@ sys.exit(0)
         # exe.dev images put /exe.dev/bin first on PATH with their own `sh`
         # (builtin lsof always exits 0, so OneCLI's port probe fails). The
         # installer must run every step with the system shell as `sh`.
-        foreign = self.root / "foreign-bin"
-        foreign.mkdir()
+        foreign = self.root / "exe.dev" / "bin"
+        foreign.mkdir(parents=True)
+        similarly_named = self.root / "exeXdev" / "bin"
+        similarly_named.mkdir(parents=True)
         shim = foreign / "sh"
         shim.write_text("#!/bin/bash\necho foreign-sh >&2\nexit 0\n")
         shim.chmod(0o755)
-        self.env["PATH"] = str(foreign) + os.pathsep + self.env["PATH"]
+        self.env["PATH"] = str(foreign) + os.pathsep + str(similarly_named) + os.pathsep + self.env["PATH"]
         seen = self.root / "seen-path"
         self.env["MOCK_PATH_FILE"] = str(seen)
         run = self.run_installer()
@@ -549,6 +551,7 @@ sys.exit(0)
         self.assertEqual(self.result()["status"], "pass")
         step_path = seen.read_text().split(os.pathsep)
         self.assertNotIn(str(foreign), step_path)
+        self.assertIn(str(similarly_named), step_path)
         self.assertIn(str(self.bin), step_path)
         self.assertNotIn("foreign-sh", run.stdout + run.stderr)
 

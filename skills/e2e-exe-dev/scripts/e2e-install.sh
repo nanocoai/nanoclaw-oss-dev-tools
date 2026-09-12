@@ -83,7 +83,7 @@ FOUND_SH="$(command -v sh || true)"
 if [ -n "$FOUND_SH" ] && ! [ "$FOUND_SH" -ef "$SYSTEM_SH" ]; then
   FOREIGN_DIR="$(dirname "$FOUND_SH")"
   say "note: sh on PATH is $FOUND_SH, not the system shell $SYSTEM_SH; removing $FOREIGN_DIR from PATH for this run"
-  PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx -- "$FOREIGN_DIR" | paste -sd: -)"
+  PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -Fvx -- "$FOREIGN_DIR" | paste -sd: -)"
   export PATH
   hash -r
   FOUND_SH="$(command -v sh || true)"
