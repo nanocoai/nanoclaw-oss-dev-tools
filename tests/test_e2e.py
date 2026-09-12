@@ -474,6 +474,9 @@ args = sys.argv[1:]
 if os.environ.get("MOCK_STEP_CALLS"):
     with open(os.environ["MOCK_STEP_CALLS"], "a") as calls:
         calls.write(repr(args) + "\n")
+if os.environ.get("MOCK_PATH_FILE"):
+    with open(os.environ["MOCK_PATH_FILE"], "w") as seen:
+        seen.write(os.environ.get("PATH", ""))
 if "--step" in args:
     name = args[args.index("--step") + 1]
     if os.environ.get("MOCK_NO_BLOCK") == name:
@@ -521,6 +524,33 @@ sys.exit(0)
         self.assertEqual(result["exit_code"], 0)
         self.assertFalse(result["tracked_changes_at_start"])
         self.assertIn("COMMIT: " + self.commit, run.stdout)
+
+    def test_system_sh_on_path_runs_without_a_note(self):
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("not the system shell", run.stdout + run.stderr)
+
+    def test_foreign_sh_is_dropped_from_path_before_any_step(self):
+        # exe.dev images put /exe.dev/bin first on PATH with their own `sh`
+        # (builtin lsof always exits 0, so OneCLI's port probe fails). The
+        # installer must run every step with the system shell as `sh`.
+        foreign = self.root / "foreign-bin"
+        foreign.mkdir()
+        shim = foreign / "sh"
+        shim.write_text("#!/bin/bash\necho foreign-sh >&2\nexit 0\n")
+        shim.chmod(0o755)
+        self.env["PATH"] = str(foreign) + os.pathsep + self.env["PATH"]
+        seen = self.root / "seen-path"
+        self.env["MOCK_PATH_FILE"] = str(seen)
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("not the system shell", run.stdout)
+        self.assertIn(str(foreign), run.stdout)
+        self.assertEqual(self.result()["status"], "pass")
+        step_path = seen.read_text().split(os.pathsep)
+        self.assertNotIn(str(foreign), step_path)
+        self.assertIn(str(self.bin), step_path)
+        self.assertNotIn("foreign-sh", run.stdout + run.stderr)
 
     def test_bootstrap_failure_replaces_old_pass(self):
         logs = self.checkout / "logs/e2e"

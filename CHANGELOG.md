@@ -11,6 +11,12 @@ tags were published for those versions.
 
 ### Fixed
 
+- Run the headless installer with the system shell as `sh`: a host that puts a
+  foreign `sh` first on PATH (exe.dev images since 2026-09-09 ship
+  `/exe.dev/bin/sh`, whose builtin `lsof` always exits 0) made NanoClaw's
+  OneCLI step fail with a misleading "port already in use". The installer now
+  drops that directory from PATH for the run and stops when no system shell
+  exists; a note in the log says when it did so.
 - Wait for the host's CLI socket before initializing the E2E agent, avoiding
   concurrent fresh-database migrations on older NanoClaw revisions. Stop before
   agent initialization or a model request if the host never becomes ready.
