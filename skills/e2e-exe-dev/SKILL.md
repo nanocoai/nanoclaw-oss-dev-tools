@@ -202,6 +202,19 @@ installer runs. The driver always uses `~/nanoclaw` on its VM.
 
 ## Compatibility evidence
 
+On **2026-09-12** a fresh exe.dev VM failed at the `onecli` step against
+NanoClaw `fd767d381fe5a1fea51373e4e8cb411da79880ec` with `Port 5432 is already
+in use` and nothing listening: the image had started shipping `/exe.dev/bin/sh`
+first on PATH (see the gotcha below). With the installer's system-shell
+preflight, a new fresh VM passed end to end against
+[`d96dde93db7a766531ca288190ca202ad473547e`](https://github.com/nanocoai/nanoclaw/tree/d96dde93db7a766531ca288190ca202ad473547e):
+the note line reported `/exe.dev/bin` removed from PATH, every step from
+`environment` to `verify` succeeded, `SERVICE_TYPE: nohup`, `PING: ok`, exit 0,
+about 3 minutes 20 seconds including OS bootstrap, and the VM was removed with
+`--rm`. NanoClaw itself pins `/bin/sh` in those steps from
+[nanocoai/nanoclaw#3776](https://github.com/nanocoai/nanoclaw/pull/3776), so
+later refs no longer depend on this preflight.
+
 Fresh and cached VM installations passed on **2026-09-10** against NanoClaw
 [`74224f62a6c08418acccc727114ab02f92e403bf`](https://github.com/nanocoai/nanoclaw/tree/74224f62a6c08418acccc727114ab02f92e403bf).
 Both produced real model replies, `SERVICE: running`, and successful final
