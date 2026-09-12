@@ -245,6 +245,16 @@ block every step prints (`setup/status.ts`).
 
 ## Gotchas (each one cost a wrong assumption)
 
+- **`sh` on PATH may not be the system shell.** exe.dev images since
+  2026-09-09 put `/exe.dev/bin` first on PATH with their own `sh`, whose
+  builtin `lsof` always exits 0. NanoClaw's setup pipes downloaded installers
+  into `sh` (`setup/onecli.ts`, `setup/install-docker.sh`), so the OneCLI
+  installer's port probe reported every port as busy — `Port 5432 is already
+  in use (probably a local PostgreSQL)` with nothing listening, and the same
+  for `POSTGRES_PORT=5433`. The installer now drops the directory holding a
+  foreign `sh` from PATH before the first step (it prints a `note:` line) and
+  stops when no system shell exists at `/bin/sh` or `/usr/bin/sh`. The
+  product-side fix pins `/bin/sh` in those steps.
 - **The wizard is not headless.** `pnpm run setup:auto` prompts for start
   mode, existing-install action and OneCLI reuse with no env bypass, and
   `nanoclaw.sh` reads its root warning from `/dev/tty`. Only the step runner

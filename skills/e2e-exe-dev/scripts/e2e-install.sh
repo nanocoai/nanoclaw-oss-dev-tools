@@ -64,6 +64,33 @@ mkdir -p "$LOGS"
 say() { printf '\n[e2e] %s\n' "$*"; }
 die() { printf '[e2e] FAIL: %s\n' "$*" >&2; exit "${2:-1}"; }
 
+# NanoClaw's setup pipes downloaded installers into `sh` (setup/onecli.ts,
+# setup/install-docker.sh), so `sh` must be the system shell. A host that puts
+# a foreign shell first on PATH breaks those steps with misleading errors:
+# exe.dev images since 2026-09-09 ship /exe.dev/bin/sh, whose builtin lsof
+# always exits 0, and the OneCLI installer's port probe then reports every
+# port as busy ("Port 5432 is already in use" with nothing listening). Drop
+# the directory holding a foreign `sh` from PATH for this run and stop when no
+# system shell exists; the product-side fix pins /bin/sh in those steps.
+system_sh() {
+  for candidate in /bin/sh /usr/bin/sh; do
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  done
+  return 1
+}
+SYSTEM_SH="$(system_sh)" || die "no system shell at /bin/sh or /usr/bin/sh"
+FOUND_SH="$(command -v sh || true)"
+if [ -n "$FOUND_SH" ] && ! [ "$FOUND_SH" -ef "$SYSTEM_SH" ]; then
+  FOREIGN_DIR="$(dirname "$FOUND_SH")"
+  say "note: sh on PATH is $FOUND_SH, not the system shell $SYSTEM_SH; removing $FOREIGN_DIR from PATH for this run"
+  PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx -- "$FOREIGN_DIR" | paste -sd: -)"
+  export PATH
+  hash -r
+  FOUND_SH="$(command -v sh || true)"
+  [ -n "$FOUND_SH" ] && [ "$FOUND_SH" -ef "$SYSTEM_SH" ] \
+    || die "sh on PATH (${FOUND_SH:-none}) is still not the system shell $SYSTEM_SH"
+fi
+
 # Record the source before setup changes any generated files. A failed run
 # replaces any previous result inherited from a base VM.
 SOURCE_COMMIT="$(git rev-parse --verify HEAD)" || die "cannot identify the checkout commit"
