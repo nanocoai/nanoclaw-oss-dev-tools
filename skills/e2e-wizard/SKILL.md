@@ -130,8 +130,13 @@ For Codex device pairing or Claude subscription sign-in, add
 authorization-code return path and extra provider proof are described in
 [Supervised authentication](references/supervised-auth.md). The adapter transports
 an explicitly selected installable-provider payload into the guest and makes
-the wizard install it through the normal registry remote. It compares the copied
-files with the selected commit before authentication and again before acceptance.
+the wizard install it through the normal registry remote. For Proxmox, supply
+an explicit remote-tracking ref, such as `refs/remotes/fork/providers` or
+`fork/providers`, whose owning remote uses public HTTPS without credentials.
+Raw SHAs, local branches, missing refs and ambiguous remote ownership fail
+preflight. The guest fetches that owning remote's branch and rejects it if its
+SHA changed after selection. It compares copied files with the selected commit
+before authentication and again before acceptance.
 
 The adapter reuses unprivileged LXC creation, random ownership markers, a regular
 developer account and its systemd user session. It installs only the shared OS

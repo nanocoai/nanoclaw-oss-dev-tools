@@ -87,4 +87,13 @@ The source contracts were inspected at NanoClaw
 `setup/register-claude-token.sh` for Claude, plus the separately recorded Codex
 provider payload's `setup/providers/codex.ts`. Recheck those contracts when
 testing another revision. Offline tests do not qualify a live sign-in or model
-reply; both new supervised methods still require live qualification.
+reply. On 2026-09-13, a fresh Debian 13.6 Proxmox run at tooling commit
+`7200211d9c86592a25e66694451b6e503202f014` passed Codex device pairing against
+that core and PR #3792 payload `b6faffcfd83ee477ed8f477724985c78cce450eb`.
+It verified all 22 copied provider files, the missing-host-CLI fallback to
+`@openai/codex@0.146.0`, a dedicated vault entry, an actual retained Codex-agent
+reply, and the running systemd user service and socket. The first attempt failed
+in the harness before human sign-in and remains a failed, retained run.
+Claude subscription sign-in is still awaiting live qualification. Subsequent
+split-chunk and owning-remote transport corrections have offline regression
+coverage; this live result applies to the recorded tooling commit.

@@ -31,6 +31,10 @@ ANSI = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-
 TOKEN = re.compile(r'sk-ant-[A-Za-z0-9_-]+')
 DEVICE_CODE = re.compile(r'\b[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+\b')
 DEVICE_URL = 'https://auth.openai.com/codex/device'
+DEVICE_CODE_PROMPT = re.compile(
+    r'Enter this one-time code[^\r\n]*\r?\n[ \t]*('
+    + DEVICE_CODE.pattern + r')[ \t]*\r?\n'
+)
 CLAUDE_AUTH_URL = re.compile(
     r'(https://claude\.ai/oauth/authorize[A-Za-z0-9._~:/?#\[\]@!$&\x27()*+,;=%-]+'
     r'(?:\r?\n[A-Za-z0-9._~:/?#\[\]@!$&\x27()*+,;=%-]+)*)'
@@ -377,6 +381,7 @@ class WizardTerminal:
         self.payload_receipt = None
         self.handoff_response_submitted = False
         self.claude_command_submitted = False
+        self.raw_handoff_input = ''
         self.raw_handoff_buffer = ''
         self.run_id = run_id
         self.handoff_nonce = secrets.token_hex(16)
@@ -394,7 +399,9 @@ class WizardTerminal:
             raise Failure('terminal', 'Terminal evidence limit exceeded')
         decoded = self.decoder.decode(data)
         self.stream.feed(decoded)
-        self.raw_handoff_buffer = (self.raw_handoff_buffer + ANSI.sub('', decoded))[-131072:]
+        # Retain raw input so split ANSI sequences complete on the next feed.
+        self.raw_handoff_input = (self.raw_handoff_input + decoded)[-131072:]
+        self.raw_handoff_buffer = ANSI.sub('', self.raw_handoff_input)
         for captured in CLAUDE_OAUTH_CAPTURE.findall(self.raw_handoff_buffer):
             token = re.sub(r'\s+', '', captured)
             if token not in self.private_values:
@@ -404,8 +411,10 @@ class WizardTerminal:
             # 48-row screen. Trailing blank rows must not push it outside a
             # fixed tail slice; inspect the complete live screen, not history.
             block = '\n'.join(self.screen.display)
-            codes = DEVICE_CODE.findall(block)
-            if DEVICE_URL in block and codes and re.search(r'(?i)device|pairing', block):
+            # A partial code can itself match a shorter valid shape. Require
+            # the code line's newline before emitting an immutable handoff.
+            codes = DEVICE_CODE_PROMPT.findall(self.raw_handoff_buffer)
+            if DEVICE_URL in block and codes and 'Enter this one-time code' in block:
                 code = codes[-1]
                 self.private_values.append(code)
                 write_json(self.handoff_path, {

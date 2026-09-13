@@ -7,12 +7,15 @@ The companion e2e-proxmox skill must be installed alongside e2e-wizard.
 import argparse
 import base64
 import importlib.util
+import ipaddress
 import io
 import json
 from pathlib import Path
 import shlex
+import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 LIFECYCLE = HERE.parents[1] / 'e2e-proxmox/scripts/proxmox-run.py'
@@ -27,22 +30,73 @@ def module(name, path):
     return loaded
 
 
+def payload_transport(root, payload_ref, expected_commit):
+    """Bind an explicit remote-tracking ref to its public owning remote."""
+    if not payload_ref or not expected_commit:
+        raise ValueError('installable providers require an explicit remote-tracking --payload-ref')
+    full = payload_ref if payload_ref.startswith('refs/remotes/') else 'refs/remotes/' + payload_ref
+    remote_result = subprocess.run(
+        ['git', 'remote'], cwd=root, text=True, capture_output=True, timeout=30,
+    )
+    if remote_result.returncode:
+        raise ValueError('--payload-ref owning remote is unavailable')
+    remotes = remote_result.stdout.splitlines()
+    owners = [remote for remote in remotes if full.startswith('refs/remotes/' + remote + '/')]
+    if len(owners) != 1:
+        raise ValueError('--payload-ref must name an explicit remote-tracking ref')
+    remote = owners[0]
+    branch = full.removeprefix('refs/remotes/' + remote + '/')
+    if not branch:
+        raise ValueError('--payload-ref must name an explicit remote-tracking ref')
+    resolved = subprocess.run(
+        ['git', 'rev-parse', full + '^{commit}'], cwd=root, text=True,
+        capture_output=True, timeout=30,
+    )
+    if resolved.returncode or resolved.stdout.strip() != expected_commit:
+        raise ValueError('--payload-ref no longer resolves to the selected payload commit')
+    url_result = subprocess.run(
+        ['git', 'remote', 'get-url', remote], cwd=root, text=True,
+        capture_output=True, timeout=30,
+    )
+    if url_result.returncode:
+        raise ValueError('--payload-ref owning remote is unavailable')
+    url = url_result.stdout.strip()
+    parsed = urlsplit(url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment
+            or parsed.hostname.lower() == 'localhost'):
+        raise ValueError('--payload-ref owning remote must use a public HTTPS URL without credentials')
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise ValueError('--payload-ref owning remote must use a public HTTPS URL without credentials')
+    return {'url': url, 'ref': 'refs/heads/' + branch, 'commit': expected_commit}
+
+
+def payload_setup(transport):
+    if transport is None:
+        return ''
+    url, ref, commit = (shlex.quote(transport[key]) for key in ('url', 'ref', 'commit'))
+    return '''payload_repo="$HOME/.nanoclaw-e2e/provider-payload.git"
+git init --quiet --bare "$payload_repo"
+git --git-dir="$payload_repo" fetch --quiet --no-tags %s %s
+test "$(git --git-dir="$payload_repo" rev-parse FETCH_HEAD^{commit})" = %s
+git --git-dir="$payload_repo" update-ref refs/heads/providers %s
+git remote add e2e-payload "$payload_repo"
+export NANOCLAW_CHANNELS_REMOTE=e2e-payload
+''' % (url, ref, commit, commit)
+
+
 def wrapper(run_id, timeout, provider, auth_method, payload_ref, expected_auth_source_commit='',
-            supervised_human_auth=False, require_codex_cli_fallback=False):
+            supervised_human_auth=False, require_codex_cli_fallback=False,
+            payload_transport_spec=None):
     # Only public harness code travels in this bundle. The lifecycle separately
     # uploads the credential over SSH stdin with its existing private-file rules.
     files = {name: base64.b64encode((HERE.parent / name).read_bytes()).decode()
              for name in BUNDLE}
-    payload_setup = ''
-    if expected_auth_source_commit and payload_ref:
-        payload_setup = """git fetch origin %s
-git cat-file -e %s^{commit}
-payload_repo="$HOME/.nanoclaw-e2e/provider-payload.git"
-git clone --quiet --bare . "$payload_repo"
-git --git-dir="$payload_repo" update-ref refs/heads/providers %s
-git remote add e2e-payload "$payload_repo"
-export NANOCLAW_CHANNELS_REMOTE=e2e-payload
-""" % ((shlex.quote(expected_auth_source_commit),) * 3)
+    payload_commands = payload_setup(payload_transport_spec)
     credential_arg = '' if supervised_human_auth else ' --credential-file "$HOME/.nanoclaw-e2e/anthropic_key"'
     supervised_arg = ' --supervised-human-auth' if supervised_human_auth else ''
     fallback_arg = ' --require-codex-cli-fallback' if require_codex_cli_fallback else ''
@@ -59,7 +113,7 @@ for name, data in json.loads(%r).items():
     path.write_bytes(base64.b64decode(data))
 WIZARD_BUNDLE
 %sexec bash "$HOME/.nanoclaw-e2e/wizard/scripts/wizard-install.sh" --run-id %s --timeout %s --provider %s --auth-method %s%s%s%s%s%s
-""" % (json.dumps(files), payload_setup, shlex.quote(run_id), timeout,
+""" % (json.dumps(files), payload_commands, shlex.quote(run_id), timeout,
          shlex.quote(provider), shlex.quote(auth_method),
          credential_arg, supervised_arg, fallback_arg,
          (' --payload-ref ' + shlex.quote(expected_auth_source_commit))
@@ -147,6 +201,12 @@ def main(argv=None):
             self.args.provider = options.provider
             self.args.auth_method = options.auth_method
             self.report['auth_source_commit'] = selected['auth_source_commit']
+            try:
+                transport = payload_transport(
+                    Path.cwd(), options.payload_ref, selected['auth_source_commit'],
+                ) if selected['source'].endswith('/SKILL.md') else None
+            except (OSError, subprocess.SubprocessError, ValueError) as error:
+                raise base.Failure(str(error), 65)
             if human:
                 self.args.key_file = None
             self.args.installer.write_text(wrapper(
@@ -155,6 +215,7 @@ def main(argv=None):
                 selected['auth_source_commit'],
                 human,
                 options.require_codex_cli_fallback,
+                transport,
             ))
             if not 1 <= options.wizard_timeout <= 2100:
                 raise base.Failure('--wizard-timeout must be between 1 and 2100 seconds', 64)

@@ -90,17 +90,6 @@ class AdapterTests(unittest.TestCase):
             self.assertTrue(request.exists())
             self.assertTrue(run_dir.exists())
 
-    def test_wrapper_binds_guest_local_providers_ref_without_credential(self):
-        commit = 'b6faffcfd83ee477ed8f477724985c78cce450eb'
-        text = adapter.wrapper('a' * 32, 1200, 'codex', 'device', 'ignored', commit, True, True)
-        self.assertIn('git cat-file -e ' + commit + '^{commit}', text)
-        self.assertIn('update-ref refs/heads/providers ' + commit, text)
-        self.assertIn('NANOCLAW_CHANNELS_REMOTE=e2e-payload', text)
-        self.assertIn('--payload-ref ' + commit, text)
-        self.assertNotIn('--credential-file', text)
-        self.assertIn('--supervised-human-auth', text)
-        self.assertIn('--require-codex-cli-fallback', text)
-
     def test_stock_credential_wrapper_keeps_private_credential_file(self):
         text = adapter.wrapper('a' * 32, 1200, 'claude', 'api', None, 'a' * 40, False)
         self.assertIn('--credential-file "$HOME/.nanoclaw-e2e/anthropic_key"', text)
@@ -134,6 +123,28 @@ class AdapterTests(unittest.TestCase):
             )
             self.assertNotIn('ABCD-EFGHI', sanitized)
             self.assertNotIn('EFGHI', sanitized)
+
+    def test_device_handoff_waits_for_complete_code_and_split_ansi(self):
+        for code in ('ABCD-EFGH', 'ABCD-EFGHI'):
+            with self.subTest(code_shape=tuple(map(len, code.split('-')))):
+                with tempfile.TemporaryDirectory(prefix='pr3792-handoff-') as temporary:
+                    handoff = Path(temporary) / 'request.json'
+                    terminal = wizard.WizardTerminal(
+                        {'prompts': []}, {}, handoff_method='device', run_id='run12345',
+                        handoff_path=handoff,
+                        handoff_response_path=Path(temporary) / 'response.json',
+                    )
+                    terminal.feed(
+                        b'https://auth.openai.com/codex/device\r\n'
+                        b'2. Enter this one-time code (expires in 15 minutes)\r\n'
+                        b'   \x1b[94mABCD-EFGH'
+                    )
+                    self.assertFalse(handoff.exists())
+                    terminal.feed((code[len('ABCD-EFGH'):] + '\x1b[').encode())
+                    self.assertFalse(handoff.exists())
+                    terminal.feed(b'0m\r\n')
+                    self.assertEqual(json.loads(handoff.read_text())['user_code'], code)
+                    self.assertIn(code, terminal.private_values)
 
     def test_collector_rejects_original_and_uneven_device_codes(self):
         import hashlib

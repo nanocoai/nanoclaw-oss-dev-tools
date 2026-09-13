@@ -31,8 +31,9 @@ tags were published for those versions.
   subscription sign-in through the Proxmox and direct wizard entry points.
   Private handoffs carry browser links and authorization codes; the runner still
   requires vault, retained-provider, model-reply, service and sanitized-export
-  evidence. Existing credential-file methods remain available (plugin 0.9.0;
-  live qualification pending).
+  evidence. Existing credential-file methods remain available (plugin 0.9.0).
+  Codex device sign-in has a retained live acceptance run; Claude subscription
+  sign-in still awaits live qualification.
 - Exact provider-payload transport for Proxmox wizard runs: fetch the selected
   payload commit, expose it through the normal registry remote, and verify the
   installed files before authentication and again before accepting a result.
