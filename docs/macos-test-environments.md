@@ -131,7 +131,7 @@ checkout passed; both attempts were retained. This readiness fix merged in
 plugin manifest to **0.4.1** and the offline suite to **88 tests**, with hosted
 CI passing on Ubuntu and macOS.
 
-The same Mac also passed a separate SSH installation against upstream
+The same Mac also passed a separate SSH installation against now-merged
 [PR 3766](https://github.com/nanocoai/nanoclaw/pull/3766), exact NanoClaw commit
 [`1d5179b28ce7b76afef6a23b7c21f981e51cfdad`](https://github.com/nanocoai/nanoclaw/commit/1d5179b28ce7b76afef6a23b7c21f981e51cfdad),
 in about 50 seconds with warm caches and the original installer ordering.

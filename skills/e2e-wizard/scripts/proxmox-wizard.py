@@ -106,12 +106,17 @@ def main(argv=None):
                 raise base.Failure('Could not retrieve sanitized wizard artifacts', 74)
             try:
                 collector = module('wizard_collector', HERE / 'collect-wizard.py')
+            except Exception as error:
+                raise base.Failure('Could not load wizard artifact validator: ' + type(error).__name__, 74)
+            try:
                 with tempfile.TemporaryDirectory(prefix='wizard-result-') as temporary:
                     nested = Path(temporary) / 'result.json'
                     collector.collect(io.BytesIO(archive.stdout), artifacts, nested,
                                       self.commit, self.run_id, report['exit_code'],
                                       self.args.key_file.expanduser())
                     self.report['wizard'] = json.loads(nested.read_text())
+            except collector.ValidationError as error:
+                raise base.Failure('Sanitized wizard artifact validation failed: ' + error.code, 74)
             except Exception as error:
                 # Never print parser errors containing remote artifact text.
                 raise base.Failure('Sanitized wizard artifact validation failed: ' + type(error).__name__, 74)

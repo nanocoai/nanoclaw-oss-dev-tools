@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-11**. This checkout contains **four skills**, with plugin
-manifest version **0.5.0**. Three drive headless setup steps; `e2e-wizard` drives
+Verified: **2026-09-12**. This checkout contains **4 skills**, with plugin
+manifest version **0.5.1**. Three drive headless setup steps; `e2e-wizard` drives
 the public interactive wizard. The workflows and their live qualifications are
 listed separately below.
 
@@ -19,7 +19,7 @@ successful SSH qualification described below.
 | [e2e-exe-dev](../skills/e2e-exe-dev/SKILL.md) | Fresh or cached exe.dev Debian/Ubuntu VM; portable shared installer also usable on a prepared Linux host or CI runner. | Fresh and cached installs passed on 2026-09-10 with real replies and final verification. | Evidence used the nohup service fallback; do not infer every Linux service mode or arbitrary NanoClaw ref is qualified. |
 | [e2e-proxmox](../skills/e2e-proxmox/SKILL.md) | Fresh unprivileged Debian 13 amd64 LXC, managed through SSH to the Proxmox node. | Fresh install passed on 2026-09-11 with a real reply and a running systemd user service. | Reboot recovery, cached clones and the transactional updater were not tested. |
 | [e2e-macos](../skills/e2e-macos/SKILL.md) | Existing native Mac, local or SSH, using a new persistent checkout and its own LaunchAgent. | Local arm64 passed with 0.4.0; SSH on M4 Pro passed on 2026-09-11 with the readiness fix now merged in 0.4.1. Both proved a real reply, service and preservation. | Intel/older macOS, cold prerequisites and reboot/logout recovery remain unqualified. |
-| [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. | Interactive exe.dev transport has offline coverage; native macOS wizard installs and real messaging channels remain unqualified. |
+| [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. | The distributed exe.dev path without a task-only adapter, native macOS, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
 
 The shared baseline for the three headless skills tested NanoClaw
 [`74224f62a6c08418acccc727114ab02f92e403bf`](https://github.com/nanocoai/nanoclaw/commit/74224f62a6c08418acccc727114ab02f92e403bf).
@@ -144,10 +144,9 @@ before the readiness fix. It returned a real reply, passed verification and
 preserved the three existing services and three running containers. Both
 deterministic cross-process migration regressions also passed on that Mac:
 a fresh database and an existing database with a pending migration. The live
-install logs do not prove migration overlap; those regressions provide the
-direct race coverage. This is evidence for that exact upstream PR commit,
-which was still open when this record was written, with warm prerequisites
-and caches.
+  install logs do not prove migration overlap; those regressions provide the
+  direct race coverage. PR 3766 has since merged with that tested commit as its
+  head; the qualification used warm prerequisites and caches.
 
 See the [workflow and validation](../skills/e2e-macos/SKILL.md). Merged in
 [PR 5](https://github.com/nanocoai/nanoclaw-oss-dev-tools/pull/5) on 2026-09-11.
@@ -171,15 +170,25 @@ with the matching lifecycle skill installed alongside `e2e-wizard`.
 - Requires final verification plus independent checks that the running service
   uses the exact checkout entrypoint and that its CLI socket accepts a connection.
 - Redacts credentials on the target before exporting rendered terminal text,
-  choices and setup logs. The collector checks paths, hashes, identity and proof
-  before accepting a local success. Failure retains the machine.
+  choices, setup/runtime logs and a bounded container-status snapshot. The
+  collector reports safe diagnostic codes while checking paths, hashes, identity
+  and proof before accepting a local success. Failure retains the machine.
 - Live qualification: a fresh unprivileged Debian 13 LXC under Proxmox VE 9.2.18
-  passed against NanoClaw [PR 3767](https://github.com/nanocoai/nanoclaw/pull/3767),
-  exact commit
+  passed against an earlier candidate of NanoClaw
+  [PR 3767](https://github.com/nanocoai/nanoclaw/pull/3767), exact commit
   [`705c6b9e627ac36a8b4bbc280e5804c6debf9a25`](https://github.com/nanocoai/nanoclaw/commit/705c6b9e627ac36a8b4bbc280e5804c6debf9a25).
-  The final candidate completed in about five minutes, with a retained-agent
+  The tested candidate completed in about five minutes, with a retained-agent
   reply and a verified systemd user service. No product step failed or was
-  repaired by the driver; a nonfatal `pkttyagent` diagnostic was recorded.
+  repaired by the driver; a nonfatal `pkttyagent` diagnostic was recorded. Later
+  registry-ref and directory-collision follow-ups in the merged PR were not part
+  of that run.
+- Additional live evidence: a fresh Ubuntu run exercised NanoClaw
+  [PR 3768](https://github.com/nanocoai/nanoclaw/pull/3768) at exact commit
+  [`8d75571abfcf2486ceeef9b302ddc21ca69955b1`](https://github.com/nanocoai/nanoclaw/commit/8d75571abfcf2486ceeef9b302ddc21ca69955b1).
+  A task-only adapter verified that the nohup process survived terminal exit;
+  the distributed harness now carries equivalent owned-launcher, PID, entrypoint
+  and socket checks with offline coverage. The merged PR's later channel-restart
+  change was not exercised by that run.
 
 See the [scenario, acceptance rules and compatibility evidence](../skills/e2e-wizard/SKILL.md).
 A passing headless installation does not qualify the interactive wizard.
@@ -189,8 +198,8 @@ A passing headless installation does not qualify the interactive wizard.
 Use the [README installation instructions](../README.md#1-install-the-skill).
 The repository is portable Agent Skills format and also ships as the
 `nanoclaw-e2e` Claude Code plugin. For a selected Proxmox or Mac skill, install
-the companion `e2e-exe-dev` skill too, or use the plugin containing all four. The wizard requires its chosen
-`e2e-exe-dev` or `e2e-proxmox` lifecycle companion.
+the companion `e2e-exe-dev` skill too, or use the plugin's full skill set. The
+wizard requires its chosen `e2e-exe-dev` or `e2e-proxmox` lifecycle companion.
 The driver expects the shared installer in the sibling skill directory unless
 an explicit installer path is supplied.
 
@@ -200,9 +209,10 @@ regressions failing before the fix. Its
 [hosted CI run](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/runs/34616868865)
 passed on Ubuntu and macOS. These checks simulate infrastructure and exercise
 parsing, transport, ownership, timeouts and result validation; the live records
-above provide the model/service proof. The wizard addition brings the suite to
-**122 tests**, verified on Linux and macOS, including real PTY redraws,
-cancellation and process cleanup, strict proof rejection and archive handling.
+above provide the model/service proof. The current suite contains **133 tests**;
+it passed locally on macOS and CI runs it on Linux and macOS. Coverage includes
+real PTY redraws, cancellation and process cleanup, strict proof rejection,
+archive handling, runtime evidence and repository metadata contracts.
 
 Recheck compatibility after NanoClaw setup changes. Record the tools revision,
 full NanoClaw commit, target OS/architecture, access mode, result JSON and live

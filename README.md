@@ -79,6 +79,9 @@ For the exe.dev workflow, you need:
 The target machine must be Debian/Ubuntu with sudo access. The installer handles
 Node.js, pnpm, Docker, OneCLI and the agent image. See the
 [prerequisites](skills/e2e-exe-dev/SKILL.md#prerequisites) for details.
+The other drivers state their stricter launcher requirements separately:
+Python 3.9+ for macOS and Python 3.10+ for Proxmox and the interactive wizard.
+The [skill catalog](docs/skills-catalog.md#choose-a-skill) links each workflow.
 
 ### 3. Run a test
 

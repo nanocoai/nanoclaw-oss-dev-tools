@@ -54,7 +54,10 @@ elif args[:2] == ['pct', 'exec']:
         else:
             if mode == 'missing-proof': result['retained_reply_verified'] = False
             files = {'result.json': json.dumps(result).encode(), 'choices.json': b'[]',
-                     'terminal.txt': b'rendered terminal', 'setup-logs/setup.log': b'progress'}
+                     'terminal.txt': b'rendered terminal', 'setup-logs/setup.log': b'progress',
+                     'runtime-logs/nanoclaw.log': b'host ready',
+                     'runtime-logs/nanoclaw.error.log': b'',
+                     'runtime-logs/docker-containers.txt': b'container status'}
             manifest = {'schema_version': 1, 'sanitized': True, 'run_id': run_id,
                         'files': {k: hashlib.sha256(v).hexdigest() for k,v in files.items()}}
             if mode == 'corrupt-export': files['terminal.txt'] = b'changed after hashing'
@@ -85,6 +88,7 @@ elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exi
         self.assertTrue(report['wizard']['retained_reply_verified'])
         self.assertEqual(report['guest']['ctid'], 108)
         self.assertTrue((Path(str(self.report) + '.artifacts') / 'terminal.txt').is_file())
+        self.assertTrue((Path(str(self.report) + '.artifacts') / 'runtime-logs/nanoclaw.log').is_file())
         self.assertFalse(any(c['args'][:2] in (['pct', 'stop'], ['pct', 'destroy'], ['pct', 'clone']) for c in self.commands()))
 
     def test_product_failure_retains_guest_and_sanitized_artifacts(self):
@@ -102,6 +106,8 @@ elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exi
                 self.assertEqual(run.returncode, 74, run.stderr)
                 self.assertEqual(json.loads(self.report.read_text())['status'], 'failed')
                 self.assertFalse(Path(str(self.report) + '.artifacts').exists())
+                if mode == 'corrupt-export':
+                    self.assertIn('checksum-mismatch', run.stderr)
 
     def test_dry_run_does_not_connect_or_read_credential(self):
         self.key.unlink()

@@ -11,6 +11,10 @@ tags were published for those versions.
 
 ### Fixed
 
+- Report safe, actionable validation codes when wizard artifacts are malformed,
+  stale, incomplete, corrupt, oversized or contain an unredacted credential.
+- Keep the plugin manifest version and distributed-skill listings checked against
+  the contributor README and skill catalog.
 - Run the headless installer with the system shell as `sh`: a host that puts a
   foreign `sh` first on PATH (exe.dev images since 2026-09-09 ship
   `/exe.dev/bin/sh`, whose builtin `lsof` always exits 0) made NanoClaw's
@@ -23,7 +27,13 @@ tags were published for those versions.
 
 ### Added
 
-- A catalog of all four E2E skills, with prerequisites, entry points, exact
+- Export sanitized NanoClaw runtime logs and a bounded container-status snapshot
+  with wizard evidence, while retaining container log bodies on the private target.
+- Verify the nohup fallback through its owned launcher and PID file, exact
+  checkout entrypoint and CLI socket when Linux has no usable systemd service.
+- Add failure-oriented troubleshooting tables for Proxmox and macOS, including
+  lifecycle identity, Docker/gateway readiness, service logs and retry boundaries.
+- A catalog of all distributed E2E skills, with prerequisites, entry points, exact
   live-test evidence and remaining coverage gaps.
 - macOS test-environment notes covering physical hardware, VM and cloud options,
   the deferred MacinCloud evaluation and the merged readiness fix.
