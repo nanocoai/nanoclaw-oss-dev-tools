@@ -71,6 +71,8 @@ elif args[:2] == ["pct", "exec"]:
             "exit_code": 2 if failed else 0,
             "commit": "0" * 40 if mode == "stale-result" else os.environ["MOCK_COMMIT"],
             "ping": "auth_error" if failed else "ok", "phase": "ping" if failed else "complete",
+            "provider": "claude", "auth_method": "api",
+            "auth_source_commit": os.environ["MOCK_COMMIT"],
         }))
 elif args[:2] not in (["test", "-r"], ["ip", "link"], ["pct", "start"]):
     sys.exit("unexpected command")
@@ -82,6 +84,7 @@ elif args[:2] not in (["test", "-r"], ["ip", "link"], ["pct", "start"]):
             sys.executable, str(DRIVER), "--host", "root@pve.example.test",
             "--template", "local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst",
             "--storage", "local-lvm", "--bridge", "vmbr0", "--key-file", str(self.key),
+            "--provider", "claude", "--auth-method", "api",
             "--result-file", str(self.report), *args,
         ], cwd=self.checkout, env=self.env, capture_output=True, text=True, timeout=20)
 
@@ -223,6 +226,7 @@ elif args[:2] not in (["test", "-r"], ["ip", "link"], ["pct", "start"]):
             sys.executable, str(copied), "--host", "root@pve.example.test",
             "--template", "local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst",
             "--storage", "local-lvm", "--bridge", "vmbr0", "--installer", str(installer),
+            "--provider", "claude", "--auth-method", "api",
             "--result-file", str(self.report), "--dry-run",
         ], cwd=self.checkout, env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(run.returncode, 0, run.stderr)

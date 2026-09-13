@@ -153,7 +153,8 @@ def require_fresh(root):
             raise Failure('Fresh wizard refuses prior product state: ' + name)
 
 
-def validate_export(source, artifacts, result_file, commit, run_id, code, key_file):
+def validate_export(source, artifacts, result_file, commit, run_id, code, key_file,
+                    provider=None, auth_method=None, auth_source_commit=None):
     # Reuse the wizard's archive, identity, acceptance and credential checks.
     spec = importlib.util.spec_from_file_location('windows_wizard_collector', WIZARD / 'collect-wizard.py')
     module = importlib.util.module_from_spec(spec)
@@ -173,7 +174,8 @@ def validate_export(source, artifacts, result_file, commit, run_id, code, key_fi
     if data.tell() > LIMIT:
         raise Failure('Wizard archive exceeds size limit')
     data.seek(0)
-    module.collect(data, artifacts, result_file, commit, run_id, code, key_file)
+    module.collect(data, artifacts, result_file, commit, run_id, code, key_file,
+                   provider, auth_method, auth_source_commit)
 
 
 def run_wizard(command, root):
@@ -207,7 +209,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--ref', default='HEAD')
-    parser.add_argument('--key-file', type=Path, default=Path.home() / '.nanoclaw-e2e/anthropic_key')
+    parser.add_argument('--credential-file', '--key-file', dest='key_file', type=Path,
+                        default=Path.home() / '.nanoclaw-e2e/anthropic_key')
+    parser.add_argument('--provider', help='provider value discovered from this exact checkout')
+    parser.add_argument('--auth-method', help='provider-owned authentication method value')
+    parser.add_argument('--payload-ref', help='already-fetched provider payload ref')
     parser.add_argument('--result-file', required=True, type=Path)
     parser.add_argument('--artifacts-dir', type=Path)
     parser.add_argument('--wizard-timeout', type=int, default=1200)
@@ -222,6 +228,8 @@ def main(argv=None):
         parser.error('The result file cannot overwrite the credential path')
     if not 1 <= args.wizard_timeout <= 2100:
         parser.error('--wizard-timeout must be between 1 and 2100 seconds')
+    if not args.preflight_only and (not args.provider or not args.auth_method):
+        parser.error('--provider and --auth-method are required for a wizard run')
     if result_file.exists():
         try:
             previous = json.loads(result_file.read_text())
@@ -232,7 +240,8 @@ def main(argv=None):
     run_id = secrets.token_hex(16)
     report = {'schema_version': 1, 'mode': 'windows-wsl-wizard', 'run_id': run_id,
               'status': 'running', 'phase': 'preflight', 'started_at': now(),
-              'commit': None, 'exit_code': None, 'wizard_started': False}
+              'commit': None, 'exit_code': None, 'wizard_started': False,
+              'provider': args.provider, 'auth_method': args.auth_method}
     write_json(result_file, report)  # Invalidate a previous pass before any checks.
     code = 1
     try:
@@ -241,8 +250,25 @@ def main(argv=None):
             require_fresh(root)
             if artifacts.exists():
                 raise Failure('Choose a new artifact directory')
-            if not (WIZARD / 'wizard-install.sh').is_file() or not (WIZARD / 'collect-wizard.py').is_file():
+            if not all((WIZARD / name).is_file() for name in
+                       ('wizard-install.sh', 'collect-wizard.py', 'provider-options.py')):
                 raise Failure('Install e2e-wizard alongside e2e-windows')
+            provider_module = importlib.util.spec_from_file_location(
+                'windows_provider_options', WIZARD / 'provider-options.py')
+            provider_options = importlib.util.module_from_spec(provider_module)
+            provider_module.loader.exec_module(provider_options)
+            try:
+                selected = provider_options.discover(
+                    root, args.provider, args.payload_ref, report['commit'],
+                )['selected']
+            except provider_options.DiscoveryError as error:
+                raise Failure('Could not discover provider/auth choices: ' + str(error))
+            methods = [item for item in selected['auth_methods']
+                       if item['value'] == args.auth_method]
+            if (len(methods) != 1 or not methods[0]['usable_for_e2e']
+                    or methods[0]['automation'] != 'credential-file'):
+                raise Failure('Selected provider auth is unavailable to the unattended wizard')
+            report['auth_source_commit'] = selected['auth_source_commit']
             key = args.key_file.lstat()
             if not stat.S_ISREG(key.st_mode) or key.st_mode & 0o077 or key.st_uid != os.getuid():
                 raise Failure('Credential must be a private regular file owned by the Linux user')
@@ -259,14 +285,19 @@ def main(argv=None):
             report.update(phase='wizard', wizard_started=True, retained_work=str(work))
             write_json(result_file, report)
             returncode = run_wizard(['bash', str(WIZARD / 'wizard-install.sh'), '--root', str(root),
-                       '--key-file', str(args.key_file.absolute()), '--result-file', str(wizard_result),
+                       '--credential-file', str(args.key_file.absolute()), '--provider', args.provider,
+                       '--auth-method', args.auth_method,
+                       '--expected-auth-source-commit', report['auth_source_commit'],
                        '--artifacts-dir', str(source), '--run-id', run_id,
-                       '--timeout', str(args.wizard_timeout)], root)
+                       '--timeout', str(args.wizard_timeout)]
+                       + (['--payload-ref', args.payload_ref] if args.payload_ref else []), root)
             code = returncode if returncode >= 0 else 128 - returncode
             report['phase'] = 'export'
             write_json(result_file, report)
             validated = work / 'validated.json'
-            validate_export(source, artifacts, validated, report['commit'], run_id, code, args.key_file)
+            validate_export(source, artifacts, validated, report['commit'], run_id, code,
+                            args.key_file, args.provider, args.auth_method,
+                            report['auth_source_commit'])
             report['wizard'] = json.loads(validated.read_text())
             report.update(status='pass' if code == 0 else 'failed', phase='complete' if code == 0 else 'wizard', exit_code=code)
     except KeyboardInterrupt:

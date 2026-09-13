@@ -41,11 +41,36 @@ All skills also ship in the Claude Code plugin. Keep the installed skill folders
 as siblings. Run the lifecycle driver from the **NanoClaw source checkout under
 test**, using its absolute installed path:
 
+First resolve the exact source and inspect the picker without checking out or
+executing files from another revision:
+
+```bash
+COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+E2E_WIZARD_DIR=/absolute/path/to/installed/e2e-wizard
+python3 "$E2E_WIZARD_DIR/scripts/provider-options.py" \
+  --root "$PWD" --revision "$COMMIT"
+python3 "$E2E_WIZARD_DIR/scripts/provider-options.py" \
+  --root "$PWD" --revision "$COMMIT" --provider claude
+```
+
+Show the offered provider list and ask the operator which provider to test.
+Then show that provider's exact `auth_prompt` and `auth_methods` and ask for the
+auth method. For an installable provider, inspect its offered skill, fetch its
+single `nc:copy from-branch:` payload from the owning remote, and pass that
+fetched ref as `--payload-ref` to discovery and the lifecycle driver. Record
+both `nanoclaw_commit` and `auth_source_commit`; never guess the remote or use
+the working tree as provider evidence. Only methods marked `credential-file`
+are unattended. Browser, subscription, or device methods require a separately
+authorized live human handoff and these drivers reject them before provisioning.
+`skip` is invalid for E2E. Read the credential after its matching method is chosen.
+
 ```bash
 E2E_SKILL_DIR=/absolute/path/to/installed/e2e-exe-dev
 cd /absolute/path/to/nanoclaw
 bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --interactive \
   --ref HEAD --repo https://github.com/nanocoai/nanoclaw.git \
+  --provider claude --auth-method api \
+  --credential-file /absolute/path/to/private/anthropic-key \
   --result-file /absolute/path/to/results/wizard.json
 ```
 
@@ -54,10 +79,10 @@ locally and checks out that exact fetchable commit on a newly owned VM. Local
 edits are not uploaded. It reuses existing creation-response validation, SSH
 transport, snapshot confirmation and failure retention.
 
-The live run provisions a cloud VM and sends an authorized Anthropic API key or
-existing OAuth token to its private file over SSH stdin. Use an existing
-credential file, normally `~/.nanoclaw-e2e/anthropic_key`, with mode `0600`;
-`--key-file` selects another. Keep the test VM and credential transfer within
+The live run provisions a cloud VM and sends the selected provider credential
+to its private file over SSH stdin. Use an existing credential file, normally
+`~/.nanoclaw-e2e/anthropic_key` for Claude, with mode `0600`;
+`--credential-file` selects another (`--key-file` remains an alias). Keep the test VM and credential transfer within
 the operator's authorized scope. This scenario never opens browser sign-in or
 creates an account.
 
@@ -67,7 +92,9 @@ creates an account.
 also stops after 180 seconds without output. Unknown prompts fail rather than
 choosing a default. Failures and failed exports retain the VM. Successful
 removal requires the existing opt-in `--rm` flag and happens after validated
-artifact export. The initial fresh scenario rejects `--base` because a cached
+artifact export. It also requires a matching run-ownership marker, an inactive
+harness, verified absence from the exe.dev JSON inventory, and a local teardown
+receipt. The initial fresh scenario rejects `--base` because a cached
 installation can skip the setup and authentication being tested.
 
 ## Proxmox LXC
@@ -82,6 +109,8 @@ python3 "$E2E_WIZARD_DIR/scripts/proxmox-wizard.py" \
   --host root@pve.example.test \
   --template local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
   --storage local-lvm --bridge vmbr0 --ref HEAD \
+  --provider claude --auth-method api \
+  --credential-file /absolute/path/to/private/anthropic-key \
   --result-file /absolute/path/to/results/wizard-proxmox.json
 ```
 
@@ -98,6 +127,12 @@ bootstrap and test-harness prerequisites; NanoClaw's public wizard performs all
 product setup. Provider and channel presets are not forwarded. Every container
 is retained, including successful runs, and existing guests are never adopted.
 The top-level report includes `installer` and locally validated `wizard` results.
+After those artifacts are durable, offer removal of a disposable run-owned guest
+after a pass; recommend retention after an unexpected failure until triage and
+inspection complete. Recheck the random CT marker and inactive controller
+immediately before separately authorized cleanup, verify absence afterward, and
+write a teardown receipt. Never remove when evidence, redaction, checksum, local
+persistence, triage, ownership, or controller validation is incomplete.
 
 ## Scenario and acceptance
 
@@ -152,7 +187,8 @@ can include arbitrary application or model content. The exported status snapshot
 records container identity, image, state and status without those log bodies.
 
 [The collector](scripts/collect-wizard.py) validates archive members, checksums,
-run identity, commit, exit status and credential redaction before saving the
+run identity, NanoClaw commit, provider, auth method, provider auth-source commit,
+exit status and credential redaction before saving the
 local report. A missing or invalid export prevents a local pass and VM removal.
 Reports can still contain host paths and application messages; review them
 before public sharing.
@@ -183,7 +219,8 @@ already installed:
 
 ```bash
 python3 /absolute/path/to/e2e-wizard/scripts/wizard-run.py \
-  --key-file /absolute/path/to/private/anthropic_key
+  --provider claude --auth-method api \
+  --credential-file /absolute/path/to/private/anthropic_key
 ```
 
 This creates persistent product state and makes real model requests. Use a fresh

@@ -1,7 +1,7 @@
 {
   "name": "fresh-cli",
-  "source_commit": "705c6b9e627ac36a8b4bbc280e5804c6debf9a25",
-  "description": "Fresh Claude installation through the public wizard, with a retained terminal agent and no external messaging channel.",
+  "source_commit": "3f9ed607b7e7a4872747295f75286f1c377d7c33",
+  "description": "Fresh provider-selected installation through the public wizard, with a retained terminal agent and no external messaging channel.",
   "prompts": [
     {
       "id": "start",
@@ -26,8 +26,14 @@
       "select": "Build it here"
     },
     {
+      "id": "provider",
+      "prompt": "Which agent runtime should power your assistant?",
+      "select_from": "provider_label",
+      "required": true
+    },
+    {
       "id": "auth",
-      "prompt": "How would you like to connect to Claude?",
+      "prompt_from": "auth_prompt",
       "select_from": "auth_option",
       "required": true
     },

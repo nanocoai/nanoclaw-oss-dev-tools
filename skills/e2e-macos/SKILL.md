@@ -32,6 +32,7 @@ Install this skill and the companion shared installer:
 
 ```bash
 npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-exe-dev
+npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-wizard
 npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-macos
 ```
 
@@ -69,6 +70,27 @@ distinct from a completed E2E result.
 
 ## Choose the gateway explicitly
 
+Before reading a credential or contacting the Mac, resolve the exact NanoClaw
+commit and inspect its provider picker with the sibling `e2e-wizard` helper:
+
+```bash
+COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+PROVIDER_HELPER=/absolute/path/to/installed/e2e-wizard/scripts/provider-options.py
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT"
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
+```
+
+Show the offered providers to the operator and ask which to test, then show the
+selected provider's exact auth prompt/options and ask for the auth method. For
+an installable provider, fetch its one `nc:copy from-branch:` payload from the
+owning remote and pass that fetched ref as `--payload-ref`; record both source
+SHAs. The native headless driver currently supports Claude only. A new gateway
+uses discovered `api` or `oauth`; gateway reuse uses the explicit lifecycle
+value `existing` after the target proves a usable vault credential. Browser,
+subscription, and device methods require a separately authorized live human
+handoff and are not automated here. `skip` cannot pass. Read a credential only
+after a matching method is selected.
+
 `--gateway reuse` uses the target user's already-configured OneCLI gateway and
 existing Anthropic credential. It never reads or transfers an operator key,
 reinstalls the gateway, selects a different endpoint, or replaces a vault secret.
@@ -98,7 +120,7 @@ NanoClaw checkout, plan a local install:
 ```bash
 python3 "$MACOS_SKILL_DIR/scripts/macos-run.py" \
   --install-dir /Users/operator/work/nanoclaw-e2e \
-  --gateway reuse --ref origin/main \
+  --gateway reuse --provider claude --auth-method existing --ref origin/main \
   --result-file /path/to/macos-result.json --dry-run
 ```
 
@@ -108,7 +130,7 @@ For a Mac reached over SSH, add `--host` and use a path on that Mac:
 python3 "$MACOS_SKILL_DIR/scripts/macos-run.py" \
   --host operator@mac.example.test \
   --install-dir /Users/operator/work/nanoclaw-e2e \
-  --gateway reuse --ref origin/main \
+  --gateway reuse --provider claude --auth-method existing --ref origin/main \
   --result-file /path/to/macos-result.json --dry-run
 ```
 
@@ -166,8 +188,18 @@ plist. Keep local reports outside source files and credential paths.
 Success and failure retain the checkout, agent, image and installed service.
 A lost SSH connection or timeout may leave work running; inspect the target
 before retrying, and use a new path rather than adopting an uncertain install.
-Only stop/remove a retained install when that cleanup is requested. Shared
-Docker and OneCLI components are not owned by the test installation.
+After the local report and the checkout's `logs/e2e/`, runtime logs, service
+record, exact SHAs, and triage output have been copied to durable local storage,
+offer to remove a run-owned installation after a pass. Recommend retaining an
+unexpected failure until triage and requested inspection are complete. Only
+stop/remove a retained install when that cleanup is requested. Immediately
+before cleanup, revalidate the install directory and service record, ensure its
+driver/controller is inactive, and verify the service points to that checkout.
+Afterward verify the checkout service is gone and write a teardown receipt next
+to the preserved report. A failed evidence, redaction, local persistence,
+triage, ownership, controller, or removal check blocks cleanup. Cleanup may
+remove only this checkout and its LaunchAgent; the Mac host, shared Docker,
+OneCLI, other services, global `ncl` link, and unrelated files are outside it.
 
 LaunchAgents depend on the user's login session. Initial readiness does not
 prove recovery after logout, reboot or Docker Desktop restart. Those are

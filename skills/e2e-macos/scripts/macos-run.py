@@ -58,7 +58,10 @@ def parse_args(argv=None):
     parser.add_argument("--target-python", help="target Python executable; default: python3 over SSH, current Python locally")
     parser.add_argument("--install-dir", required=True, help="unused persistent checkout path on the target Mac; parent must exist")
     parser.add_argument("--gateway", required=True, choices=("reuse", "install"), help="reuse the target's configured OneCLI vault, or explicitly install a new one")
-    parser.add_argument("--key-file", type=Path, help="local Anthropic credential for a NEW gateway only; sent via stdin over SSH")
+    parser.add_argument("--credential-file", "--key-file", dest="key_file", type=Path,
+                        help="local provider credential for a NEW gateway only; --key-file is a compatibility alias")
+    parser.add_argument("--provider", required=True, help="provider selected after inspecting the exact NanoClaw revision")
+    parser.add_argument("--auth-method", required=True, help="provider auth method; use existing with --gateway reuse")
     parser.add_argument("--ref", default="HEAD", help="local Git ref to test exactly (default: HEAD)")
     parser.add_argument("--repo", help="public HTTPS clone URL; defaults to the checkout's origin")
     parser.add_argument("--installer", type=Path, help="shared e2e-install.sh; defaults to the sibling installed skill")
@@ -79,7 +82,8 @@ class Run:
                        "exit_code": None, "phase": "preflight", "run_id": self.run_id,
                        "commit": None, "requested_ref": args.ref, "requested_commit": None,
                        "host": args.host, "mode": "ssh" if args.host else "local",
-                       "install_dir": args.install_dir, "started_at": now(), "finished_at": None}
+                       "install_dir": args.install_dir, "started_at": now(), "finished_at": None,
+                       "agent_provider": args.provider, "auth_method": args.auth_method}
 
     def phase(self, phase):
         self.report["phase"] = phase
@@ -94,6 +98,12 @@ class Run:
             raise Failure("--identity-file requires --host")
         if args.gateway == "reuse" and args.key_file:
             raise Failure("--key-file is for a new gateway; reuse never reads or transfers credentials")
+        if args.provider != "claude":
+            raise Failure("the native headless driver supports claude only; use e2e-wizard for another offered provider")
+        if args.gateway == "reuse" and args.auth_method != "existing":
+            raise Failure("--gateway reuse requires --auth-method existing")
+        if args.gateway == "install" and args.auth_method not in ("api", "oauth"):
+            raise Failure("a new gateway requires Claude api or oauth authentication")
         if json.loads(Path("package.json").read_text()).get("name") != "nanoclaw":
             raise Failure("run from the root of the NanoClaw checkout to test")
         commit = local(["git", "rev-parse", "--verify", "--end-of-options", args.ref + "^{commit}"])
@@ -110,9 +120,12 @@ class Run:
             if not path.is_file():
                 raise Failure("install e2e-macos and its sibling e2e-exe-dev skill, or provide --installer")
         self.report["requested_commit"] = commit
+        self.report["auth_source_commit"] = commit
         self.request = {"action": "probe", "run_id": self.run_id, "install_dir": args.install_dir,
                         "gateway": args.gateway, "repo": repo, "commit": commit,
-                        "display_name": args.display_name, "timezone": args.timezone}
+                        "display_name": args.display_name, "timezone": args.timezone,
+                        "provider": args.provider, "auth_method": args.auth_method,
+                        "auth_source_commit": commit}
         if local(["git", "status", "--porcelain"]):
             print("[macos-run] local changes are not uploaded; testing the resolved commit", file=sys.stderr)
 
@@ -193,6 +206,9 @@ class Run:
                         or service.get("run_id") != self.run_id
                         or installer.get("schema_version") != 1 or installer.get("phase") != "complete"
                         or installer.get("commit") != self.request["commit"]
+                        or installer.get("provider") != self.request["provider"]
+                        or installer.get("auth_method") != self.request["auth_method"]
+                        or installer.get("auth_source_commit") != self.request["auth_source_commit"]
                         or installer.get("status") != "pass" or installer.get("exit_code") != 0
                         or installer.get("ping") != "ok" or installer.get("service_type") != "launchd"):
                     raise Failure("target did not prove a matching install, real reply, LaunchAgent and preserved shared state")

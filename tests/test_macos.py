@@ -37,13 +37,16 @@ class MacDriverTests(Sandbox):
         if request["action"] == "probe":
             return self.plan
         installer = {"schema_version": 1, "commit": self.commit, "status": "pass", "exit_code": 0,
-                     "ping": "ok", "phase": "complete", "service_type": "launchd"}
+                     "ping": "ok", "phase": "complete", "service_type": "launchd",
+                     "provider": request["provider"], "auth_method": request["auth_method"]}
+        installer["auth_source_commit"] = request["auth_source_commit"]
         return {"run_id": request["run_id"], "created": True, "status": "pass", "exit_code": 0,
                 "phase": "complete", "commit": self.commit, "preservation": {"unchanged": True}, "installer": installer,
                 "service": {"run_id": request["run_id"], "label": "com.nanoclaw-v2-test"}}
 
     def run_driver(self, *extra, response=None):
         args = self.driver.parse_args(["--install-dir", "/Users/operator/nanoclaw-test", "--gateway", "reuse",
+                                       "--provider", "claude", "--auth-method", "existing",
                                        "--result-file", str(self.report), *extra])
         with patch.dict(os.environ, self.env, clear=True), patch.object(self.driver.Run, "target", side_effect=response or self.response):
             previous = Path.cwd()
@@ -64,7 +67,8 @@ class MacDriverTests(Sandbox):
                 self.assertEqual(report["mode"], "ssh" if options else "local")
 
     def test_dry_run_never_sends_scripts_or_reads_a_missing_key(self):
-        self.assertEqual(self.run_driver("--gateway", "install", "--key-file", str(self.root / "missing"), "--dry-run"), 0)
+        self.assertEqual(self.run_driver("--gateway", "install", "--auth-method", "api",
+                                         "--credential-file", str(self.root / "missing"), "--dry-run"), 0)
         self.assertEqual(len(self.calls), 1)
         self.assertNotIn("key", self.calls[0])
         self.assertNotIn("scripts", self.calls[0])
@@ -104,7 +108,9 @@ with open(os.environ['MAC_SSH_CALLS'], 'w') as out:
 print('{}')
 ''')
         args = self.driver.parse_args(["--host", "operator@mac.example.test", "--identity-file", str(self.root / "ssh key"),
-                                       "--install-dir", "/Users/operator/new", "--gateway", "install", "--result-file", str(self.report)])
+                                       "--install-dir", "/Users/operator/new", "--gateway", "install",
+                                       "--provider", "claude", "--auth-method", "api",
+                                       "--result-file", str(self.report)])
         payload = {"action": "run", "key": "SECRET-DO-NOT-PRINT"}
         with patch.dict(os.environ, self.env, clear=True):
             self.driver.Run(args).target(payload)
@@ -128,7 +134,8 @@ print('{}')
         key = self.root / "key"
         key.write_text("DO-NOT-OVERWRITE")
         with self.assertRaises(self.driver.Failure):
-            self.run_driver("--gateway", "install", "--key-file", str(key), "--result-file", str(key))
+            self.run_driver("--gateway", "install", "--auth-method", "api",
+                            "--credential-file", str(key), "--result-file", str(key))
         self.assertEqual(key.read_text(), "DO-NOT-OVERWRITE")
 
 
@@ -233,7 +240,9 @@ if mode=='stale': commit='0'*40
 code=2 if mode=='auth-failed' else 0
 if mode!='missing':
     (logs/'result.json').write_text(json.dumps({'schema_version':1,'commit':commit,'status':'failed' if code else 'pass',
-        'exit_code':code,'ping':'auth_error' if code else 'ok','phase':'ping' if code else 'complete','service_type':'launchd'}))
+        'exit_code':code,'ping':'auth_error' if code else 'ok','phase':'ping' if code else 'complete','service_type':'launchd',
+        'provider':os.environ['NANOCLAW_E2E_PROVIDER'],'auth_method':os.environ['NANOCLAW_E2E_AUTH_METHOD'],
+        'auth_source_commit':os.environ['NANOCLAW_E2E_AUTH_SOURCE_COMMIT']}))
 (root/'.git/nanoclaw-e2e/service.json').write_text(json.dumps({'run_id':os.environ['NANOCLAW_E2E_RUN_ID'],'target':'gui/501/com.nanoclaw-v2-test'}))
 raise SystemExit(code)
 PY
@@ -242,6 +251,8 @@ PY
     def run_target(self, mode="pass", changed_after=False):
         request = {"action": "run", "install_dir": str(self.install_dir), "gateway": "install",
                    "before": self.baseline, "run_id": "owned-run", "repo": str(self.checkout), "commit": self.commit,
+                   "provider": "claude", "auth_method": "api",
+                   "auth_source_commit": self.commit,
                    "scripts": {"e2e-install.sh": base64.b64encode(self.installer.encode()).decode(),
                                "macos-service.py": base64.b64encode(b"# fixture\n").decode()},
                    "key": base64.b64encode(b"PRIVATE-NEW-VAULT-CREDENTIAL").decode()}

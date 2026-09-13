@@ -40,6 +40,16 @@ SCENARIO = {
     'completed_text': "You're ready! Chat with",
 }
 VALUES = {'challenge': 'Reply with only the decimal value of 23456 * 37.', 'answer': '867872'}
+CLAUDE_SELECTED = {
+    'label': 'Claude', 'auth_prompt': 'How would you like to connect to Claude?',
+    'auth_input_key': 'auth_method', 'auth_source': 'setup/auto.ts',
+    'auth_source_ref': 'HEAD', 'auth_source_commit': 'a' * 40,
+}
+CLAUDE_API = {
+    'value': 'api', 'label': 'Paste an Anthropic API key',
+    'automation': 'credential-file', 'credential_kind': 'anthropic-api-key',
+    'usable_for_e2e': True,
+}
 
 FIXTURE = r'''
 import fcntl, os, signal, struct, subprocess, sys, termios, time, tty
@@ -208,6 +218,7 @@ class EvidenceTests(unittest.TestCase):
         self.key.chmod(0o600)
         self.result = {'schema_version': 1, 'mode': 'wizard', 'run_id': 'regression123', 'commit': 'a'*40,
                        'status': 'pass', 'exit_code': 0, 'wizard_completed': True, 'retained_reply_verified': True,
+                       'provider': 'claude', 'auth_method': 'api', 'auth_source_commit': 'a'*40,
                        'service': {'type': 'systemd-user', 'checkout_verified': True, 'socket_connected': True}}
         self.progress = self.root / 'logs/setup.log'
         lines = ['## today · setup:auto started', '  invocation: nanoclaw.sh']
@@ -407,6 +418,16 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             collector.collect(data, self.root/'local', self.root/'result.json', 'a'*40, 'regression123', 0, self.key)
 
+    def test_collector_binds_provider_auth_and_auth_source_commit(self):
+        destination = self.export()
+        with self.assertRaises(collector.ValidationError) as caught:
+            collector.collect(
+                self.archive(destination), self.root/'identity-local',
+                self.root/'identity-result.json', 'a'*40, 'regression123', 0,
+                self.key, 'claude', 'api', 'b'*40,
+            )
+        self.assertEqual(caught.exception.code, 'provider-selection-mismatch')
+
     def test_collector_failed_validation_leaves_destination_retryable(self):
         destination = self.export()
         valid = self.archive(destination).getvalue()
@@ -483,8 +504,10 @@ class EvidenceTests(unittest.TestCase):
         with patch.object(wizard.os, 'getuid', return_value=1000), \
                 patch.object(wizard.subprocess, 'run', return_value=response), \
                 patch.object(wizard.subprocess, 'check_output', return_value='a'*40), \
+                patch.object(wizard, 'selected_auth', return_value=(CLAUDE_SELECTED, CLAUDE_API)), \
                 patch.object(wizard.WizardTerminal, 'run', side_effect=wizard_failure):
-            rc = wizard.main(['--root',str(self.root),'--key-file',str(self.key),
+            rc = wizard.main(['--root',str(self.root),'--provider','claude','--auth-method','api',
+                              '--credential-file',str(self.key),
                               '--result-file',str(result),'--artifacts-dir',str(artifacts)])
         self.assertNotEqual(rc, 0)
         for path in (result, artifacts/'result.json'):
@@ -496,7 +519,9 @@ class EvidenceTests(unittest.TestCase):
     def test_preflight_invalidates_existing_pass_without_running_wizard(self):
         result = self.root / 'old-result.json'
         result.write_text('{"status":"pass"}')
-        rc = wizard.main(['--root',str(self.root),'--key-file',str(self.key),'--result-file',str(result),'--artifacts-dir',str(self.root/'preflight-artifacts')])
+        rc = wizard.main(['--root',str(self.root),'--provider','claude','--auth-method','api',
+                          '--credential-file',str(self.key),'--result-file',str(result),
+                          '--artifacts-dir',str(self.root/'preflight-artifacts')])
         self.assertNotEqual(rc, 0)
         self.assertEqual(json.loads(result.read_text())['status'], 'failed')
 
@@ -506,6 +531,46 @@ class WizardDriverTests(unittest.TestCase):
         self.fixture = test_e2e.DriverTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
+        providers = self.fixture.checkout/'setup/providers'
+        providers.mkdir(parents=True)
+        (providers/'index.ts').write_text("import './claude.js';\n")
+        (providers/'claude.ts').write_text(
+            "registerSetupProvider({value:'claude',label:'Claude',hint:'Anthropic',});\n")
+        (self.fixture.checkout/'setup/auto.ts').write_text("""
+const method = await brightSelect({message:'How would you like to connect to Claude?',options:[
+{value:'api',label:'Paste an Anthropic API key',hint:'pay per use'},
+{value:'skip',label:"Skip — I'll connect later",hint:'no replies'},
+]});
+setupLog.userInput('auth_method', method);
+""")
+        provider_skill = self.fixture.checkout/'.claude/skills/add-codex'
+        provider_skill.mkdir(parents=True)
+        (provider_skill/'SKILL.md').write_text("""---
+name: add-codex
+metadata:
+  nanoclaw-provider: codex
+  nanoclaw-provider-label: Codex
+  nanoclaw-provider-hint: OpenAI account
+  nanoclaw-provider-offered: 'true'
+---
+```nc:copy from-branch:providers
+setup/providers/codex.ts
+```
+""")
+        self.fixture.commit = self.fixture.commit_change('provider-aware wizard')
+        self.fixture.git('push', 'origin', 'HEAD:main')
+        self.fixture.git('switch', '-c', 'providers')
+        (providers/'codex.ts').write_text("""
+const method = await brightSelect({message:'How would you like to connect Codex?',options:[
+{value:'api',label:'Paste an OpenAI API key',hint:'pay per use'},
+{value:'skip',label:"Skip — I'll connect later",hint:'no replies'},
+]});
+setupLog.userInput('codex_auth_method', method);
+""")
+        self.payload_commit = self.fixture.commit_change('codex provider payload')
+        self.fixture.git('push', 'origin', 'HEAD:providers')
+        self.fixture.git('switch', 'main')
+        self.fixture.env['MOCK_COMMIT'] = self.fixture.commit
         scripts = self.fixture.root / 'skills/e2e-exe-dev/scripts'
         scripts.mkdir(parents=True)
         for name in ['exe-run.sh','e2e-install.sh']:
@@ -517,16 +582,19 @@ class WizardDriverTests(unittest.TestCase):
         # archive creation and local evidence validator remain exercised.
         (self.wizard_skill/'scripts/wizard-install.sh').write_text("""#!/usr/bin/env bash
 set -euo pipefail
-python3 - "$2" <<'PY'
+python3 - "$@" <<'PY'
 import hashlib,json,os,pathlib,subprocess,sys
 root=pathlib.Path.cwd();dest=root/'logs/e2e-wizard';dest.mkdir(parents=True)
+options=dict(zip(sys.argv[1::2],sys.argv[2::2]))
 rc=int(os.environ.get('MOCK_INSTALL_RC','0'))
-result={'schema_version':1,'mode':'wizard','run_id':sys.argv[1],
+result={'schema_version':1,'mode':'wizard','run_id':options['--run-id'],
  'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
  'status':'failed' if rc else 'pass','exit_code':rc,'wizard_completed':True,
- 'retained_reply_verified':True,'service':{'checkout_verified':True,'socket_connected':True}}
+ 'retained_reply_verified':True,'provider':options['--provider'],'auth_method':options['--auth-method'],
+ 'auth_source_commit':options['--expected-auth-source-commit'],
+ 'service':{'checkout_verified':True,'socket_connected':True}}
 files={'terminal.txt':'sanitized output','choices.json':'[]','setup-logs/setup.log':'completed', 'result.json':json.dumps(result)}
-manifest={'schema_version':1,'run_id':sys.argv[1],'sanitized':True,'files':{}}
+manifest={'schema_version':1,'run_id':options['--run-id'],'sanitized':True,'files':{}}
 for name,content in files.items():
  path=dest/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content)
  manifest['files'][name]=hashlib.sha256(content.encode()).hexdigest()
@@ -538,18 +606,30 @@ exit "${MOCK_INSTALL_RC:-0}"
         self.result = self.fixture.root/'result.json'
 
     def run_driver(self, *args):
-        return self.fixture.run_driver('--interactive','--result-file',str(self.result),*args)
+        return self.fixture.run_driver('--interactive','--provider','claude','--auth-method','api',
+                                       '--result-file',str(self.result),*args)
 
     def test_success_exports_evidence_before_opt_in_removal(self):
         run=self.run_driver('--rm')
         self.assertEqual(run.returncode,0,run.stderr)
         self.assertEqual(json.loads(self.result.read_text())['mode'],'wizard')
         self.assertTrue(Path(str(self.result)+'.artifacts/terminal.txt').is_file())
+        self.assertTrue(Path(str(self.result)+'.artifacts/teardown-receipt.json').is_file())
         calls=self.fixture.calls()
         export=next(i for i,c in enumerate(calls) if c[0]!='exe.dev' and 'tar -C ~/nanoclaw/logs/e2e-wizard' in ' '.join(c))
         removal=next(i for i,c in enumerate(calls) if c[:2]==['exe.dev','rm'])
         self.assertLess(export,removal)
         self.assertFalse((self.fixture.vm/'observed.json').exists(), 'headless installer ran')
+
+    def test_installable_provider_uses_exact_payload_auth_source(self):
+        self.fixture.key.write_text('sk-fake-openai-private-fixture')
+        run = self.run_driver('--provider', 'codex', '--auth-method', 'api',
+                              '--payload-ref', 'origin/providers')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        result = json.loads(self.result.read_text())
+        self.assertEqual(result['provider'], 'codex')
+        self.assertEqual(result['auth_method'], 'api')
+        self.assertEqual(result['auth_source_commit'], self.payload_commit)
 
     def test_failed_wizard_is_retained_with_sanitized_result(self):
         self.fixture.env['MOCK_INSTALL_RC']='2'

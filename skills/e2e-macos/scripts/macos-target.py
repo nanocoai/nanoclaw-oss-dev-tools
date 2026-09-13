@@ -254,6 +254,9 @@ def run(request):
         env.update(NANOCLAW_E2E_ROOT=str(root), NANOCLAW_E2E_ONECLI_MODE=request["gateway"],
                    NANOCLAW_E2E_MACOS_SERVICE_HELPER=str(private / "macos-service.py"),
                    NANOCLAW_E2E_RUN_ID=request["run_id"],
+                   NANOCLAW_E2E_PROVIDER=request["provider"],
+                   NANOCLAW_E2E_AUTH_METHOD=request["auth_method"],
+                   NANOCLAW_E2E_AUTH_SOURCE_COMMIT=request["auth_source_commit"],
                    NANOCLAW_DISPLAY_NAME=request.get("display_name", "E2E"),
                    NANOCLAW_E2E_TZ=request.get("timezone", "UTC"))
         if request["gateway"] == "reuse":
@@ -275,6 +278,9 @@ def run(request):
         expected = "pass" if result.returncode == 0 else "failed"
         if (not isinstance(installer, dict) or installer.get("schema_version") != 1 or installer.get("commit") != request["commit"]
                 or installer.get("status") != expected or installer.get("exit_code") != result.returncode
+                or installer.get("provider") != request["provider"]
+                or installer.get("auth_method") != request["auth_method"]
+                or installer.get("auth_source_commit") != request["auth_source_commit"]
                 or (result.returncode == 0 and (installer.get("ping") != "ok"
                                                or installer.get("phase") != "complete"
                                                or installer.get("service_type") != "launchd"))):

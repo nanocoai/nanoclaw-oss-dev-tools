@@ -13,6 +13,43 @@ DRIVER = Path(__file__).resolve().parents[1] / 'skills/e2e-wizard/scripts/proxmo
 class WizardProxmoxTests(Sandbox):
     def setUp(self):
         super().setUp()
+        providers = self.checkout / 'setup/providers'
+        providers.mkdir(parents=True)
+        (providers / 'index.ts').write_text("import './claude.js';\n")
+        (providers / 'claude.ts').write_text(
+            "registerSetupProvider({value:'claude',label:'Claude',hint:'Anthropic',});\n")
+        (self.checkout / 'setup/auto.ts').write_text("""
+const method = await brightSelect({message:'How would you like to connect to Claude?',options:[
+{value:'api',label:'Paste an Anthropic API key',hint:'pay per use'},
+{value:'skip',label:"Skip — I'll connect later",hint:'no replies'},
+]});
+setupLog.userInput('auth_method', method);
+""")
+        provider_skill = self.checkout / '.claude/skills/add-codex'
+        provider_skill.mkdir(parents=True)
+        (provider_skill / 'SKILL.md').write_text("""---
+name: add-codex
+metadata:
+  nanoclaw-provider: codex
+  nanoclaw-provider-label: Codex
+  nanoclaw-provider-hint: OpenAI account
+  nanoclaw-provider-offered: 'true'
+---
+```nc:copy from-branch:providers
+setup/providers/codex.ts
+```
+""")
+        self.commit = self.commit_change('provider-aware wizard')
+        self.git('switch', '-c', 'providers')
+        (providers / 'codex.ts').write_text("""
+const method = await brightSelect({message:'How would you like to connect Codex?',options:[
+{value:'api',label:'Paste an OpenAI API key',hint:'pay per use'},
+{value:'skip',label:"Skip — I'll connect later",hint:'no replies'},
+]});
+setupLog.userInput('codex_auth_method', method);
+""")
+        self.payload_commit = self.commit_change('codex provider payload')
+        self.git('switch', 'main')
         self.key = self.root / 'credential'
         self.key.write_text('sk-ant-api03-fake-private-fixture')
         self.key.chmod(0o600)
@@ -49,6 +86,8 @@ elif args[:2] == ['pct', 'exec']:
                   'commit': os.environ['MOCK_COMMIT'], 'status': 'failed' if failed else 'pass',
                   'exit_code': 2 if failed else 0, 'ping': 'ok', 'phase': 'wizard' if failed else 'complete',
                   'wizard_completed': not failed, 'retained_reply_verified': not failed,
+                  'provider': os.environ['MOCK_PROVIDER'], 'auth_method': os.environ['MOCK_AUTH_METHOD'],
+                  'auth_source_commit': os.environ['MOCK_AUTH_SOURCE_COMMIT'],
                   'service': {'checkout_verified': True, 'socket_connected': True}}
         if script.startswith('cat '): print(json.dumps(result))
         else:
@@ -69,11 +108,16 @@ elif args[:2] == ['pct', 'exec']:
 elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exit('unexpected boundary')
 ''')
 
-    def run_driver(self, *extra, mode='pass'):
+    def run_driver(self, *extra, mode='pass', provider='claude', auth_method='api',
+                   auth_source_commit=None):
         self.env['MOCK_MODE'] = mode
+        self.env['MOCK_PROVIDER'] = provider
+        self.env['MOCK_AUTH_METHOD'] = auth_method
+        self.env['MOCK_AUTH_SOURCE_COMMIT'] = auth_source_commit or self.commit
         return subprocess.run([sys.executable, str(DRIVER), '--host', 'root@pve.example.test',
             '--template', 'local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst',
             '--storage', 'local-lvm', '--bridge', 'vmbr0', '--key-file', str(self.key),
+            '--provider', provider, '--auth-method', auth_method,
             '--result-file', str(self.report), *extra], cwd=self.checkout, env=self.env,
             text=True, capture_output=True, timeout=20)
 
@@ -90,6 +134,18 @@ elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exi
         self.assertTrue((Path(str(self.report) + '.artifacts') / 'terminal.txt').is_file())
         self.assertTrue((Path(str(self.report) + '.artifacts') / 'runtime-logs/nanoclaw.log').is_file())
         self.assertFalse(any(c['args'][:2] in (['pct', 'stop'], ['pct', 'destroy'], ['pct', 'clone']) for c in self.commands()))
+
+    def test_installable_provider_result_uses_payload_auth_identity(self):
+        self.key.write_text('sk-fake-openai-private-fixture')
+        run = self.run_driver('--payload-ref', 'providers', provider='codex',
+                              auth_source_commit=self.payload_commit)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report['agent_provider'], 'codex')
+        self.assertEqual(report['auth_method'], 'api')
+        self.assertEqual(report['auth_source_commit'], self.payload_commit)
+        self.assertEqual(report['installer']['provider'], 'codex')
+        self.assertEqual(report['wizard']['auth_source_commit'], self.payload_commit)
 
     def test_product_failure_retains_guest_and_sanitized_artifacts(self):
         run = self.run_driver(mode='product-failure')
@@ -156,7 +212,8 @@ elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exi
         self.report.write_text('{"status":"pass","run_id":"old"}')
         run = subprocess.run([sys.executable, str(copied/'e2e-wizard/scripts/proxmox-wizard.py'),
             '--host','root@pve.example.test','--template','local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst',
-            '--storage','local-lvm','--bridge','vmbr0','--result-file',str(self.report)],
+            '--storage','local-lvm','--bridge','vmbr0','--provider','claude','--auth-method','api',
+            '--result-file',str(self.report)],
             cwd=self.checkout, env=self.env, text=True, capture_output=True, timeout=10)
         self.assertEqual(run.returncode, 74, run.stderr)
         self.assertEqual(json.loads(self.report.read_text())['status'], 'failed')
