@@ -84,10 +84,12 @@ class DriverTests(Sandbox):
         self.vm.mkdir()
         self.key = self.root / "fake-key"
         self.key.write_text("FAKE_ANTHROPIC_TOKEN")
+        self.key.chmod(0o600)
         self.skill = self.root / "installed skill"
         self.skill.mkdir()
         self.driver = self.skill / "exe-run.sh"
         shutil.copy2(SCRIPTS / "exe-run.sh", self.driver)
+        shutil.copy2(SCRIPTS / "e2e-evidence.py", self.skill / "e2e-evidence.py")
         # The driver transfers this fake installer, which records actual state
         # after all remote Git commands and environment loading have run.
         (self.skill / "e2e-install.sh").write_text(
@@ -100,21 +102,29 @@ class DriverTests(Sandbox):
             "logs = Path('logs/e2e'); logs.mkdir(parents=True, exist_ok=True)\n"
             "rc = int(os.environ.get('MOCK_INSTALL_RC', '0'))\n"
             "result = {'schema_version': 1, 'commit': observed['commit'], 'exit_code': rc,\n"
-            " 'status': 'failed' if rc else 'pass'}\n"
+            " 'status': 'failed' if rc else 'pass',\n"
+            " 'provider': observed['env'].get('NANOCLAW_E2E_PROVIDER'),\n"
+            " 'auth_method': observed['env'].get('NANOCLAW_E2E_AUTH_METHOD'),\n"
+            " 'auth_source_commit': observed['env'].get('NANOCLAW_E2E_AUTH_SOURCE_COMMIT')}\n"
             "if os.environ.get('MOCK_WRONG_COMMIT'): result['commit'] = 'wrong'\n"
             "(logs/'result.json').write_text(json.dumps(result))\n"
+            "(logs/'install.log').write_text('sanitized installer evidence\\n')\n"
             "PY\n"
             'exit "${MOCK_INSTALL_RC:-0}"\n'
         )
         self.calls_file = self.root / "ssh-calls.jsonl"
+        self.vm_exists = self.root / "mock-vm-exists"
+        self.vm_exists.write_text("test-vm\n")
+        self.result_counter = 0
         self.env.update({
             "MOCK_VM_HOME": str(self.vm),
             "MOCK_CALLS": str(self.calls_file),
+            "MOCK_VM_EXISTS": str(self.vm_exists),
             "MOCK_CREATED": json.dumps({"vm_name": "test-vm", "ssh_dest": "test-vm.exe.xyz"}),
             "MOCK_SNAPSHOT": json.dumps({"vm_name": "saved-vm", "ssh_dest": "saved-vm.exe.xyz"}),
         })
         self.executable("ssh", PYTHON + r'''
-import json, os, subprocess, sys
+import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 with open(os.environ["MOCK_CALLS"], "a") as out:
     out.write(json.dumps(args) + "\n")
@@ -129,22 +139,35 @@ if dest == "exe.dev":
         print(os.environ["MOCK_SNAPSHOT"])
         sys.exit(int(os.environ.get("MOCK_SNAPSHOT_RC", "0")))
     if args[0] == "rm":
+        if int(os.environ.get("MOCK_REMOVE_RC", "0")):
+            sys.exit(int(os.environ["MOCK_REMOVE_RC"]))
+        pathlib.Path(os.environ["MOCK_VM_EXISTS"]).unlink(missing_ok=True)
+        print(json.dumps({"removed": args[1]}))
         sys.exit(0)
-    # Deliberately expose the old name to catch unsafe ls fallbacks.
     if args[0] == "ls":
-        print(json.dumps({"vms": [{"vm_name": "test-vm", "ssh_dest": "test-vm.exe.xyz"}]}))
+        present = pathlib.Path(os.environ["MOCK_VM_EXISTS"]).exists() or os.environ.get("MOCK_STALE_LIST")
+        vms = [{"vm_name": "test-vm", "ssh_dest": "test-vm.exe.xyz"}] if present else []
+        print(json.dumps({"vms": vms}))
         sys.exit(0)
     sys.exit("unexpected lobby command")
 if dest not in ("test-vm.exe.xyz", "vm+test-vm@vm.exe.xyz"):
     sys.exit("unexpected VM destination")
+if os.environ.get("MOCK_ACTIVE_HARNESS") and any("command -v pgrep" in arg for arg in args):
+    sys.exit(1)
 remote_env = {k: v for k, v in os.environ.items() if not k.startswith("NANOCLAW_")}
 remote_env["HOME"] = os.environ["MOCK_VM_HOME"]
 sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returncode)
 ''')
+        self.executable("sleep", "#!/bin/sh\nexit 0\n")
 
     def run_driver(self, *args):
+        args = list(args)
+        if "--rm" in args and "--result-file" not in args:
+            self.result_counter += 1
+            args.extend(("--result-file", str(self.root / f"auto-result-{self.result_counter}.json")))
         return self.run_script(
-            self.driver, "--name", "test-vm", "--key-file", str(self.key), *args,
+            self.driver, "--name", "test-vm", "--provider", "claude", "--auth-method", "api",
+            "--credential-file", str(self.key), *args,
         )
 
     def calls(self):
@@ -169,6 +192,28 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         run = self.run_script(self.driver, "--help", cwd=self.root)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("--ref", run.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_remove_requires_a_local_evidence_destination(self):
+        run = self.run_script(
+            self.driver, "--name", "test-vm", "--provider", "claude",
+            "--auth-method", "api", "--credential-file", str(self.key), "--rm",
+        )
+        self.assertEqual(run.returncode, 64, run.stderr)
+        self.assertIn("validated evidence", run.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_result_cannot_overwrite_credential_and_public_key_is_rejected(self):
+        original = self.key.read_text()
+        run = self.run_driver("--result-file", str(self.key))
+        self.assertEqual(run.returncode, 66, run.stderr)
+        self.assertEqual(self.key.read_text(), original)
+        self.assertEqual(self.calls(), [])
+
+        self.key.chmod(0o644)
+        run = self.run_driver()
+        self.assertEqual(run.returncode, 66, run.stderr)
+        self.assertIn("private regular file", run.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_invalid_input_allocates_nothing(self):
@@ -218,7 +263,7 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         run = self.run_driver("--base", "base-vm", "--snapshot", "saved-vm", "--rm")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("snapshot confirmed: saved-vm", run.stdout)
-        self.assertIn(["exe.dev", "rm", "test-vm"], self.calls())
+        self.assertIn(["exe.dev", "rm", "test-vm", "--json"], self.calls())
 
     def test_copy_response_requires_matching_source_and_name(self):
         for metadata in (
@@ -263,9 +308,9 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         run = self.run_driver("--rm")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(json.loads((self.vm / "observed.json").read_text())["commit"], self.commit)
-        self.assertIn(["exe.dev", "rm", "test-vm"], self.calls())
+        self.assertIn(["exe.dev", "rm", "test-vm", "--json"], self.calls())
         self.assertIn("commit=" + self.commit, run.stdout)
-        self.assertEqual((self.vm / ".nanoclaw-e2e/anthropic_key").stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.vm / ".nanoclaw-e2e/credential").exists())
 
     def test_legacy_ssh_destination_is_preserved(self):
         self.env["MOCK_CREATED"] = json.dumps({
@@ -328,14 +373,43 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         run = self.run_driver("--snapshot", "saved-vm", "--rm")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn(["exe.dev", "cp", "test-vm", "saved-vm", "--json"], self.calls())
-        self.assertIn(["exe.dev", "rm", "test-vm"], self.calls())
+        self.assertIn(["exe.dev", "rm", "test-vm", "--json"], self.calls())
 
     def test_result_export_survives_requested_removal(self):
         result_file = self.root / "saved result.json"
         run = self.run_driver("--rm", "--result-file", str(result_file))
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(json.loads(result_file.read_text())["commit"], self.commit)
-        self.assertIn(["exe.dev", "rm", "test-vm"], self.calls())
+        result = json.loads(result_file.read_text())
+        self.assertEqual(result["commit"], self.commit)
+        self.assertEqual(result["provider"], "claude")
+        self.assertEqual(result["auth_method"], "api")
+        self.assertEqual(result["auth_source_commit"], self.commit)
+        artifacts = Path(result["artifacts"])
+        self.assertTrue((artifacts / "manifest.json").is_file())
+        receipt = json.loads((artifacts / "teardown-receipt.json").read_text())
+        self.assertEqual(receipt["vm_name"], "test-vm")
+        self.assertTrue(receipt["verification"]["vm_absent"])
+        self.assertIn(["exe.dev", "rm", "test-vm", "--json"], self.calls())
+        self.assertIn(["exe.dev", "ls", "--json"], self.calls())
+
+    def test_active_harness_prevents_removal_after_evidence_export(self):
+        self.env["MOCK_ACTIVE_HARNESS"] = "1"
+        result_file = self.root / "active-result.json"
+        run = self.run_driver("--rm", "--result-file", str(result_file))
+        self.assertEqual(run.returncode, 70, run.stderr)
+        self.assertEqual(json.loads(result_file.read_text())["status"], "pass")
+        self.assertTrue(Path(str(result_file) + ".artifacts").is_dir())
+        self.assert_retained()
+
+    def test_stale_inventory_never_confirms_removal(self):
+        self.env["MOCK_STALE_LIST"] = "1"
+        result_file = self.root / "stale-result.json"
+        run = self.run_driver("--rm", "--result-file", str(result_file))
+        self.assertEqual(run.returncode, 70, run.stderr)
+        self.assertIn("absence was not verified", run.stderr)
+        self.assertIn(["exe.dev", "rm", "test-vm", "--json"], self.calls())
+        self.assertEqual(self.calls().count(["exe.dev", "ls", "--json"]), 10)
+        self.assertFalse((Path(str(result_file) + ".artifacts") / "teardown-receipt.json").exists())
 
     def test_mismatched_result_prevents_removal(self):
         self.env["MOCK_WRONG_COMMIT"] = "1"
@@ -359,7 +433,10 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         fresh_vm = self.root / "fresh-vm"
         fresh_vm.mkdir()
         self.env["MOCK_VM_HOME"] = str(fresh_vm)
-        second = self.run_driver("--rm", "--result-file", str(result_file))
+        second = self.run_driver(
+            "--rm", "--result-file", str(result_file),
+            "--artifacts-dir", str(self.root / "second-result-artifacts"),
+        )
         self.assertEqual(second.returncode, 128, second.stderr)
         result = json.loads(result_file.read_text())
         self.assertEqual(result["status"], "failed")

@@ -41,14 +41,16 @@ or in Claude Code with `/plugin install nanoclaw-e2e@nanoclaw-oss-dev-tools` (th
 is invoked as `/nanoclaw-e2e:e2e-exe-dev`). In Codex, invoke `$e2e-exe-dev`.
 Resolve the scripts relative to this `SKILL.md`, then run them **from the root
 of the NanoClaw checkout you want tested**. The installed skill and the
-checkout being tested are separate directories.
+checkout being tested are separate directories. Install `e2e-wizard` alongside
+this skill; its shared read-only helper discovers the exact provider picker.
 
-Two scripts, both under `scripts/`:
+Three scripts under `scripts/`:
 
 | Script | Runs on | Does |
 |---|---|---|
-| `exe-run.sh` | your machine | `ssh exe.dev new --json` (or `cp` from a base VM), pushes the key and the installer over SSH, clones the ref, runs the installer, optionally snapshots (`--snapshot`) or deletes on pass (`--rm`) |
+| `exe-run.sh` | your machine | `ssh exe.dev new --json` (or `cp` from a base VM), pushes the selected credential and installer over SSH, clones the ref, runs the installer, exports evidence, optionally snapshots (`--snapshot`) or performs guarded deletion on pass (`--rm`) |
 | `e2e-install.sh` | the VM (or any Debian/Ubuntu box, or a CI runner) | the headless install + ping; exits 0 on pass |
+| `e2e-evidence.py` | VM and operator machine | creates, redacts and validates the headless evidence bundle before any requested teardown |
 
 ## When to use
 
@@ -81,7 +83,7 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
   https://exe.dev/docs.md (index) / https://exe.dev/docs/all.md (one page).
   `ssh exe.dev help <command>` is the authoritative flag reference; this
   skill only adds the NanoClaw side.
-- An Anthropic API key or OAuth token in a local file, default
+- For the headless Claude path, an Anthropic API key or OAuth token in a local file, default
   `~/.nanoclaw-e2e/anthropic_key`. It goes to the VM over stdin into a
   `0600` file; the installer seeds it into the OneCLI vault exactly as
   `setup/auth.ts` does (`onecli secrets create --type anthropic
@@ -91,6 +93,40 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
   `setup/install-docker.sh` (`get.docker.com` + `usermod -aG docker`).
   Docker runs inside exe.dev VMs.
 
+## Choose the provider and authentication first
+
+Resolve the exact NanoClaw commit and inspect its provider picker before reading
+a credential or provisioning anything. The discovery helper belongs to the
+sibling `e2e-wizard` skill and reads Git objects, so uncommitted files cannot
+change the choices:
+
+```bash
+COMMIT="$(git rev-parse --verify HEAD^{commit})"
+PROVIDER_HELPER=/absolute/path/to/installed/e2e-wizard/scripts/provider-options.py
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT"
+```
+
+Show the reported `providers` to the operator and ask which provider to test.
+Then inspect that provider and show its exact `auth_prompt` and `auth_methods`:
+
+```bash
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
+```
+
+For an installable provider, first fetch the one `nc:copy from-branch:` payload
+named by its offered skill from the owning remote, then pass that fetched ref as
+`--payload-ref`. Record both `nanoclaw_commit` and `auth_source_commit`. Never
+guess a payload remote or silently choose a provider or auth method.
+
+The unattended headless installer currently supports Claude `api` and `oauth`.
+Its `existing` mode is only for an explicitly selected reused gateway whose
+vault already has a usable Anthropic credential; it is not a public-picker
+choice. The public wizard can also automate credential-file methods exposed by
+other offered providers. Browser, subscription, or device methods require a
+separately authorized live human handoff; these drivers stop before allocation
+because they cannot complete that handoff unattended. `skip` cannot produce an
+E2E pass. Read a credential only after the operator chooses its matching method.
+
 ## Workflow
 
 1. **Run it** from the checkout root, on the branch you want tested. Set
@@ -99,12 +135,19 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
    ```bash
    E2E_SKILL_DIR=/absolute/path/to/installed/e2e-exe-dev
    cd /absolute/path/to/nanoclaw
-   bash "$E2E_SKILL_DIR/scripts/exe-run.sh"  # HEAD, new VM
-   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --ref origin/main --name nc-main
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" \
+     --provider claude --auth-method api --credential-file /path/to/anthropic-key \
+     --result-file /path/to/results/exe-headless.json
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --ref origin/main --name nc-main \
+     --provider claude --auth-method oauth --credential-file /path/to/anthropic-oauth-token \
+     --result-file /path/to/results/exe-main.json
    ```
 
-   For a disposable run with a retained local report, add
-   `--result-file /path/to/result.json --rm` (the parent directory must exist).
+   Keep `--result-file` on every live run so the report and sanitized evidence
+   exist before the post-run retention choice. For an already authorized
+   disposable run, add `--rm` (the result parent directory must exist).
+   `--rm` is rejected without `--result-file`; `<result-file>.artifacts` must be
+   a new local path so teardown cannot precede validated evidence persistence.
 
    `--ref` resolves in the local checkout to an exact commit before creating
    a VM. Fetch locally first if you want an updated `origin/main`. The VM
@@ -143,7 +186,11 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
    or reply text. With `--result-file`, after argument parsing and destination
    validation the driver replaces any old local report with `running` before
    checking the checkout, credentials or VM. It exports a matching completed
-   installer result before snapshot/removal. Otherwise it records the driver
+   installer result and a sanitized evidence directory before snapshot/removal.
+   The evidence binds the run ID, NanoClaw SHA, provider, auth method, provider
+   auth-source SHA, dev-tools SHA when available, and exact harness digest. It
+   includes checksummed setup/runtime logs and a service/container/socket state
+   snapshot. Otherwise the driver records the driver
    failure, exit code, phase and requested ref/commit; `commit` is null because
    no tested revision was confirmed. An interrupted run may remain `running`.
    A failed export keeps the VM. Once exported, the installer result describes
@@ -157,8 +204,12 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
 3. **Bake a base VM** once the run is green, then clone it for every later run:
 
    ```bash
-   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --snapshot my-nanoclaw-e2e-base
-   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --base my-nanoclaw-e2e-base --ref my-branch
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --snapshot my-nanoclaw-e2e-base \
+     --provider claude --auth-method api --credential-file /path/to/anthropic-key \
+     --result-file /path/to/results/base.json
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --base my-nanoclaw-e2e-base --ref my-branch \
+     --provider claude --auth-method api --credential-file /path/to/anthropic-key \
+     --result-file /path/to/results/cached.json
    ```
 
    VM names are global across exe.dev (they become `<name>.exe.xyz`), so
@@ -178,8 +229,17 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
    --json` lists it), then in `~/nanoclaw`: `pnpm run chat hi`,
    `bin/ncl groups list`, `tail -f logs/nanoclaw.log`.
 
-5. **Delete it.** `ssh exe.dev rm <name>` — or pass `--rm` to the driver to
-   delete on a pass (a failed VM is always kept so you can look at it).
+5. **Choose retention after evidence is safe.** Recommend deleting a disposable,
+   run-owned VM after a pass and retaining an unexpected failure until triage is
+   complete. Offer the operator that choice after reporting the result. With
+   `--rm`, the driver revalidates its run marker, confirms no harness controller
+   is active, calls `ssh exe.dev rm <name> --json`, verifies the name is absent
+   from `ssh exe.dev ls --json`, and writes
+   `teardown-receipt.json` into the validated artifact directory. Any failed
+   export, checksum, redaction, local persistence, ownership, controller, or
+   absence check blocks or leaves teardown unconfirmed. For manual cleanup,
+   repeat the same checks and record the receipt; inventory lookup alone never
+   proves ownership.
 
 ### Running the installer somewhere else
 
@@ -190,6 +250,8 @@ git clone https://github.com/nanocoai/nanoclaw-oss-dev-tools.git
 E2E_SKILL_DIR="$(pwd)/nanoclaw-oss-dev-tools/skills/e2e-exe-dev"
 git clone https://github.com/nanocoai/nanoclaw.git
 cd nanoclaw
+NANOCLAW_E2E_PROVIDER=claude NANOCLAW_E2E_AUTH_METHOD=api \
+NANOCLAW_E2E_AUTH_SOURCE_COMMIT="$(git rev-parse HEAD)" \
 NANOCLAW_E2E_KEY_FILE=/path/to/key bash "$E2E_SKILL_DIR/scripts/e2e-install.sh"
 ```
 

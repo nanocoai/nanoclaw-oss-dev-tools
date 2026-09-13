@@ -9,16 +9,20 @@
 #   --name      VM name (default nanoclaw-e2e-<short sha>-<random suffix>)
 #   --ref       local git ref to test (default HEAD); must be fetchable from repo
 #   --repo      clone URL (default this checkout's origin)
-#   --key-file  Anthropic key/token file (default ~/.nanoclaw-e2e/anthropic_key)
+#   --credential-file  provider credential file (default legacy Anthropic path)
+#   --key-file  compatibility alias for --credential-file
 #   --base      clone this VM, keeping its data, vault and image cache
 #   --snapshot  on success, copy the tested VM to this new name
-#   --rm        delete this run's VM on success; failures are kept
+#   --rm        guarded delete on success; requires validated --result-file evidence
 #   --cpu       CPU count (default 4)
 #   --memory    memory size (default 8GB)
 #   --disk      disk size (default 40GB)
 #   --result-file  record this invocation locally, then export installer result
 #   --interactive  drive the real public wizard (fresh VM, requires --result-file)
-#   --artifacts-dir  sanitized wizard evidence (default <result-file>.artifacts)
+#   --provider  provider value selected from provider-options.py
+#   --auth-method  provider-owned auth method value
+#   --payload-ref  fetched payload ref for an installable provider
+#   --artifacts-dir  sanitized evidence (default <result-file>.artifacts)
 #   --wizard-timeout  total PTY timeout in seconds (default 1200)
 #
 # The installer comes from this skill, not the NanoClaw checkout being tested.
@@ -31,20 +35,23 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REF=HEAD REPO="" KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
 NAME="" BASE="" SNAPSHOT="" RM=0 CPU=4 MEMORY=8GB DISK=40GB
 RESULT_FILE="" INTERACTIVE=0 ARTIFACTS_DIR="" WIZARD_TIMEOUT=1200
+PROVIDER="" AUTH_METHOD="" PAYLOAD_REF=""
 WIZARD_DIR="$HERE/../../e2e-wizard"
 RUN_ID=""
+AUTH_SOURCE_COMMIT=""
+DEV_TOOLS_COMMIT="" HARNESS_SHA256="" REMOVAL_REQUESTED=0
 
 fail() { echo "[exe-run] $1" >&2; exit "${2:-64}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name|--ref|--repo|--key-file|--base|--snapshot|--cpu|--memory|--disk|--result-file|--artifacts-dir|--wizard-timeout)
+    --name|--ref|--repo|--key-file|--credential-file|--base|--snapshot|--cpu|--memory|--disk|--result-file|--artifacts-dir|--wizard-timeout|--provider|--auth-method|--payload-ref)
       [ $# -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] || fail "$1 requires a value" ;;
   esac
   case "$1" in
     --name) NAME="$2"; shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
-    --key-file) KEY_FILE="$2"; shift 2 ;;
+    --key-file|--credential-file) KEY_FILE="$2"; shift 2 ;;
     --base) BASE="$2"; shift 2 ;;
     --snapshot) SNAPSHOT="$2"; shift 2 ;;
     --rm) RM=1; shift ;;
@@ -53,6 +60,9 @@ while [ $# -gt 0 ]; do
     --disk) DISK="$2"; shift 2 ;;
     --result-file) RESULT_FILE="$2"; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
+    --provider) PROVIDER="$2"; shift 2 ;;
+    --auth-method) AUTH_METHOD="$2"; shift 2 ;;
+    --payload-ref) PAYLOAD_REF="$2"; shift 2 ;;
     --artifacts-dir) ARTIFACTS_DIR="$2"; shift 2 ;;
     --wizard-timeout) WIZARD_TIMEOUT="$2"; shift 2 ;;
     -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -61,12 +71,13 @@ while [ $# -gt 0 ]; do
 done
 
 command -v python3 >/dev/null || fail "python3 is required" 69
+RUN_ID="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 COMMIT="" PHASE=preflight RESULT_EXPORTED=0
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_driver_result() {
-  python3 - "$RESULT_FILE" "$1" "$2" "$REF" "$COMMIT" "$PHASE" "$STARTED_AT" <<'PY'
+  python3 - "$RESULT_FILE" "$1" "$2" "$REF" "$COMMIT" "$PHASE" "$STARTED_AT" "$PROVIDER" "$AUTH_METHOD" "$AUTH_SOURCE_COMMIT" "$RUN_ID" <<'PY'
 import datetime, json, os, sys, tempfile
-path, status, rc, ref, commit, phase, started = sys.argv[1:]
+path, status, rc, ref, commit, phase, started, provider, auth_method, auth_source_commit, run_id = sys.argv[1:]
 result = {
     "schema_version": 1,
     "status": status,
@@ -77,6 +88,10 @@ result = {
     "phase": phase,
     "started_at": started,
     "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat() if rc else None,
+    "provider": provider or None,
+    "auth_method": auth_method or None,
+    "auth_source_commit": auth_source_commit or None,
+    "run_id": run_id,
 }
 fd, temporary = tempfile.mkstemp(prefix=".e2e-result-", dir=os.path.dirname(os.path.abspath(path)))
 try:
@@ -98,29 +113,62 @@ finish_driver_result() {
   fi
   exit "$rc"
 }
+if [ "$RM" -eq 1 ] && [ -z "$RESULT_FILE" ]; then
+  fail "--rm requires --result-file so validated evidence exists before teardown"
+fi
+if [ -n "$ARTIFACTS_DIR" ] && [ -z "$RESULT_FILE" ]; then
+  fail "--artifacts-dir requires --result-file"
+fi
+# A local report must never alias the credential through an absolute/relative
+# spelling, symlink, or hard link. Check this before invalidating an old report;
+# the normal credential validation remains after that fail-safe write.
+if [ -n "$RESULT_FILE" ]; then
+  KEY_RESULT_ALIAS=0
+  python3 - "$KEY_FILE" "$RESULT_FILE" <<'PY' || KEY_RESULT_ALIAS=$?
+import os, sys
+
+key_path, result_path = sys.argv[1:]
+try:
+    same = os.path.samefile(key_path, result_path)
+except OSError:
+    same = os.path.abspath(key_path) == os.path.abspath(result_path)
+raise SystemExit(2 if same else 0)
+PY
+  [ "$KEY_RESULT_ALIAS" -eq 0 ] \
+    || fail "--result-file cannot overwrite the credential file" 66
+fi
 if [ -n "$RESULT_FILE" ]; then
   [ -d "$(dirname "$RESULT_FILE")" ] && [ -w "$(dirname "$RESULT_FILE")" ] \
     && [ ! -d "$RESULT_FILE" ] || fail "--result-file needs a writable parent directory and a file path"
+  [ -n "$ARTIFACTS_DIR" ] || ARTIFACTS_DIR="$RESULT_FILE.artifacts"
+  [ ! -e "$ARTIFACTS_DIR" ] && [ ! -L "$ARTIFACTS_DIR" ] && [ -d "$(dirname "$ARTIFACTS_DIR")" ] \
+    && [ -w "$(dirname "$ARTIFACTS_DIR")" ] || fail "artifacts need a new path with a writable parent"
+  command -v tar >/dev/null || fail "tar is required for evidence export" 69
   # Invalidate an old local pass before preflight or VM work can fail. Until
   # a matching installer result is exported, failures get a driver report;
   # commit stays null because no tested revision has been confirmed.
   write_driver_result running "" || fail "could not initialize local result: $RESULT_FILE" 74
   trap finish_driver_result EXIT
 fi
+[ -n "$PROVIDER" ] && [ -n "$AUTH_METHOD" ] \
+  || fail "--provider and --auth-method are required"
+[[ "$PROVIDER" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid provider value"
+[[ "$AUTH_METHOD" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid auth method value"
 if [ "$INTERACTIVE" -eq 1 ]; then
   [ -n "$RESULT_FILE" ] || fail "--interactive requires --result-file"
+  [ -z "$PAYLOAD_REF" ] || [[ "$PAYLOAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "invalid payload ref"
   [ -z "$BASE" ] || fail "the fresh wizard scenario does not accept --base"
   [[ "$WIZARD_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || fail "invalid wizard timeout"
-  [ -n "$ARTIFACTS_DIR" ] || ARTIFACTS_DIR="$RESULT_FILE.artifacts"
-  [ ! -e "$ARTIFACTS_DIR" ] && [ ! -L "$ARTIFACTS_DIR" ] && [ -d "$(dirname "$ARTIFACTS_DIR")" ] \
-    && [ -w "$(dirname "$ARTIFACTS_DIR")" ] || fail "wizard artifacts need a new path with a writable parent"
-  for file in requirements.txt scenarios/fresh-cli.json scripts/wizard-run.py scripts/wizard-install.sh scripts/collect-wizard.py; do
+  for file in requirements.txt scenarios/fresh-cli.json scripts/provider-options.py scripts/wizard-run.py scripts/wizard-install.sh scripts/collect-wizard.py; do
     [ -r "$WIZARD_DIR/$file" ] || fail "install the companion e2e-wizard skill: missing $file" 66
   done
-  command -v tar >/dev/null || fail "tar is required for wizard evidence" 69
-  RUN_ID="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
-elif [ -n "$ARTIFACTS_DIR" ] || [ "$WIZARD_TIMEOUT" != 1200 ]; then
-  fail "wizard artifact/timeout options require --interactive"
+elif [ "$WIZARD_TIMEOUT" != 1200 ] || [ -n "$PAYLOAD_REF" ]; then
+  fail "wizard timeout/payload options require --interactive"
+elif [ "$PROVIDER" != claude ] || [[ ! "$AUTH_METHOD" =~ ^(api|oauth|existing)$ ]]; then
+  fail "headless mode supports claude with api, oauth, or existing auth; use --interactive for another offered provider"
+fi
+if [ "$INTERACTIVE" -eq 0 ] && [ -n "$RESULT_FILE" ]; then
+  [ -r "$HERE/e2e-evidence.py" ] || fail "installed skill is incomplete: missing e2e-evidence.py" 66
 fi
 for cmd in git ssh; do command -v "$cmd" >/dev/null || fail "$cmd is required" 69; done
 grep -q '"name": *"nanoclaw"' package.json 2>/dev/null \
@@ -128,7 +176,68 @@ grep -q '"name": *"nanoclaw"' package.json 2>/dev/null \
 COMMIT="$(git rev-parse --verify --end-of-options "$REF^{commit}")" \
   || fail "cannot resolve local ref: $REF" 65
 [ -n "$REPO" ] || REPO="$(git remote get-url origin)"
-[ -r "$KEY_FILE" ] && [ -s "$KEY_FILE" ] || fail "key file is unreadable or empty: $KEY_FILE" 66
+if [ "$INTERACTIVE" -eq 1 ]; then
+  DISCOVERY=(python3 "$WIZARD_DIR/scripts/provider-options.py" --root "$PWD" --revision "$COMMIT" --provider "$PROVIDER")
+  [ -z "$PAYLOAD_REF" ] || DISCOVERY+=(--payload-ref "$PAYLOAD_REF")
+  PROVIDER_JSON="$("${DISCOVERY[@]}")" || fail "could not discover provider/auth choices from the exact revision" 65
+  AUTH_SOURCE_COMMIT="$(printf '%s' "$PROVIDER_JSON" | python3 -c '
+import json, sys
+provider, method = sys.argv[1:]
+selected = json.load(sys.stdin)["selected"]
+matches = [item for item in selected["auth_methods"] if item["value"] == method]
+if len(matches) != 1 or not matches[0]["usable_for_e2e"]:
+    sys.exit("selected auth method is not usable for E2E")
+if matches[0]["automation"] != "credential-file":
+    sys.exit("selected auth method requires a live human handoff")
+print(selected["auth_source_commit"])
+' "$PROVIDER" "$AUTH_METHOD")" || fail "provider/auth selection is unavailable to the unattended wizard" 64
+else
+  AUTH_SOURCE_COMMIT="$COMMIT"
+fi
+if DEV_TOOLS_ROOT="$(git -C "$HERE/../../.." rev-parse --show-toplevel 2>/dev/null)"; then
+  DEV_TOOLS_COMMIT="$(git -C "$DEV_TOOLS_ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+fi
+HARNESS_FILES=("$HERE/exe-run.sh")
+if [ "$INTERACTIVE" -eq 1 ]; then
+  HARNESS_FILES+=(
+    "$WIZARD_DIR/scenarios/fresh-cli.json"
+    "$WIZARD_DIR/scripts/provider-options.py"
+    "$WIZARD_DIR/scripts/wizard-run.py"
+    "$WIZARD_DIR/scripts/wizard-install.sh"
+    "$WIZARD_DIR/scripts/collect-wizard.py"
+  )
+else
+  HARNESS_FILES+=("$HERE/e2e-install.sh")
+  [ -z "$RESULT_FILE" ] || HARNESS_FILES+=("$HERE/e2e-evidence.py")
+fi
+HARNESS_SHA256="$(python3 - "${HARNESS_FILES[@]}" <<'PY'
+import hashlib, pathlib, sys
+digest = hashlib.sha256()
+for raw in sys.argv[1:]:
+    path = pathlib.Path(raw)
+    data = path.read_bytes()
+    label = "/".join(path.parts[-2:]).encode()
+    digest.update(len(label).to_bytes(4, "big"))
+    digest.update(label)
+    digest.update(len(data).to_bytes(8, "big"))
+    digest.update(data)
+print(digest.hexdigest())
+PY
+)" || fail "could not identify the installed E2E harness" 66
+KEY_CHECK=0
+python3 - "$KEY_FILE" <<'PY' || KEY_CHECK=$?
+import os, stat, sys
+
+try:
+    key = os.lstat(sys.argv[1])
+except OSError:
+    raise SystemExit(1)
+if (not stat.S_ISREG(key.st_mode) or key.st_mode & 0o077
+        or key.st_uid != os.getuid() or key.st_size == 0):
+    raise SystemExit(1)
+PY
+[ "$KEY_CHECK" -eq 0 ] \
+  || fail "credential must be a nonempty private regular file owned by this user (0600): $KEY_FILE" 66
 [ -n "$NAME" ] || NAME="nanoclaw-e2e-${COMMIT:0:7}-$(python3 -c 'import secrets; print(secrets.token_hex(3))')"
 # SSH joins lobby arguments into a command string. Permit only literal names
 # and resource values here; repository URLs are shell-quoted separately below.
@@ -201,13 +310,32 @@ done
 
 # chmod also covers a file inherited from a base VM; umask alone does not.
 PHASE=upload
-"${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e; cat > ~/.nanoclaw-e2e/anthropic_key; chmod 600 ~/.nanoclaw-e2e/anthropic_key' < "$KEY_FILE"
+python3 - "$NAME" "$HOST" "$RUN_ID" "$COMMIT" "$DEV_TOOLS_COMMIT" "$HARNESS_SHA256" <<'PY' | \
+  "${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e; cat > ~/.nanoclaw-e2e/run-owner.json; chmod 600 ~/.nanoclaw-e2e/run-owner.json'
+import datetime, json, sys
+name, host, run_id, commit, dev_tools_commit, harness_sha256 = sys.argv[1:]
+json.dump({
+    "schema_version": 1,
+    "vm_name": name,
+    "ssh_dest": host,
+    "run_id": run_id,
+    "nanoclaw_commit": commit,
+    "dev_tools_commit": dev_tools_commit or None,
+    "harness_sha256": harness_sha256,
+    "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}, sys.stdout)
+sys.stdout.write("\n")
+PY
+"${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e; cat > ~/.nanoclaw-e2e/credential; chmod 600 ~/.nanoclaw-e2e/credential' < "$KEY_FILE"
 if [ "$INTERACTIVE" -eq 1 ]; then
   COPYFILE_DISABLE=1 tar -C "$WIZARD_DIR" -cf - requirements.txt scenarios/fresh-cli.json \
-    scripts/wizard-run.py scripts/wizard-install.sh scripts/collect-wizard.py | \
+    scripts/provider-options.py scripts/wizard-run.py scripts/wizard-install.sh scripts/collect-wizard.py | \
     "${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e/wizard; tar -xf - -C ~/.nanoclaw-e2e/wizard'
 else
   "${VM[@]}" 'set -e; cat > ~/e2e-install.sh; chmod +x ~/e2e-install.sh' < "$HERE/e2e-install.sh"
+  if [ -n "$RESULT_FILE" ]; then
+    "${VM[@]}" 'set -e; umask 077; cat > ~/.nanoclaw-e2e/e2e-evidence.py; chmod 700 ~/.nanoclaw-e2e/e2e-evidence.py' < "$HERE/e2e-evidence.py"
+  fi
 fi
 
 # Forward only documented settings. A remote gateway token must never appear
@@ -227,12 +355,18 @@ PY
 
 REPO_QUOTED="$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$REPO")"
 PHASE=checkout
-INSTALL_COMMAND='NANOCLAW_E2E_ROOT=$HOME/nanoclaw bash ~/e2e-install.sh'
+INSTALL_COMMAND="NANOCLAW_E2E_ROOT=\$HOME/nanoclaw NANOCLAW_E2E_KEY_FILE=\$HOME/.nanoclaw-e2e/credential NANOCLAW_E2E_PROVIDER='$PROVIDER' NANOCLAW_E2E_AUTH_METHOD='$AUTH_METHOD' NANOCLAW_E2E_AUTH_SOURCE_COMMIT='$AUTH_SOURCE_COMMIT' bash ~/e2e-install.sh"
 if [ "$INTERACTIVE" -eq 1 ]; then
-  INSTALL_COMMAND="bash ~/.nanoclaw-e2e/wizard/scripts/wizard-install.sh --run-id '$RUN_ID' --timeout '$WIZARD_TIMEOUT'"
+  INSTALL_COMMAND="bash ~/.nanoclaw-e2e/wizard/scripts/wizard-install.sh --run-id '$RUN_ID' --timeout '$WIZARD_TIMEOUT' --provider '$PROVIDER' --auth-method '$AUTH_METHOD' --credential-file \$HOME/.nanoclaw-e2e/credential"
+  INSTALL_COMMAND="$INSTALL_COMMAND --expected-auth-source-commit '$AUTH_SOURCE_COMMIT'"
+  if [ -n "$PAYLOAD_REF" ]; then
+    INSTALL_COMMAND="$INSTALL_COMMAND --payload-ref '$PAYLOAD_REF'"
+  fi
 fi
 set +e
 "${VM[@]}" "set -e
+  printf '%s\n' '$RUN_ID' > ~/.nanoclaw-e2e/controller-active
+  trap 'rm -f ~/.nanoclaw-e2e/controller-active' EXIT
   if [ -d ~/nanoclaw/.git ]; then
     mkdir -p ~/nanoclaw/logs/e2e
     printf '{\"schema_version\":1,\"status\":\"running\",\"phase\":\"checkout\",\"requested_commit\":\"$COMMIT\"}\n' > ~/nanoclaw/logs/e2e/result.json
@@ -260,7 +394,9 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   if "${VM[@]}" 'COPYFILE_DISABLE=1 tar -C ~/nanoclaw/logs/e2e-wizard -cf - .' | \
     python3 "$WIZARD_DIR/scripts/collect-wizard.py" \
       --artifacts-dir "$ARTIFACTS_DIR" --result-file "$RESULT_FILE" \
-      --commit "$COMMIT" --run-id "$RUN_ID" --exit-code "$RC" --key-file "$KEY_FILE"; then
+      --commit "$COMMIT" --run-id "$RUN_ID" --exit-code "$RC" --key-file "$KEY_FILE" \
+      --provider "$PROVIDER" --auth-method "$AUTH_METHOD" \
+      --auth-source-commit "$AUTH_SOURCE_COMMIT"; then
     RESULT_EXPORTED=1
   else
     echo "[exe-run] could not export sanitized wizard evidence; keeping $NAME" >&2
@@ -268,33 +404,35 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   fi
 elif [ -n "$RESULT_FILE" ]; then
   [ "$RC" -ne 0 ] || PHASE=export
-  if "${VM[@]}" 'cat ~/nanoclaw/logs/e2e/result.json' | python3 -c '
-import json, os, sys, tempfile
-path, expected, rc = sys.argv[1:]
-result = json.load(sys.stdin)
-if not isinstance(result, dict) or result.get("schema_version") != 1:
-    sys.exit("invalid E2E result schema")
-if int(rc) == 0:
-    if result.get("commit") != expected or result.get("status") != "pass" or result.get("exit_code") != 0:
-        sys.exit("E2E result does not match the completed run")
-elif result.get("commit") != expected or result.get("status") != "failed" or result.get("exit_code") != int(rc):
-    sys.exit("no matching completed installer result for this failed run")
-fd, temporary = tempfile.mkstemp(prefix=".e2e-result-", dir=os.path.dirname(os.path.abspath(path)))
-try:
-    with os.fdopen(fd, "w") as out:
-        json.dump(result, out, indent=2)
-        out.write("\n")
-    os.replace(temporary, path)
-finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
-' "$RESULT_FILE" "$COMMIT" "$RC"; then
-    RESULT_EXPORTED=1
-    echo "[exe-run] saved result: $RESULT_FILE"
+  REMOTE_EVIDENCE="\$HOME/nanoclaw/logs/e2e-headless-$RUN_ID"
+  if "${VM[@]}" "python3 \$HOME/.nanoclaw-e2e/e2e-evidence.py export \
+      --root \$HOME/nanoclaw --destination $REMOTE_EVIDENCE \
+      --credential-file \$HOME/.nanoclaw-e2e/credential \
+      --run-id '$RUN_ID' --provider '$PROVIDER' --auth-method '$AUTH_METHOD' \
+      --auth-source-commit '$AUTH_SOURCE_COMMIT' --dev-tools-commit '$DEV_TOOLS_COMMIT' \
+      --harness-sha256 '$HARNESS_SHA256'"; then
+    if "${VM[@]}" "COPYFILE_DISABLE=1 tar -C $REMOTE_EVIDENCE -cf - ." | \
+      python3 "$HERE/e2e-evidence.py" collect \
+        --artifacts-dir "$ARTIFACTS_DIR" --result-file "$RESULT_FILE" \
+        --credential-file "$KEY_FILE" --commit "$COMMIT" --run-id "$RUN_ID" \
+        --exit-code "$RC" --provider "$PROVIDER" --auth-method "$AUTH_METHOD" \
+        --auth-source-commit "$AUTH_SOURCE_COMMIT" --dev-tools-commit "$DEV_TOOLS_COMMIT" \
+        --harness-sha256 "$HARNESS_SHA256"; then
+      RESULT_EXPORTED=1
+      echo "[exe-run] saved sanitized evidence: $ARTIFACTS_DIR"
+    else
+      echo "[exe-run] local evidence validation failed; keeping $NAME" >&2
+      [ "$RC" -ne 0 ] || RC=74
+    fi
   else
-    echo "[exe-run] could not export this run's result; keeping $NAME" >&2
+    echo "[exe-run] remote evidence export failed; keeping $NAME" >&2
     [ "$RC" -ne 0 ] || RC=74
   fi
+fi
+
+if ! "${VM[@]}" 'rm -f ~/.nanoclaw-e2e/credential'; then
+  echo "[exe-run] could not remove the staged credential; keeping $NAME" >&2
+  [ "$RC" -ne 0 ] || RC=74
 fi
 
 if [ "$RC" -eq 0 ] && [ -n "$SNAPSHOT" ]; then
@@ -314,10 +452,104 @@ if [ "$RC" -eq 0 ] && [ -n "$SNAPSHOT" ]; then
   fi
 fi
 if [ "$RC" -eq 0 ] && [ "$RM" -eq 1 ]; then
+  PHASE=teardown
+  if OWNER_RECORD="$("${VM[@]}" 'cat ~/.nanoclaw-e2e/run-owner.json')" \
+    && printf '%s' "$OWNER_RECORD" | python3 -c '
+import json, sys
+record = json.load(sys.stdin)
+name, host, run_id, commit, dev_tools_commit, harness_sha256 = sys.argv[1:]
+expected = {
+    "schema_version": 1,
+    "vm_name": name,
+    "ssh_dest": host,
+    "run_id": run_id,
+    "nanoclaw_commit": commit,
+    "dev_tools_commit": dev_tools_commit or None,
+    "harness_sha256": harness_sha256,
+}
+if not isinstance(record, dict) or any(record.get(key) != value for key, value in expected.items()):
+    sys.exit("run ownership marker does not match this invocation")
+' "$NAME" "$HOST" "$RUN_ID" "$COMMIT" "$DEV_TOOLS_COMMIT" "$HARNESS_SHA256" \
+    && "${VM[@]}" "test ! -e ~/.nanoclaw-e2e/controller-active \
+      && command -v pgrep >/dev/null \
+      && ! pgrep -f '([e]2e-install\\.sh|[w]izard-(run\\.py|install\\.sh))' >/dev/null"; then
+    echo "[exe-run] verified run ownership and inactive harness for $NAME"
+  else
+    echo "[exe-run] teardown precheck failed; keeping $NAME" >&2
+    RC=70
+  fi
+fi
+if [ "$RC" -eq 0 ] && [ "$RM" -eq 1 ]; then
   echo "[exe-run] deleting $NAME"
-  ssh -o BatchMode=yes exe.dev rm "$NAME"
-  echo "[exe-run] done rc=0 commit=$COMMIT (vm removed)"
-  exit 0
+  if REMOVED="$(ssh -o BatchMode=yes exe.dev rm "$NAME" --json)"; then
+    REMOVAL_REQUESTED=1
+    printf '%s\n' "$REMOVED" >&2
+  else
+    echo "[exe-run] exe.dev removal command failed; inspect $NAME" >&2
+    RC=70
+  fi
+fi
+if [ "$RC" -eq 0 ] && [ "$RM" -eq 1 ]; then
+  REMOVAL_VERIFIED=0
+  for _ in $(seq 1 10); do
+    if INVENTORY="$(ssh -o BatchMode=yes exe.dev ls --json)" \
+      && printf '%s' "$INVENTORY" | python3 -c '
+import json, sys
+inventory = json.load(sys.stdin)
+expected = sys.argv[1]
+vms = inventory.get("vms") if isinstance(inventory, dict) else None
+if not isinstance(vms, list) or any(not isinstance(vm, dict) for vm in vms):
+    sys.exit("invalid exe.dev VM inventory")
+if any((vm.get("vm_name") or vm.get("name")) == expected for vm in vms):
+    sys.exit(1)
+' "$NAME"; then
+      REMOVAL_VERIFIED=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$REMOVAL_VERIFIED" -ne 1 ]; then
+    echo "[exe-run] removal was requested but absence was not verified for $NAME" >&2
+    RC=70
+  fi
+fi
+if [ "$RC" -eq 0 ] && [ "$RM" -eq 1 ]; then
+  if python3 - "$ARTIFACTS_DIR" "$NAME" "$HOST" "$RUN_ID" "$COMMIT" <<'PY'
+import datetime, json, os, pathlib, sys
+artifacts, name, host, run_id, commit = sys.argv[1:]
+directory = pathlib.Path(artifacts)
+if directory.is_symlink() or not directory.is_dir():
+    raise SystemExit("validated artifacts directory is unavailable")
+receipt = directory / "teardown-receipt.json"
+temporary = directory / (".teardown-receipt." + os.urandom(6).hex())
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(fd, "w") as output:
+        json.dump({
+            "schema_version": 1,
+            "resource_type": "exe.dev-vm",
+            "vm_name": name,
+            "ssh_dest": host,
+            "run_id": run_id,
+            "nanoclaw_commit": commit,
+            "removed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "verification": {"command": "ssh exe.dev ls --json", "vm_absent": True},
+        }, output, indent=2)
+        output.write("\n")
+    os.replace(temporary, receipt)
+finally:
+    temporary.unlink(missing_ok=True)
+PY
+  then
+    echo "[exe-run] done rc=0 commit=$COMMIT (vm removal verified; receipt: $ARTIFACTS_DIR/teardown-receipt.json)"
+    exit 0
+  fi
+  echo "[exe-run] VM absence was verified but the teardown receipt could not be written" >&2
+  exit 74
+fi
+if [ "$REMOVAL_REQUESTED" -eq 1 ]; then
+  echo "[exe-run] done rc=$RC commit=$COMMIT · removal requested but absence unverified for $NAME"
+  exit "$RC"
 fi
 echo "[exe-run] done rc=$RC commit=$COMMIT · ssh $HOST · result in ~/nanoclaw/logs/e2e/result.json · delete with: ssh exe.dev rm $NAME"
 exit "$RC"

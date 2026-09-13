@@ -8,6 +8,8 @@ Portable development and testing skills for [NanoClaw](https://github.com/nanoco
 Reproduce a clean install, test a branch on a real machine, and check that a
 message reaches the agent and gets a reply. The tools drive NanoClaw's existing
 setup steps and record the exact commit tested.
+Before provisioning, the E2E workflows discover the provider picker and the
+selected provider's authentication choices from that exact Git revision.
 
 [Skills](#whats-included) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
@@ -45,6 +47,7 @@ agent when prompted:
 
 ```bash
 npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-exe-dev
+npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-wizard
 npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-triage
 ```
 
@@ -75,7 +78,8 @@ For the exe.dev workflow, you need:
 
 - Bash, Git, SSH and Python 3 on the machine launching the test.
 - Working `ssh exe.dev` access.
-- An Anthropic API key or OAuth token in a local file, normally
+- A credential matching the provider/auth method chosen from the exact revision;
+  for Claude this is normally an Anthropic API key or OAuth token in
   `~/.nanoclaw-e2e/anthropic_key`, with permissions `0600`.
 - A commit that the VM can fetch from the checkout's repository.
 
@@ -85,6 +89,15 @@ Node.js, pnpm, Docker, OneCLI and the agent image. See the
 The other drivers state their stricter launcher requirements separately:
 Python 3.9+ for macOS and Python 3.10+ for Proxmox and the interactive wizard.
 The [skill catalog](docs/skills-catalog.md#choose-a-skill) links each workflow.
+
+Before a live run, the agent resolves the requested NanoClaw commit, runs
+`e2e-wizard/scripts/provider-options.py --revision <sha>`, shows the offered
+providers, and asks which one to test. It then shows that provider's own auth
+prompt/options and asks which method to use. Installable-provider auth is read
+from the exact fetched provider payload and records its separate SHA. Unattended
+drivers accept only credential-file flows they can prove; browser/device login
+needs a live handoff and `skip` cannot pass. See the
+[provider-selection workflow](skills/e2e-wizard/SKILL.md#install-and-run).
 
 ### 3. Run a test
 
@@ -101,8 +114,14 @@ For shell commands, cached VMs, snapshots and standalone installs, follow the
 The driver resolves the requested ref to an exact commit. A passing installer
 result includes a real agent reply and successful service verification. Results
 are written to `logs/e2e/result.json` on the target; `--result-file` saves a local
-report. Failed runs retain their VM for inspection. Snapshot and removal errors
-are reported separately from the completed installer result.
+report and sanitized evidence. Failed runs retain their VM for inspection.
+After evidence is durable, the skill offers to remove a disposable run-owned
+target after a pass and recommends retaining unexpected failures for triage.
+The exe.dev `--rm` path requires validated local evidence, rechecks ownership
+and inactive control, verifies inventory absence, and writes a teardown receipt.
+Other targets remain retained until separately requested cleanup completes the
+same evidence-first checks. Snapshot and removal errors are reported separately
+from the completed installer result.
 
 ## Failure triage
 

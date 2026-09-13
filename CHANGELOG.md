@@ -13,8 +13,8 @@ tags were published for those versions.
 
 - Report safe, actionable validation codes when wizard artifacts are malformed,
   stale, incomplete, corrupt, oversized or contain an unredacted credential.
-- Keep the plugin manifest version and distributed-skill listings checked against
-  the contributor README and skill catalog.
+- Keep the plugin manifest version, marketplace description and distributed-skill
+  listings checked against the contributor README and skill catalog.
 - Run the headless installer with the system shell as `sh`: a host that puts a
   foreign `sh` first on PATH (exe.dev images since 2026-09-09 ship
   `/exe.dev/bin/sh`, whose builtin `lsof` always exits 0) made NanoClaw's
@@ -26,6 +26,18 @@ tags were published for those versions.
   agent initialization or a model request if the host never becomes ready.
 
 ### Added
+
+- Provider-aware preflight for every full E2E workflow. A read-only helper
+  discovers the exact revision's offered provider picker, then the selected
+  provider's auth prompt/options from either that NanoClaw SHA or its fetched
+  provider-payload SHA. Reports bind both source identities; unattended runners
+  reject human-login and skip flows before provisioning (plugin 0.8.0).
+- Sanitized, checksummed headless exe.dev evidence with setup/runtime logs,
+  runtime state, run/provider/auth identity, dev-tools SHA and exact harness
+  digest. Opt-in VM removal now requires validated local evidence, rechecks the
+  run marker and inactive controller, verifies JSON-inventory absence, and
+  writes a teardown receipt. Every platform documents evidence-first post-run
+  retention and cleanup boundaries (plugin 0.8.0).
 
 - `e2e-triage` and invocation instructions in all five E2E skills: bounded
   upstream issue/PR research, evidence-based matches, candidate conflict/CI

@@ -80,7 +80,43 @@ class WindowsRunnerTests(Sandbox):
     def setUp(self):
         super().setUp()
         (self.checkout / 'nanoclaw.sh').write_text('exit 0\n')
+        providers = self.checkout / 'setup/providers'
+        providers.mkdir(parents=True)
+        (providers / 'index.ts').write_text("import './claude.js';\n")
+        (providers / 'claude.ts').write_text(
+            "registerSetupProvider({value:'claude',label:'Claude',hint:'Anthropic',});\n")
+        (self.checkout / 'setup/auto.ts').write_text("""
+const method = await brightSelect({message:'How would you like to connect to Claude?',options:[
+{value:'api',label:'Paste an Anthropic API key',hint:'pay per use'},
+{value:'skip',label:"Skip — I'll connect later",hint:'no replies'},
+]});
+setupLog.userInput('auth_method', method);
+""")
+        provider_skill = self.checkout / '.claude/skills/add-codex'
+        provider_skill.mkdir(parents=True)
+        (provider_skill / 'SKILL.md').write_text("""---
+name: add-codex
+metadata:
+  nanoclaw-provider: codex
+  nanoclaw-provider-label: Codex
+  nanoclaw-provider-hint: OpenAI account
+  nanoclaw-provider-offered: 'true'
+---
+```nc:copy from-branch:providers
+setup/providers/codex.ts
+```
+""")
         self.commit = self.commit_change('wizard source')
+        self.git('switch', '-c', 'providers')
+        (providers / 'codex.ts').write_text("""
+const method = await brightSelect({message:'How would you like to connect Codex?',options:[
+{value:'api',label:'Paste an OpenAI API key',hint:'pay per use'},
+{value:'skip',label:"Skip — I'll connect later",hint:'no replies'},
+]});
+setupLog.userInput('codex_auth_method', method);
+""")
+        self.payload_commit = self.commit_change('codex provider payload')
+        self.git('switch', 'main')
         self.key = self.root / 'credential'
         self.key.write_text('sk-ant-api03-fake-private-fixture')
         self.key.chmod(0o600)
@@ -106,7 +142,9 @@ class WindowsRunnerTests(Sandbox):
         result = {'schema_version': 1, 'mode': 'wizard', 'run_id': options['--run-id'],
                   'commit': self.commit, 'status': 'failed' if failed else 'pass',
                   'exit_code': code, 'wizard_completed': not failed,
-                  'retained_reply_verified': not failed,
+                  'retained_reply_verified': not failed, 'provider': options['--provider'],
+                  'auth_method': options['--auth-method'],
+                  'auth_source_commit': options['--expected-auth-source-commit'],
                   'service': {'checkout_verified': True, 'socket_connected': True}}
         if self.fixture_mode == 'missing-reply':
             result['retained_reply_verified'] = False
@@ -124,8 +162,9 @@ class WindowsRunnerTests(Sandbox):
             path = destination / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(content)
         return code
 
-    def run_driver(self, *args):
-        return driver.main(['--root', str(self.checkout), '--key-file', str(self.key),
+    def run_driver(self, *args, provider='claude', auth_method='api'):
+        return driver.main(['--root', str(self.checkout), '--provider', provider,
+                            '--auth-method', auth_method, '--credential-file', str(self.key),
                             '--result-file', str(self.report), *args])
 
     def test_pass_requires_shared_collector_acceptance(self):
@@ -137,6 +176,15 @@ class WindowsRunnerTests(Sandbox):
         self.assertTrue((self.artifacts / 'manifest.json').is_file())
         self.assertEqual(self.report.stat().st_mode & 0o777, 0o600)
         self.assertTrue(Path(result['retained_work']).is_dir())
+
+    def test_installable_provider_binds_payload_auth_source(self):
+        self.key.write_text('sk-fake-openai-private-fixture')
+        self.assertEqual(self.run_driver('--payload-ref', 'providers', provider='codex'), 0)
+        result = json.loads(self.report.read_text())
+        self.assertEqual(result['provider'], 'codex')
+        self.assertEqual(result['auth_method'], 'api')
+        self.assertEqual(result['auth_source_commit'], self.payload_commit)
+        self.assertEqual(result['wizard']['auth_source_commit'], self.payload_commit)
 
     def test_environment_only_does_not_read_key_or_launch_wizard(self):
         self.key.unlink()

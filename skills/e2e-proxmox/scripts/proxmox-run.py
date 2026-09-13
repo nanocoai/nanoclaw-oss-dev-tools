@@ -93,7 +93,10 @@ def parse_args(argv=None):
     parser.add_argument("--disk", type=positive, default=40, help="root disk in GiB (default: 40)")
     parser.add_argument("--ref", default="HEAD", help="local Git ref to test exactly (default: HEAD)")
     parser.add_argument("--repo", help="public HTTPS clone URL; defaults to the checkout's origin")
-    parser.add_argument("--key-file", type=Path, default=Path(os.environ.get("NANOCLAW_E2E_KEY_FILE", "~/.nanoclaw-e2e/anthropic_key")).expanduser())
+    parser.add_argument("--credential-file", "--key-file", dest="key_file", type=Path,
+                        default=Path(os.environ.get("NANOCLAW_E2E_KEY_FILE", "~/.nanoclaw-e2e/anthropic_key")).expanduser())
+    parser.add_argument("--provider", help="provider selected after inspecting the exact NanoClaw revision")
+    parser.add_argument("--auth-method", help="provider-owned authentication method value")
     parser.add_argument("--installer", type=Path, help="e2e-exe-dev/scripts/e2e-install.sh; default: sibling installed skill")
     parser.add_argument("--result-file", type=Path, required=True, help="local JSON report; its parent directory must exist")
     parser.add_argument("--dry-run", action="store_true", help="print the resolved plan without SSH or reading credentials")
@@ -113,6 +116,7 @@ class Run:
             "exit_code": None, "commit": None, "requested_ref": args.ref,
             "requested_commit": None, "phase": "preflight", "run_id": self.run_id,
             "started_at": now(), "finished_at": None,
+            "agent_provider": args.provider, "auth_method": args.auth_method,
             "guest": {"host": args.host, "ctid": self.ctid, "creation_confirmed": False},
         }
         self.ssh = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
@@ -175,6 +179,8 @@ class Run:
             raise Failure("--template must name an existing Debian 13 amd64 OS template volume", 64)
         if self.ctid is not None and not 100 <= self.ctid <= 999999999:
             raise Failure("--ctid must be between 100 and 999999999", 64)
+        if args.provider != "claude" or args.auth_method not in ("api", "oauth"):
+            raise Failure("headless Proxmox supports claude api/oauth; use e2e-wizard for another offered provider", 64)
         try:
             if json.loads(Path("package.json").read_text()).get("name") != "nanoclaw":
                 raise ValueError()
@@ -184,6 +190,7 @@ class Run:
         if not re.fullmatch(r"[a-f0-9]{40}", self.commit):
             raise Failure("could not resolve the requested commit", 65)
         self.report["requested_commit"] = self.commit
+        self.report["auth_source_commit"] = self.commit
         self.repo = args.repo or checked(["git", "remote", "get-url", "origin"])
         # Public GitHub SSH origins work without installing Git credentials in
         # the guest. Other origins must explicitly provide a public HTTPS URL.
@@ -264,6 +271,8 @@ class Run:
         runner = f"""set -eu
 export PATH="$HOME/.local/bin:$PATH" GIT_TERMINAL_PROMPT=0
 export NANOCLAW_E2E_ROOT={CHECKOUT} NANOCLAW_E2E_KEY_FILE={PRIVATE}/anthropic_key
+export NANOCLAW_E2E_PROVIDER={shlex.quote(self.args.provider)} NANOCLAW_E2E_AUTH_METHOD={shlex.quote(self.args.auth_method)}
+export NANOCLAW_E2E_AUTH_SOURCE_COMMIT={self.commit}
 trap 'rm -f {PRIVATE}/anthropic_key {PRIVATE}/run-env.sh' EXIT
 . {PRIVATE}/run-env.sh
 rm -f {PRIVATE}/run-env.sh
@@ -287,6 +296,9 @@ exec runuser -u nanoclaw -- env HOME=/home/nanoclaw USER=nanoclaw LOGNAME=nanocl
         if (not isinstance(report, dict) or report.get("schema_version") != 1
                 or report.get("commit") != self.commit or report.get("status") != expected
                 or report.get("exit_code") != result.returncode
+                or report.get("provider") != self.args.provider
+                or report.get("auth_method") != self.args.auth_method
+                or report.get("auth_source_commit") != self.report["auth_source_commit"]
                 or (result.returncode == 0 and (report.get("ping") != "ok" or report.get("phase") != "complete"))):
             raise Failure("installer result does not match this run; refusing to report a pass", 74)
         self.report["installer"] = report

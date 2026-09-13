@@ -42,6 +42,7 @@ includes both:
 
 ```bash
 npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-exe-dev
+npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-wizard
 npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-proxmox
 ```
 
@@ -67,6 +68,26 @@ Before a live run, establish:
   GitHub SSH origins are converted to HTTPS. Private repository authentication
   and local-only commits are outside this first version.
 
+Before reading the credential or contacting Proxmox, resolve the exact commit
+and run the sibling wizard skill's provider discovery helper:
+
+```bash
+COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+PROVIDER_HELPER=/absolute/path/to/installed/e2e-wizard/scripts/provider-options.py
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT"
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
+```
+
+Show the first result's offered providers and ask the operator which to test;
+then show that provider's exact auth prompt/options and ask for its auth method.
+For an installable provider, fetch its single `nc:copy from-branch:` payload
+from the owning remote and pass the fetched ref as `--payload-ref` during
+discovery. Record both source SHAs. The headless Proxmox driver currently accepts
+only Claude `api` or `oauth`; use the public-wizard adapter for a discovered
+credential-file method from another offered provider. Human browser,
+subscription, and device flows need a separately authorized live handoff and
+are unavailable to this unattended driver. `skip` cannot pass.
+
 Read-only inventory commands on the node include `pveversion`, `pct list`,
 `pveam list local`, `pvesm status`, and `ip -brief link show type bridge`.
 Choose the host, template, storage and bridge from actual inventory. Never use
@@ -85,6 +106,8 @@ python3 "$PROXMOX_SKILL_DIR/scripts/proxmox-run.py" \
   --template local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
   --storage local-lvm --bridge vmbr0 \
   --ref origin/main \
+  --provider claude --auth-method api \
+  --credential-file /path/to/anthropic-key \
   --result-file /path/to/proxmox-result.json --dry-run
 ```
 
@@ -133,7 +156,17 @@ Inspect the test guest from the node with `pct enter <CTID>`, then
 `machinectl shell nanoclaw@` and `cd /opt/nanoclaw`. Its detailed installer logs
 and result are at `/opt/nanoclaw/logs/e2e/`. It contains test credentials in the
 OneCLI vault; treat it accordingly when choosing to retain or remove it.
-Cleanup needs a separately scoped request identifying the test CT.
+After the report and relevant logs have been copied to durable local paths and
+validated, offer to remove a disposable run-owned guest after a pass. Recommend
+retaining an unexpected failure until `e2e-triage` and any requested inspection
+are complete. Cleanup needs a separately scoped request identifying the exact
+test CT. Immediately before `pct destroy`, recheck the random run marker and
+that no installer or wizard controller is active; never infer ownership from a
+CT ID or name. If evidence export, redaction, checksums, local persistence,
+triage, ownership, or controller checks fail, do not remove the guest. Verify
+the CT is absent afterward and write a local teardown receipt. Cleanup covers
+only the run-owned CT, never the Proxmox node, template, storage, bridge, or any
+other guest.
 
 ## Troubleshooting
 

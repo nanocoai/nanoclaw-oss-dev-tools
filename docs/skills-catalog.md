@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-12**. This checkout contains **6 skills**, with plugin
-manifest version **0.7.0**. Three drive headless setup steps; `e2e-wizard` and
+Verified: **2026-09-13**. This checkout contains **6 skills**, with plugin
+manifest version **0.8.0**. Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below.
@@ -44,6 +44,15 @@ uses a dedicated LaunchAgent helper to preserve other installations. Wizard
 mode uses the public `bash nanoclaw.sh` entry point and adds no product setup
 actions or repairs behind its prompts.
 
+Before provisioning, every full E2E workflow resolves the exact NanoClaw SHA
+and uses `e2e-wizard/scripts/provider-options.py` to reproduce the offered
+provider list from Git objects. After the operator chooses a provider, the
+workflow reads that provider's auth prompt/options from the same NanoClaw SHA or
+its exact fetched provider-payload SHA, shows them, and asks for the auth method.
+Unattended drivers accept only methods they can fulfill with the matching private
+credential file. Human browser/device flows require a live handoff; `skip` never
+qualifies a pass.
+
 A pass requires an actual CLI-agent response and successful NanoClaw service
 verification for the requested commit. JSON reports record status, phase, exit
 code and commit identity. A successful command launch, dry run or mocked test is
@@ -62,11 +71,12 @@ or account details.
 operator machine; the shared installer on the target.
 
 - Needs Bash, Git, OpenSSH, Python 3, working exe.dev access and an authorized
-  Anthropic credential file. The guest is Debian/Ubuntu with sudo.
+  credential file matching the selected provider/auth method. The guest is Debian/Ubuntu with sudo.
 - Supports an exact ref, a new VM, a cached base, an optional snapshot and a
   local result file. The driver confirms allocation/copy identity before use.
 - Failed runs are retained. Removal after success is opt-in with the documented
-  flag; it is not the default.
+  flag and requires a locally validated evidence bundle, matching run marker,
+  inactive harness, verified JSON-inventory absence and teardown receipt.
 - Live fresh/cached runs used the nohup fallback. A snapshot-response mismatch
   found during the fresh run was fixed in version 0.2.4 and the corrected live
   cached-copy run exited successfully. Preserve that distinction when citing
@@ -95,6 +105,9 @@ installer from the sibling exe.dev skill.
 - Dry run resolves the ref and writes a plan without SSH or credential reads.
   A live run creates only a new guest, verifies its ownership marker and retains
   it on success or failure. Existing development guests are not test targets.
+- Cleanup is offered only after durable evidence. It requires a separately
+  authorized exact CT, a fresh marker/controller recheck, absence verification
+  and a local teardown receipt; it never includes the Proxmox host or other guests.
 - Live evidence: Proxmox VE 9.2.18, kernel 7.0.14-16-pve, Debian 13.6 template,
   real model reply, final verification and active `systemd-user` service in
   about four minutes.
@@ -122,6 +135,8 @@ installer.
   its own LaunchAgent and compares shared state before/after, including existing
   services, running Docker containers and shared configuration. It preserves
   peer services and the global `ncl` link.
+- Cleanup is offered after durable evidence for the run-owned checkout and
+  LaunchAgent only; shared host, Docker, OneCLI and unrelated services remain outside it.
 - Local evidence: macOS 26.6.1 / arm64, Docker Desktop and Node 26.8.1; real reply,
   successful verification and passing preservation checks in about 65 seconds.
   The checkout and service were retained.
@@ -164,9 +179,9 @@ Macs are the preferred path and MacinCloud is parked.
 with the matching lifecycle skill installed alongside `e2e-wizard`.
 
 - Needs Python 3.10+, the lifecycle driver's prerequisites and an authorized
-  Anthropic API key or existing OAuth token. The target installs the hash-pinned
+  credential matching the discovered provider auth method. The target installs the hash-pinned
   terminal emulator in a private venv.
-- Drives Standard setup, a fresh Claude agent, a local sandbox image and a
+- Drives Standard setup, a fresh agent for the selected offered provider, a local sandbox image and a
   retained terminal chat. It declines browser offers and skips phone channels.
 - Requires known active prompts, recorded choices, successful required steps and
   actual public-wizard completion. A random arithmetic answer must come from the
@@ -211,6 +226,8 @@ run inside the dedicated WSL2 distribution from the NanoClaw checkout.
   setup. Only a validated wizard result can report an installation pass.
 - Retains the distribution, service and private working evidence. Raw product
   logs are never the shareable artifact export.
+- Cleanup is offered only for an explicitly identified disposable WSL/VM clone
+  after evidence persistence and ownership/controller checks; never for the host.
 - The [preparation reference](../skills/e2e-windows/references/windows-proxmox.md)
   records Windows template capture, clone identity, per-user WSL registration,
   Docker integration and credential handling. VM provisioning is not automated
@@ -267,7 +284,7 @@ regressions failing before the fix. Its
 [hosted CI run](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/runs/34616868865)
 passed on Ubuntu and macOS. These checks simulate infrastructure and exercise
 parsing, transport, ownership, timeouts and result validation; the live records
-above provide the model/service proof. The current suite contains **149 tests**;
+above provide the model/service proof. The current suite contains **168 tests**;
 it passed locally on macOS and CI runs it on Linux and macOS. Coverage includes
 real PTY redraws, cancellation and process cleanup, strict proof rejection,
 archive handling, runtime evidence and repository metadata contracts.

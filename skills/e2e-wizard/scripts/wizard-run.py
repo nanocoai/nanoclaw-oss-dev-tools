@@ -7,6 +7,7 @@ import datetime
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,62 @@ class Failure(Exception):
     def __init__(self, phase, message, code=1):
         self.phase, self.code = phase, code
         super().__init__(message)
+
+
+def provider_discovery():
+    path = Path(__file__).resolve().with_name('provider-options.py')
+    if not path.is_file():
+        raise Failure('preflight', 'Provider discovery helper is missing', 66)
+    spec = importlib.util.spec_from_file_location('nanoclaw_e2e_provider_options', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source_commit=None):
+    module = provider_discovery()
+    try:
+        report = module.discover(root, provider, payload_ref)
+    except module.DiscoveryError as error:
+        raise Failure('preflight', str(error), 65)
+    selected = report['selected']
+    if (expected_auth_source_commit is not None
+            and selected['auth_source_commit'] != expected_auth_source_commit):
+        raise Failure('preflight', 'Provider authentication source changed after operator selection', 65)
+    methods = [item for item in selected['auth_methods'] if item['value'] == auth_method]
+    if len(methods) != 1:
+        raise Failure('preflight', f'Authentication method is not offered for {provider}: {auth_method}', 64)
+    method = methods[0]
+    if not method['usable_for_e2e']:
+        raise Failure('preflight', 'Skipping provider authentication cannot produce an E2E pass', 64)
+    if method['automation'] != 'credential-file':
+        raise Failure(
+            'preflight',
+            f'{method["label"]} requires a live human handoff; the unattended PTY runner supports credential-file methods',
+            64,
+        )
+    return selected, method
+
+
+def credential_for(path, kind):
+    if path is None:
+        raise Failure('preflight', 'The selected authentication method requires --credential-file', 66)
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        raise Failure('preflight', 'Credential file is unreadable', 66)
+    if path.is_symlink() or not stat.S_ISREG(mode) or mode & 0o077:
+        raise Failure('preflight', 'Credential file must be a private regular file (0600)', 66)
+    value = re.sub(r'\s+', '', read_limited(path))
+    shapes = {
+        'anthropic-oauth': r'sk-ant-oat[A-Za-z0-9_-]+',
+        'anthropic-api-key': r'sk-ant-api[A-Za-z0-9_-]+',
+        'openai-api-key': r'sk-[A-Za-z0-9_-]+',
+    }
+    pattern = shapes.get(kind)
+    if not pattern or not 16 <= len(value) <= 1024 or not re.fullmatch(pattern, value):
+        raise Failure('preflight', 'Credential does not match the selected provider authentication method', 66)
+    return value
 
 
 def now():
@@ -518,7 +575,13 @@ def export_evidence(root, destination, terminal, result, credential, container_s
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
-    parser.add_argument('--key-file', type=Path, default=Path.home() / '.nanoclaw-e2e/anthropic_key')
+    parser.add_argument('--provider', required=True, help='provider value discovered from this exact checkout')
+    parser.add_argument('--auth-method', required=True, help='provider-owned authentication method value')
+    parser.add_argument('--payload-ref', help='already-fetched provider payload ref, when the provider is installable')
+    parser.add_argument('--expected-auth-source-commit',
+                        help='bind the run to the provider auth source inspected before provisioning')
+    parser.add_argument('--credential-file', '--key-file', dest='credential_file', type=Path,
+                        help='private credential for an automated paste method; --key-file is a compatibility alias')
     parser.add_argument('--result-file', type=Path)
     parser.add_argument('--artifacts-dir', type=Path)
     parser.add_argument('--run-id', default=secrets.token_hex(16))
@@ -529,7 +592,8 @@ def main(argv=None):
     result_path = args.result_file or root / 'logs/e2e/result.json'
     artifacts = args.artifacts_dir or root / 'logs/e2e-wizard'
     result = {'schema_version': 1, 'mode': 'wizard', 'run_id': args.run_id, 'status': 'running',
-              'phase': 'preflight', 'commit': None, 'exit_code': None, 'started_at': now()}
+              'phase': 'preflight', 'commit': None, 'exit_code': None, 'started_at': now(),
+              'provider': args.provider, 'auth_method': args.auth_method}
     write_json(result_path, result)  # Invalidate stale success before any check.
     terminal, credential = None, ''
     previous_signals = {}
@@ -552,19 +616,28 @@ def main(argv=None):
         if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=root).returncode:
             raise Failure('preflight', 'Checkout has tracked edits', 65)
         result['commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
-        if args.key_file.is_symlink() or args.key_file.stat().st_mode & 0o077:
-            raise Failure('preflight', 'Credential file must be private (0600)', 66)
-        credential = re.sub(r'\s+', '', read_limited(args.key_file))
-        if not 16 <= len(credential) <= 1024 or not re.fullmatch(r'sk-ant-(?:api|oat)[A-Za-z0-9_-]+', credential):
-            raise Failure('preflight', 'Unsupported Anthropic credential shape', 66)
-        oauth = credential.startswith('sk-ant-oat')
+        selected, method = selected_auth(root, args.provider, args.auth_method, args.payload_ref,
+                                         args.expected_auth_source_commit)
+        credential = credential_for(args.credential_file, method['credential_kind'])
+        result.update(provider_label=selected['label'], auth_method_label=method['label'],
+                      auth_source=selected['auth_source'], auth_source_ref=selected['auth_source_ref'],
+                      auth_source_commit=selected['auth_source_commit'])
         left, right = 10000 + secrets.randbelow(80000), 11 + secrets.randbelow(88)
         values = {'credential': credential, 'display_name': 'Wizard Tester',
-                  'auth_option': 'Paste an OAuth token I already have' if oauth else 'Paste an Anthropic API key',
-                  'credential_prompt': 'Paste your OAuth token' if oauth else 'Paste your API key',
+                  'provider_label': selected['label'], 'auth_option': method['label'],
+                  'auth_prompt': selected['auth_prompt'],
+                  'credential_prompt': {
+                      'anthropic-oauth': 'Paste your OAuth token',
+                      'anthropic-api-key': 'Paste your API key',
+                      'openai-api-key': 'Paste your OpenAI API key (sk-…)',
+                  }[method['credential_kind']],
                   'challenge': f'Reply with only the decimal value of {left} * {right}.',
                   'answer': str(left * right)}
         scenario = json.loads((Path(__file__).resolve().parent.parent / 'scenarios/fresh-cli.json').read_text())
+        scenario['required_inputs'].update(
+            agent_provider=args.provider,
+            **{selected['auth_input_key']: args.auth_method},
+        )
         result['scenario'] = scenario['name']
         result['scenario_source_commit'] = scenario['source_commit']
         result['phase'] = 'wizard'

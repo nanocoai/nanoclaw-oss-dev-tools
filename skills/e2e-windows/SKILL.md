@@ -37,8 +37,28 @@ The Linux distribution needs Git, Python 3.10+, venv, Bash, sudo, build tools,
 an active systemd user session and Windows interoperability (`powershell.exe`).
 Docker Desktop must already be running in the Windows account that owns this
 distribution, with integration enabled for that distribution. Use an authorized
-Anthropic API key or existing OAuth token in a private Linux file, normally
+provider credential in a private Linux file, normally
 `~/.nanoclaw-e2e/anthropic_key`, owned by the test user with mode `0600`.
+
+Before a full wizard run reads that file or starts setup, resolve the exact
+commit and inspect the shared public picker's provider choices:
+
+```bash
+COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
+PROVIDER_HELPER=/absolute/path/to/installed/e2e-wizard/scripts/provider-options.py
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT"
+python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
+```
+
+Show the first result to the operator and ask for a provider, then show the
+selected provider's exact auth prompt/options and ask for an auth method. For
+an installable provider, fetch its one `nc:copy from-branch:` payload from its
+owning remote and pass that fetched ref as `--payload-ref` to discovery and the
+runner. Record the NanoClaw and auth-source SHAs. The unattended WSL wizard can
+use only a discovered `credential-file` method, such as Claude `api`/`oauth` or
+Codex `api`. Browser, subscription, and device methods require a separately
+authorized live handoff and stop before setup here. `skip` cannot pass. Read the
+credential only after its matching method is selected.
 
 From a clean NanoClaw checkout on Linux ext4:
 
@@ -46,7 +66,9 @@ From a clean NanoClaw checkout on Linux ext4:
 E2E_WINDOWS_DIR=/absolute/path/to/installed/e2e-windows
 mkdir -p "$HOME/e2e-results"
 python3 "$E2E_WINDOWS_DIR/scripts/windows-run.py" \
-  --ref HEAD --result-file "$HOME/e2e-results/windows.json"
+  --ref HEAD --provider claude --auth-method api \
+  --credential-file "$HOME/.nanoclaw-e2e/anthropic_key" \
+  --result-file "$HOME/e2e-results/windows.json"
 ```
 
 `--ref` resolves to an exact local commit and must match the checkout's HEAD.
@@ -109,6 +131,17 @@ bind-test container uses `--rm`; its image can remain cached. Environment
 qualification does not establish Docker Desktop support for the underlying
 hypervisor, and a generalized Windows Evaluation template retains its licensing
 limits.
+
+After validated artifacts and the report are stored outside the distribution,
+offer cleanup for a pass only when the operator identifies the WSL distribution
+or enclosing VM as a disposable clone owned by this run. Recommend retaining an
+unexpected failure until triage and requested inspection finish. Before cleanup,
+recheck clone ownership and that no wizard/controller is active; never infer
+ownership from a distribution name. If evidence export, redaction, checksums,
+local persistence, triage, ownership, or controller checks fail, do not remove
+anything. Verify the selected distribution or VM is absent afterward and write
+a teardown receipt beside the preserved report. Cleanup never includes the
+Windows host, Docker Desktop, templates, or unrelated WSL distributions.
 
 ## Source and compatibility
 

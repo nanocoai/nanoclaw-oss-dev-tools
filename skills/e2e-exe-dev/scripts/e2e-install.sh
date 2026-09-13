@@ -15,6 +15,9 @@
 #   NANOCLAW_E2E_KEY_FILE      file holding an Anthropic API key / OAuth token
 #                              (default ~/.nanoclaw-e2e/anthropic_key). Only
 #                              read when the vault has no anthropic secret yet.
+#   NANOCLAW_E2E_PROVIDER      selected provider (headless currently: claude)
+#   NANOCLAW_E2E_AUTH_METHOD   api, oauth, or existing for a reused vault
+#   NANOCLAW_E2E_AUTH_SOURCE_COMMIT  provider auth source SHA selected pre-run
 #   NANOCLAW_ONECLI_API_HOST   use a remote OneCLI gateway instead of installing
 #   NANOCLAW_ONECLI_API_TOKEN    one locally (same vars setup/auto.ts honors)
 #   NANOCLAW_DISPLAY_NAME      operator name for the e2e agent (default: E2E)
@@ -58,6 +61,9 @@ case "${NANOCLAW_E2E_ONECLI_MODE:-auto}" in
   *) echo '[e2e] FAIL: invalid NANOCLAW_E2E_ONECLI_MODE' >&2; exit 1 ;;
 esac
 KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
+PROVIDER="${NANOCLAW_E2E_PROVIDER:-claude}"
+AUTH_METHOD="${NANOCLAW_E2E_AUTH_METHOD:-api}"
+export NANOCLAW_AGENT_PROVIDER="$PROVIDER"
 LOGS="$ROOT/logs/e2e"
 mkdir -p "$LOGS"
 
@@ -94,6 +100,8 @@ fi
 # Record the source before setup changes any generated files. A failed run
 # replaces any previous result inherited from a base VM.
 SOURCE_COMMIT="$(git rev-parse --verify HEAD)" || die "cannot identify the checkout commit"
+AUTH_SOURCE_COMMIT="${NANOCLAW_E2E_AUTH_SOURCE_COMMIT:-$SOURCE_COMMIT}"
+[[ "$AUTH_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]] || die "invalid provider auth source commit"
 SOURCE_DIRTY=false
 git diff --quiet HEAD -- || SOURCE_DIRTY=true
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -103,9 +111,10 @@ write_result() {
   trap - EXIT
   set +e
   python3 - "$LOGS/result.json" "$SOURCE_COMMIT" "$SOURCE_DIRTY" \
-    "$RESULT_STATUS" "$rc" "$PHASE" "$SERVICE_TYPE" "$PING_RESULT" "$STARTED_AT" <<'PY'
+    "$RESULT_STATUS" "$rc" "$PHASE" "$SERVICE_TYPE" "$PING_RESULT" "$STARTED_AT" \
+    "$PROVIDER" "$AUTH_METHOD" "$AUTH_SOURCE_COMMIT" <<'PY'
 import datetime, json, os, sys, tempfile
-path, commit, dirty, status, rc, phase, service, ping, started = sys.argv[1:]
+path, commit, dirty, status, rc, phase, service, ping, started, provider, auth_method, auth_source_commit = sys.argv[1:]
 result = {
     "schema_version": 1,
     "status": status if int(rc) == 0 else "failed",
@@ -117,6 +126,9 @@ result = {
     "ping": ping,
     "started_at": started,
     "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "provider": provider,
+    "auth_method": auth_method,
+    "auth_source_commit": auth_source_commit,
 }
 fd, temporary = tempfile.mkstemp(prefix=".result-", dir=os.path.dirname(path))
 try:
@@ -137,6 +149,15 @@ PY
 trap write_result EXIT
 # Invalidate a previous pass before running bootstrap (including if killed).
 printf '{"schema_version":1,"status":"running","commit":"%s"}\n' "$SOURCE_COMMIT" > "$LOGS/result.json"
+if [ "$PROVIDER" != claude ]; then
+  die "the headless setup-step driver supports claude only; use e2e-wizard for another offered provider"
+fi
+case "$AUTH_METHOD" in
+  api|oauth) ;;
+  existing) [ "${NANOCLAW_E2E_REQUIRE_EXISTING_AUTH:-0}" = 1 ] \
+    || die "auth method existing requires a reused gateway" ;;
+  *) die "invalid NANOCLAW_E2E_AUTH_METHOD" ;;
+esac
 
 # Run one wizard step exactly as setup/lib/runner.ts spawns it, capture the
 # last `=== NANOCLAW SETUP: … === … === END ===` block (setup/status.ts) and
