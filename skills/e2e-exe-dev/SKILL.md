@@ -7,6 +7,16 @@ compatibility: Requires bash, git, ssh and python3 on the operator machine; the 
 
 # e2e on exe.dev
 
+For each unexpected failure, preserve the test evidence, then follow the companion
+[e2e-triage](../e2e-triage/SKILL.md) at a safe checkpoint and include its findings
+and next actions in the final E2E report. Research each distinct failure once,
+including when another E2E skill delegates here; do not delay active prompts,
+change acceptance results or submit public issues/comments without authorization.
+Install `e2e-triage` alongside this skill. If its relative link is unavailable,
+resolve it by skill name in the agent's installed catalog; if absent, report that
+triage was unavailable and continue the authorized test/report without installing
+anything implicitly.
+
 For an installation on an existing Mac, locally or over SSH, use
 [`e2e-macos`](../e2e-macos/SKILL.md). This skill's target workflow is Linux;
 its installer is shared with the Mac driver and its LaunchAgent helper.

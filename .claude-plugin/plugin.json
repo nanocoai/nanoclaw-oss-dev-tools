@@ -1,7 +1,7 @@
 {
   "name": "nanoclaw-e2e",
-  "description": "Install and verify NanoClaw with real agent replies on exe.dev, Proxmox, macOS or Windows WSL2, with retained evidence.",
-  "version": "0.6.0",
+  "description": "Install and verify NanoClaw on exe.dev, Proxmox, macOS or Windows WSL2, then triage failures against upstream issues and PRs with form-aware reporting.",
+  "version": "0.7.0",
   "author": {
     "name": "Nano Co",
     "url": "https://github.com/nanocoai"
