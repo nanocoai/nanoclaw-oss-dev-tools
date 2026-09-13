@@ -1,9 +1,9 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-12**. This checkout contains **4 skills**, with plugin
-manifest version **0.5.1**. Three drive headless setup steps; `e2e-wizard` drives
-the public interactive wizard. The workflows and their live qualifications are
-listed separately below.
+Verified: **2026-09-12**. This checkout contains **5 skills**, with plugin
+manifest version **0.6.0**. Three drive headless setup steps; `e2e-wizard` and
+`e2e-windows` drive the public interactive wizard. The workflows and their live
+qualifications are listed separately below.
 
 Installed skill copies must be updated separately, and the manifest version
 does not imply a tagged GitHub release.
@@ -20,6 +20,7 @@ successful SSH qualification described below.
 | [e2e-proxmox](../skills/e2e-proxmox/SKILL.md) | Fresh unprivileged Debian 13 amd64 LXC, managed through SSH to the Proxmox node. | Fresh install passed on 2026-09-11 with a real reply and a running systemd user service. | Reboot recovery, cached clones and the transactional updater were not tested. |
 | [e2e-macos](../skills/e2e-macos/SKILL.md) | Existing native Mac, local or SSH, using a new persistent checkout and its own LaunchAgent. | Local arm64 passed with 0.4.0; SSH on M4 Pro passed on 2026-09-11 with the readiness fix now merged in 0.4.1. Both proved a real reply, service and preservation. | Intel/older macOS, cold prerequisites and reboot/logout recovery remain unqualified. |
 | [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. | The distributed exe.dev path without a task-only adapter, native macOS, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
+| [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed on 2026-09-11 through WSL2/Docker Desktop, with a retained agent reply, service/socket proof and locally validated sanitized export. | WSL restart lost integration. After Windows reboot and Docker launch, service/socket returned but the model request timed out. Reboot inference is unqualified. |
 
 The shared baseline for the three headless skills tested NanoClaw
 [`74224f62a6c08418acccc727114ab02f92e403bf`](https://github.com/nanocoai/nanoclaw/commit/74224f62a6c08418acccc727114ab02f92e403bf).
@@ -29,9 +30,10 @@ below. These are exact-configuration results, not blanket compatibility claims.
 ## Shared workflow and acceptance
 
 Run a skill from the **NanoClaw checkout under test**, not from this tools
-repository. The drivers resolve the requested ref locally and fetch the exact
-commit on the target. Local-only commits and uncommitted edits are not uploaded.
-The chosen commit must be fetchable from the configured repository.
+repository. Remote lifecycle drivers resolve the requested ref locally and fetch
+the exact commit on the target; local edits are not uploaded, and the commit must
+be fetchable. The Windows runner executes inside the prepared WSL distribution
+and requires its clean checkout to already match the requested exact commit.
 
 The headless [e2e-install.sh](../skills/e2e-exe-dev/scripts/e2e-install.sh) drives
 NanoClaw's existing setup steps for bootstrap, Docker/OneCLI readiness, auth,
@@ -193,6 +195,26 @@ with the matching lifecycle skill installed alongside `e2e-wizard`.
 See the [scenario, acceptance rules and compatibility evidence](../skills/e2e-wizard/SKILL.md).
 A passing headless installation does not qualify the interactive wizard.
 
+## e2e-windows
+
+**Entry point:** [windows-run.py](../skills/e2e-windows/scripts/windows-run.py),
+run inside the dedicated WSL2 distribution from the NanoClaw checkout.
+
+- Needs a regular Linux user, ext4 checkout/home/results, systemd user session,
+  Python/venv, noninteractive test sudo and Windows interoperability.
+- Requires Docker Desktop integration for that distribution. Compares its local
+  Linux engine with the Windows named-pipe engine and tests a read-only mount
+  from the Linux home before starting the unchanged wizard.
+- `--preflight-only` qualifies the environment without credentials or product
+  setup. Only a validated wizard result can report an installation pass.
+- Retains the distribution, service and private working evidence. Raw product
+  logs are never the shareable artifact export.
+- The [preparation reference](../skills/e2e-windows/references/windows-proxmox.md)
+  records Windows template capture, clone identity, per-user WSL registration,
+  Docker integration and credential handling. VM provisioning is not automated
+  by this runner; the tested template still needs first-boot console assistance.
+
+
 ## Installation and maintenance
 
 Use the [README installation instructions](../README.md#1-install-the-skill).
@@ -209,7 +231,7 @@ regressions failing before the fix. Its
 [hosted CI run](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/runs/34616868865)
 passed on Ubuntu and macOS. These checks simulate infrastructure and exercise
 parsing, transport, ownership, timeouts and result validation; the live records
-above provide the model/service proof. The current suite contains **133 tests**;
+above provide the model/service proof. The current suite contains **149 tests**;
 it passed locally on macOS and CI runs it on Linux and macOS. Coverage includes
 real PTY redraws, cancellation and process cleanup, strict proof rejection,
 archive handling, runtime evidence and repository metadata contracts.
