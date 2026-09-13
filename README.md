@@ -20,6 +20,7 @@ setup steps and record the exact commit tested.
 | [e2e-macos](skills/e2e-macos/SKILL.md) | A native install and model ping on an existing Mac, locally or over SSH, with a separate checkout and preservation checks for existing services and OneCLI. |
 | [e2e-wizard](skills/e2e-wizard/SKILL.md) | Drive the real public setup wizard through a PTY on a fresh exe.dev VM or Proxmox LXC, with a retained agent reply, service proof and sanitized evidence. |
 | [e2e-windows](skills/e2e-windows/SKILL.md) | Qualify Windows WSL2 with the local Docker Desktop engine, then run the public wizard with validated reply, service and sanitized evidence. |
+| [e2e-triage](skills/e2e-triage/SKILL.md) | Research unexpected E2E failures against upstream issues and PRs, recommend next actions, and prepare drafts using the target repository’s current issue forms. |
 
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
 Codex, Claude Code, OpenCode, or another agent that supports the format. The
@@ -44,6 +45,7 @@ agent when prompted:
 
 ```bash
 npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-exe-dev
+npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-triage
 ```
 
 `--global` makes the skill available across checkouts. Omit it to install into
@@ -101,6 +103,20 @@ result includes a real agent reply and successful service verification. Results
 are written to `logs/e2e/result.json` on the target; `--result-file` saves a local
 report. Failed runs retain their VM for inspection. Snapshot and removal errors
 are reported separately from the completed installer result.
+
+## Failure triage
+
+Install `e2e-triage` alongside whichever E2E skills you use, or install the plugin,
+which includes all six. Each E2E skill instructs the agent to invoke triage after
+unexpected failures and include its findings at completion. The shell/Python
+drivers themselves do not search trackers; direct driver runs can be triaged
+later by asking the agent to use `e2e-triage` with the retained result.
+
+Triage checks open and closed issues and PRs, explains whether a candidate
+matches or is merely related, and recommends a specific next action. It preserves
+the original test result. New issue drafts follow the destination's current
+forms and contribution rules, including required fields and acknowledgments.
+Public issues and comments require authorization for the reviewed action.
 
 ## Validation
 

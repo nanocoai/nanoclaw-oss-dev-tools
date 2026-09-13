@@ -1,9 +1,10 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-12**. This checkout contains **5 skills**, with plugin
-manifest version **0.6.0**. Three drive headless setup steps; `e2e-wizard` and
-`e2e-windows` drive the public interactive wizard. The workflows and their live
-qualifications are listed separately below.
+Verified: **2026-09-12**. This checkout contains **6 skills**, with plugin
+manifest version **0.7.0**. Three drive headless setup steps; `e2e-wizard` and
+`e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
+researches unexpected failures and prepares reporting recommendations. The
+workflows and their qualifications are listed separately below.
 
 Installed skill copies must be updated separately, and the manifest version
 does not imply a tagged GitHub release.
@@ -21,6 +22,7 @@ successful SSH qualification described below.
 | [e2e-macos](../skills/e2e-macos/SKILL.md) | Existing native Mac, local or SSH, using a new persistent checkout and its own LaunchAgent. | Local arm64 passed with 0.4.0; SSH on M4 Pro passed on 2026-09-11 with the readiness fix now merged in 0.4.1. Both proved a real reply, service and preservation. | Intel/older macOS, cold prerequisites and reboot/logout recovery remain unqualified. |
 | [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. | The distributed exe.dev path without a task-only adapter, native macOS, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
 | [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed on 2026-09-11 through WSL2/Docker Desktop, with a retained agent reply, service/socket proof and locally validated sanitized export. | WSL restart lost integration. After Windows reboot and Docker launch, service/socket returned but the model request timed out. Reboot inference is unqualified. |
+| [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
 
 The shared baseline for the three headless skills tested NanoClaw
 [`74224f62a6c08418acccc727114ab02f92e403bf`](https://github.com/nanocoai/nanoclaw/commit/74224f62a6c08418acccc727114ab02f92e403bf).
@@ -214,6 +216,40 @@ run inside the dedicated WSL2 distribution from the NanoClaw checkout.
   Docker integration and credential handling. VM provisioning is not automated
   by this runner; the tested template still needs first-boot console assistance.
 
+
+## e2e-triage
+
+**Entry point:** [SKILL.md](../skills/e2e-triage/SKILL.md), invoked by the testing
+agent after an unexpected failure or directly against a retained run. Install it
+alongside the E2E skill; the plugin includes all six. This workflow adds no
+runtime or GitHub dependency to the shell/Python test drivers.
+
+- Captures distinct failures without rewriting installation/recovery outcomes.
+- Searches issues and PRs in all states, follows relevant linked work and separates
+  a matching report, a related symptom, an unmerged candidate and a verified merge.
+  Checks candidate mergeability, target-base revision and relevant CI; conflicting
+  PRs require a rebase or port and review before testing against the current base.
+- Saves bounded search scope and uncertainties; unavailable or truncated searches
+  are incomplete, never proof that a bug is new.
+- Reads current target issue forms, contribution requirements and reporting routes
+  before drafting. Required fields and individual attestations must be supported;
+  it never silently files a generic body in place of a required form.
+- Produces final recommendations and local issue/comment drafts; public submission
+  requires authorization for the concrete content and destination.
+
+Validation on **2026-09-12** used the retained Windows run at NanoClaw
+`705c6b9e627ac36a8b4bbc280e5804c6debf9a25`, without rerunning or repairing it.
+Live research found related [issue 2513](https://github.com/nanocoai/nanoclaw/issues/2513),
+and [PR 3027](https://github.com/nanocoai/nanoclaw/pull/3027) describing the same WSL2
+host-side `EISDIR` failure. That PR was open, unmerged and conflicting on follow-up
+inspection; its candidate fix was not tested here. The recommendation is to
+rebase or port the applicable change, review it, then test the resulting revision
+against current `main`. [PR 2854](https://github.com/nanocoai/nanoclaw/pull/2854) was closed
+without merge, so it was not treated as an available fix. The current NanoClaw
+bug form and contribution rules were inspected at
+`74224f62a6c08418acccc727114ab02f92e403bf`, and a local field mapping was prepared.
+This is manual workflow validation with live reads, not a fresh E2E installation
+or automated proof of future agent behavior. No issue or comment was posted.
 
 ## Installation and maintenance
 

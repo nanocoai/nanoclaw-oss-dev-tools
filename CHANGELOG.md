@@ -27,6 +27,12 @@ tags were published for those versions.
 
 ### Added
 
+- `e2e-triage` and invocation instructions in all five E2E skills: bounded
+  upstream issue/PR research, evidence-based matches, candidate conflict/CI
+  checks, final recommendations and local drafts that follow the target
+  repository's current issue forms. Test outcomes remain unchanged; public
+  submission requires authorization (plugin 0.7.0).
+
 - `e2e-windows` for a prepared Windows WSL2 distribution, with same-engine
   Docker Desktop proof, a Linux-home bind test, unchanged public-wizard reuse,
   validated artifacts and a Proxmox Windows preparation reference (plugin 0.6.0).

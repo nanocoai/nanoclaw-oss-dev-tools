@@ -6,6 +6,16 @@ license: MIT
 
 # NanoClaw E2E on macOS
 
+For each unexpected failure, preserve the test evidence, then follow the companion
+[e2e-triage](../e2e-triage/SKILL.md) at a safe checkpoint and include its findings
+and next actions in the final E2E report. Research each distinct failure once,
+including when another E2E skill delegates here; do not delay active prompts,
+change acceptance results or submit public issues/comments without authorization.
+Install `e2e-triage` alongside this skill. If its relative link is unavailable,
+resolve it by skill name in the agent's installed catalog; if absent, report that
+triage was unavailable and continue the authorized test/report without installing
+anything implicitly.
+
 Use this skill for a Mac you are working on or a Mac accessible through an
 existing SSH connection. [scripts/macos-run.py](scripts/macos-run.py) creates a
 separate persistent checkout, runs NanoClaw's setup steps, starts its own
