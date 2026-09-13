@@ -44,9 +44,20 @@ for name, data in json.loads(%r).items():
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(base64.b64decode(data))
 WIZARD_BUNDLE
-exec bash "$HOME/.nanoclaw-e2e/wizard/scripts/wizard-install.sh" --run-id %s --timeout %s --provider %s --auth-method %s --credential-file "$HOME/.nanoclaw-e2e/anthropic_key"%s%s
-""" % (json.dumps(files), shlex.quote(run_id), timeout, shlex.quote(provider),
-         shlex.quote(auth_method), (' --payload-ref ' + shlex.quote(payload_ref)) if payload_ref else '',
+git fetch origin %s
+git cat-file -e %s^{commit}
+payload_repo="$HOME/.nanoclaw-e2e/provider-payload.git"
+git clone --quiet --bare . "$payload_repo"
+git --git-dir="$payload_repo" update-ref refs/heads/providers %s
+git remote add e2e-payload "$payload_repo"
+export NANOCLAW_CHANNELS_REMOTE=e2e-payload
+exec bash "$HOME/.nanoclaw-e2e/wizard/scripts/wizard-install.sh" --run-id %s --timeout %s --provider %s --auth-method %s%s%s
+""" % (json.dumps(files), shlex.quote(expected_auth_source_commit),
+         shlex.quote(expected_auth_source_commit),
+         shlex.quote(expected_auth_source_commit), shlex.quote(run_id), timeout,
+         shlex.quote(provider), shlex.quote(auth_method),
+         (' --payload-ref ' + shlex.quote(expected_auth_source_commit))
+         if expected_auth_source_commit else '',
          (' --expected-auth-source-commit ' + shlex.quote(expected_auth_source_commit))
          if expected_auth_source_commit else '')
 
@@ -107,15 +118,17 @@ def main(argv=None):
                 raise base.Failure('Could not discover provider/auth choices: ' + message, 65)
             methods = [item for item in selected['auth_methods']
                        if item['value'] == options.auth_method]
-            if (len(methods) != 1 or not methods[0]['usable_for_e2e']
-                    or methods[0]['automation'] != 'credential-file'):
-                raise base.Failure('Selected provider auth is unavailable to the unattended wizard', 64)
+            if (len(methods) != 1 or options.provider != 'codex'
+                    or options.auth_method != 'device'
+                    or methods[0]['automation'] != 'human-handoff'):
+                raise base.Failure('Task adapter supports only supervised Codex device pairing', 64)
             # super().preflight() temporarily used the headless lifecycle's
             # Claude defaults. From here on, its result validator must bind to
             # the provider and auth method the wizard will actually exercise.
             self.args.provider = options.provider
             self.args.auth_method = options.auth_method
             self.report['auth_source_commit'] = selected['auth_source_commit']
+            self.args.key_file = None
             self.args.installer.write_text(wrapper(
                 self.run_id, options.wizard_timeout, options.provider,
                 options.auth_method, options.payload_ref,
@@ -153,7 +166,7 @@ def main(argv=None):
                     nested = Path(temporary) / 'result.json'
                     collector.collect(io.BytesIO(archive.stdout), artifacts, nested,
                                       self.commit, self.run_id, report['exit_code'],
-                                      self.args.key_file.expanduser(), options.provider,
+                                      None, options.provider,
                                       options.auth_method, self.report['auth_source_commit'])
                     self.report['wizard'] = json.loads(nested.read_text())
             except collector.ValidationError as error:

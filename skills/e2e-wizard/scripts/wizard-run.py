@@ -15,6 +15,7 @@ import pty
 import re
 import secrets
 import shlex
+import shutil
 import select
 import signal
 import socket
@@ -28,6 +29,9 @@ import time
 MAX_LOG_BYTES = 32 * 1024 * 1024
 ANSI = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])')
 TOKEN = re.compile(r'sk-ant-[A-Za-z0-9_-]+')
+DEVICE_CODE = re.compile(r'\b[A-Z0-9]{4}(?:-[A-Z0-9]{4})+\b')
+DEVICE_URL = 'https://auth.openai.com/codex/device'
+HANDOFF_PATH = Path.home() / '.nanoclaw-e2e/device-handoff.json'
 
 
 class Failure(Exception):
@@ -62,16 +66,20 @@ def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source
     method = methods[0]
     if not method['usable_for_e2e']:
         raise Failure('preflight', 'Skipping provider authentication cannot produce an E2E pass', 64)
-    if method['automation'] != 'credential-file':
+    if method['automation'] not in ('credential-file', 'human-handoff'):
         raise Failure(
             'preflight',
-            f'{method["label"]} requires a live human handoff; the unattended PTY runner supports credential-file methods',
+            f'{method["label"]} is unsupported by this supervised PTY runner',
             64,
         )
     return selected, method
 
 
 def credential_for(path, kind):
+    if kind is None:
+        if path is not None:
+            raise Failure('preflight', 'Human handoff authentication must not use --credential-file', 66)
+        return ''
     if path is None:
         raise Failure('preflight', 'The selected authentication method requires --credential-file', 66)
     try:
@@ -110,6 +118,93 @@ def write_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def verify_provider_payload(root, selected):
+    skill = read_limited(root / selected['source'])
+    match = re.search(r'```nc:copy from-branch:providers\n(.*?)\n```', skill, re.S)
+    if not match:
+        raise Failure('payload', 'Provider skill has no readable providers copy directive', 65)
+    paths = [line.strip().split(' -> ')[-1] for line in match.group(1).splitlines() if line.strip()]
+    if not paths:
+        raise Failure('payload', 'Provider copy directive has no payload files', 65)
+    receipt = {'commit': selected['auth_source_commit'], 'paths': {}}
+    for relative in paths:
+        installed = root / relative
+        if installed.is_symlink() or not installed.is_file():
+            raise Failure('payload', 'Installed provider payload is incomplete: ' + relative, 65)
+        expected = subprocess.run(
+            ['git', 'show', selected['auth_source_commit'] + ':' + relative], cwd=root,
+            capture_output=True, timeout=30,
+        )
+        if expected.returncode or installed.read_bytes() != expected.stdout:
+            raise Failure('payload', 'Installed provider payload does not match selected commit: ' + relative, 65)
+        receipt['paths'][relative] = hashlib.sha256(expected.stdout).hexdigest()
+    receipt['file_count'] = len(paths)
+    canonical = json.dumps(receipt['paths'], sort_keys=True, separators=(',', ':')).encode()
+    receipt['combined_sha256'] = hashlib.sha256(canonical).hexdigest()
+    return receipt
+
+
+def verify_codex_target(root, terminal, method):
+    if method['value'] != 'device':
+        raise Failure('preflight', 'This supervised adapter supports only Codex device pairing', 64)
+    manifest = json.loads(read_limited(root / 'container/cli-tools.json'))
+    matches = [item for item in manifest if item.get('name') == '@openai/codex']
+    if len(matches) != 1 or not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', matches[0].get('version', '')):
+        raise Failure('payload', 'Installed manifest has no exact Codex CLI pin', 65)
+    version = matches[0]['version']
+    if f'Preparing the pinned Codex CLI ({version}) for sign-in' not in terminal.text():
+        raise Failure('auth', 'Missing proof that the manifest-pinned Codex CLI fallback ran', 1)
+    if not terminal.handoff_emitted:
+        raise Failure('auth', 'Device handoff was never observed', 1)
+    if (Path.home() / '.codex/auth.json').exists():
+        raise Failure('auth', 'Isolated Codex login left a personal auth file behind', 1)
+    try:
+        secrets_report = json.loads(subprocess.check_output(
+            ['onecli', 'secrets', 'list'], text=True, timeout=30,
+        ))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise Failure('auth', 'Could not verify the OneCLI Codex vault entry', 1)
+    entries = secrets_report.get('data', [])
+    matching = [item for item in entries if (
+        str(item.get('name', '')).lower() == 'codex'
+        and str(item.get('hostPattern', '')).lower() == 'chatgpt.com'
+    )]
+    if len(matching) != 1:
+        raise Failure('auth', 'OneCLI does not contain exactly one dedicated Codex session', 1)
+    return {
+        'host_codex_absent_before_wizard': True,
+        'personal_auth_absent_before_wizard': True,
+        'personal_auth_absent_after_wizard': True,
+        'cli_package': '@openai/codex',
+        'cli_version': version,
+        'fallback_proof': True,
+        'auth_method': 'device',
+        'device_handoff_observed': True,
+        'vault': {'name': 'Codex', 'host_pattern': 'chatgpt.com', 'entry_count': 1},
+    }
+
+
+def verify_retained_codex_group(root):
+    command = root / 'bin/ncl'
+    try:
+        listed = json.loads(subprocess.check_output(
+            [str(command), 'groups', 'list', '--json'], cwd=root, text=True, timeout=30,
+        ))
+        groups = listed.get('data')
+        if not isinstance(groups, list) or len(groups) != 1 or not groups[0].get('id'):
+            raise ValueError()
+        config_frame = json.loads(subprocess.check_output(
+            [str(command), 'groups', 'config', 'get', '--id', str(groups[0]['id']), '--json'],
+            cwd=root, text=True, timeout=30,
+        ))
+        config = config_frame.get('data')
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        raise Failure('verify', 'Could not verify the retained agent provider through ncl', 1)
+    if not isinstance(config, dict) or config.get('provider') != 'codex':
+        raise Failure('verify', 'Retained agent container config is not Codex', 1)
+    return {'group_count': 1, 'provider': 'codex', 'verified_via': 'ncl'}
+
+
 class Redactor:
     """Redact whole rendered/log texts, so chunk boundaries cannot split secrets."""
     def __init__(self, values):
@@ -139,8 +234,8 @@ def read_limited(path):
     return data.decode('utf-8', errors='replace')
 
 
-def private_values(root, credential):
-    values = [credential]
+def private_values(root, credential, extra=()):
+    values = [credential, *extra]
     # Generated gateway credentials may appear in raw step output. Read only
     # known local configuration; these files themselves are never exported.
     for path in [root / '.env', Path.home() / '.config/onecli/config.json']:
@@ -175,14 +270,16 @@ def child_environment():
     # inherited product settings may silently perform/bypass wizard choices.
     allowed = ('HOME', 'USER', 'LOGNAME', 'PATH', 'SHELL', 'TMPDIR',
                'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS',
-               'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL')
+               'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL',
+               'NANOCLAW_CHANNELS_REMOTE')
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     env.update(TERM='xterm-256color', COLORTERM='truecolor', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC')
     return env
 
 
 class WizardTerminal:
-    def __init__(self, scenario, values, timeout=1200, idle_timeout=180, columns=160, rows=48):
+    def __init__(self, scenario, values, timeout=1200, idle_timeout=180, columns=160, rows=48,
+                 handoff_method=None, payload_verifier=None):
         import pyte
         self.scenario, self.values = scenario, values
         self.timeout, self.idle_timeout = timeout, idle_timeout
@@ -194,6 +291,12 @@ class WizardTerminal:
         self.reply_verified = False
         self.output_bytes = 0
         self.last_prompt_index = -1
+        self.private_values = []
+        self.handoff_emitted = False
+        self.handoff_method = handoff_method
+        self.handoff_idle_timeout = 600
+        self.payload_verifier = payload_verifier
+        self.payload_receipt = None
 
     def text(self):
         history = [''.join(line[x].data for x in range(self.columns)).rstrip()
@@ -205,6 +308,19 @@ class WizardTerminal:
         if self.output_bytes > MAX_LOG_BYTES or len(self.screen.history.top) >= 30000:
             raise Failure('terminal', 'Terminal evidence limit exceeded')
         self.stream.feed(self.decoder.decode(data))
+        if self.handoff_method == 'device' and not self.handoff_emitted:
+            block = '\n'.join(self.text().splitlines()[-24:])
+            codes = DEVICE_CODE.findall(block)
+            if DEVICE_URL in block and codes and re.search(r'(?i)device|pairing', block):
+                code = codes[-1]
+                self.private_values.append(code)
+                write_json(HANDOFF_PATH, {
+                    'user_code': code,
+                    'verification_url': DEVICE_URL,
+                    'created_at': now(),
+                })
+                HANDOFF_PATH.chmod(0o600)
+                self.handoff_emitted = True
 
     def active(self):
         lines = self.screen.display
@@ -240,6 +356,8 @@ class WizardTerminal:
             raise Failure('prompt', 'Unknown active wizard prompt: ' + header)
         index, prompt = matches[0]
         prompt_id = prompt['id']
+        if prompt_id == 'auth' and self.payload_verifier and self.payload_receipt is None:
+            self.payload_receipt = self.payload_verifier()
         if prompt_id in self.seen or index < self.last_prompt_index:
             raise Failure('prompt', 'Repeated or out-of-order prompt: ' + prompt_id)
         missing = [p['id'] for p in self.scenario['prompts'][:index]
@@ -302,7 +420,8 @@ class WizardTerminal:
                 clock = time.monotonic()
                 if clock - start > self.timeout:
                     raise Failure('timeout', 'Wizard exceeded total timeout', 124)
-                if clock - last_output > self.idle_timeout:
+                idle_limit = self.handoff_idle_timeout if self.handoff_emitted else self.idle_timeout
+                if clock - last_output > idle_limit:
                     raise Failure('timeout', 'Wizard stopped producing output', 124)
                 ready, _, _ = select.select([fd], [], [], 0.05)
                 if ready:
@@ -530,9 +649,17 @@ def collect_container_status():
 def export_evidence(root, destination, terminal, result, credential, container_status=None):
     if destination.exists() or destination.is_symlink():
         raise Failure('export', 'Artifact directory already exists', 74)
-    redactor = Redactor(private_values(root, credential))
+    redactor = Redactor(private_values(root, credential, terminal.private_values if terminal else ()))
     files = {'terminal.txt': redactor.clean(terminal.text()) if terminal else '',
              'choices.json': redactor.clean(json.dumps(terminal.choices if terminal else [], indent=2)) + '\n'}
+    if result.get('provider_payload_receipt'):
+        files['provider-payload-receipt.json'] = redactor.clean(
+            json.dumps(result['provider_payload_receipt'], indent=2) + '\n'
+        )
+    if result.get('codex_target_receipt'):
+        files['codex-target-receipt.json'] = redactor.clean(
+            json.dumps(result['codex_target_receipt'], indent=2) + '\n'
+        )
     logs = [(root / 'logs/setup.log', Path('setup-logs/setup.log'))]
     logs += [(path, Path('setup-logs/setup-steps') / path.name)
              for path in sorted((root / 'logs/setup-steps').glob('*.log'))]
@@ -615,9 +742,18 @@ def main(argv=None):
                 raise Failure('preflight', 'Fresh scenario refuses prior product state: ' + path, 65)
         if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=root).returncode:
             raise Failure('preflight', 'Checkout has tracked edits', 65)
+        if args.auth_method == 'device':
+            if shutil.which('codex') is not None:
+                raise Failure('preflight', 'Codex CLI is globally available; fallback path would not run', 65)
+            if (Path.home() / '.codex/auth.json').exists():
+                raise Failure('preflight', 'Fresh guest unexpectedly has a personal Codex login', 65)
+            HANDOFF_PATH.unlink(missing_ok=True)
         result['commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
         selected, method = selected_auth(root, args.provider, args.auth_method, args.payload_ref,
                                          args.expected_auth_source_commit)
+        if (args.provider != 'codex' or args.auth_method != 'device'
+                or method['automation'] != 'human-handoff'):
+            raise Failure('preflight', 'Task adapter supports only supervised Codex device pairing', 64)
         credential = credential_for(args.credential_file, method['credential_kind'])
         result.update(provider_label=selected['label'], auth_method_label=method['label'],
                       auth_source=selected['auth_source'], auth_source_ref=selected['auth_source_ref'],
@@ -625,15 +761,20 @@ def main(argv=None):
         left, right = 10000 + secrets.randbelow(80000), 11 + secrets.randbelow(88)
         values = {'credential': credential, 'display_name': 'Wizard Tester',
                   'provider_label': selected['label'], 'auth_option': method['label'],
-                  'auth_prompt': selected['auth_prompt'],
-                  'credential_prompt': {
+                  'auth_prompt': selected['auth_prompt']}
+        if method['automation'] == 'credential-file':
+            values['credential_prompt'] = {
                       'anthropic-oauth': 'Paste your OAuth token',
                       'anthropic-api-key': 'Paste your API key',
                       'openai-api-key': 'Paste your OpenAI API key (sk-…)',
-                  }[method['credential_kind']],
-                  'challenge': f'Reply with only the decimal value of {left} * {right}.',
-                  'answer': str(left * right)}
+                  }[method['credential_kind']]
+        values.update(
+            challenge=f'Reply with only the decimal value of {left} * {right}.',
+            answer=str(left * right),
+        )
         scenario = json.loads((Path(__file__).resolve().parent.parent / 'scenarios/fresh-cli.json').read_text())
+        if method['automation'] == 'human-handoff':
+            scenario['prompts'] = [prompt for prompt in scenario['prompts'] if prompt['id'] != 'credential']
         scenario['required_inputs'].update(
             agent_provider=args.provider,
             **{selected['auth_input_key']: args.auth_method},
@@ -646,10 +787,21 @@ def main(argv=None):
         # parent directory while leaving the product log contents untouched.
         (root / 'logs').mkdir(mode=0o700, exist_ok=True)
         (root / 'logs').chmod(0o700)
-        terminal = WizardTerminal(scenario, values, args.timeout, args.idle_timeout)
+        terminal = WizardTerminal(
+            scenario, values, args.timeout, args.idle_timeout,
+            handoff_method=args.auth_method if method['automation'] == 'human-handoff' else None,
+            payload_verifier=lambda: verify_provider_payload(root, selected),
+        )
         terminal.run(root)
+        if terminal.payload_receipt is None:
+            raise Failure('payload', 'Provider payload was not verified before authentication', 65)
+        if verify_provider_payload(root, selected) != terminal.payload_receipt:
+            raise Failure('payload', 'Provider payload changed during authentication', 65)
+        result['provider_payload_receipt'] = terminal.payload_receipt
+        result['codex_target_receipt'] = verify_codex_target(root, terminal, method)
         verify, service = check_progress(root, scenario)
         live = verify_live_service(root, service)
+        result['codex_target_receipt']['retained_agent'] = verify_retained_codex_group(root)
         result.update(status='pass', phase='complete', exit_code=0, ping='ok',
                       service_type=live['type'], service=live, verification=verify,
                       wizard_completed=True, retained_reply_verified=True)
@@ -663,13 +815,16 @@ def main(argv=None):
     result['finished_at'] = now()
     result_redactor = Redactor([credential])
     try:
-        result_redactor = Redactor(private_values(root, credential))
+        result_redactor = Redactor(private_values(
+            root, credential, terminal.private_values if terminal else (),
+        ))
         export_evidence(root, artifacts, terminal, result, credential, collect_container_status())
         result['artifacts'] = str(artifacts)
     except Exception as error:
         result.update(status='failed', phase='export', exit_code=74, error='Sanitized evidence export failed: ' + type(error).__name__)
     safe_result = json.loads(result_redactor.clean(json.dumps(result)))
     write_json(result_path, safe_result)
+    HANDOFF_PATH.unlink(missing_ok=True)
     print('[e2e-wizard] ' + safe_result['status'] + ' phase=' + safe_result['phase'] + ' result=' + str(result_path))
     for signum, handler in previous_signals.items():
         signal.signal(signum, handler)

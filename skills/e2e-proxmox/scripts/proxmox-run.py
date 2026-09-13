@@ -262,7 +262,8 @@ class Run:
         self.phase("bootstrap")
         self.guest_checked(BOOTSTRAP.read_text(), capture=False, timeout=600)
         self.phase("upload")
-        self.upload(PRIVATE + "/anthropic_key", key)
+        if key is not None:
+            self.upload(PRIVATE + "/anthropic_key", key)
         self.upload(PRIVATE + "/e2e-install.sh", self.installer.read_bytes())
         settings = "\n".join("export " + name + "=" + shlex.quote(os.environ[name]) for name in FORWARDED if name in os.environ)
         self.upload(PRIVATE + "/run-env.sh", settings.encode())
@@ -331,12 +332,15 @@ exec runuser -u nanoclaw -- env HOME=/home/nanoclaw USER=nanoclaw LOGNAME=nanocl
                 }
                 print(json.dumps(self.report["plan"], indent=2))
             else:
-                try:
-                    key = self.args.key_file.expanduser().read_bytes()
-                    if not key.strip():
-                        raise ValueError("empty key")
-                except (OSError, ValueError):
-                    raise Failure("Anthropic key file is unreadable or empty", 66)
+                if self.args.key_file is None:
+                    key = None
+                else:
+                    try:
+                        key = self.args.key_file.expanduser().read_bytes()
+                        if not key.strip():
+                            raise ValueError("empty key")
+                    except (OSError, ValueError):
+                        raise Failure("Anthropic key file is unreadable or empty", 66)
                 self.create()
                 self.install(key)
         except KeyboardInterrupt:

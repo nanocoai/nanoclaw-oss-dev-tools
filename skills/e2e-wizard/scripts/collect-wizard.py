@@ -18,6 +18,7 @@ spec.loader.exec_module(runner)
 LIMIT = 64 * 1024 * 1024
 EXACT_PATHS = {
     'manifest.json', 'result.json', 'choices.json', 'terminal.txt',
+    'provider-payload-receipt.json', 'codex-target-receipt.json',
     'setup-logs/setup.log', 'runtime-logs/nanoclaw.log',
     'runtime-logs/nanoclaw.error.log', 'runtime-logs/docker-containers.txt',
 }
@@ -59,12 +60,16 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
     destination, result_path = Path(destination), Path(result_path)
     if destination.exists() or destination.is_symlink():
         reject('destination-exists')
-    try:
-        key = ''.join(Path(key_file).read_text().split())
-    except (OSError, UnicodeError):
+    key = ''
+    if key_file is not None:
+        try:
+            key = ''.join(Path(key_file).read_text().split())
+        except (OSError, UnicodeError):
+            reject('credential-unreadable')
+        if not key:
+            reject('credential-empty')
+    elif provider != 'codex' or auth_method != 'device':
         reject('credential-unreadable')
-    if not key:
-        reject('credential-empty')
     data = source.read(LIMIT + 1)
     if len(data) > LIMIT:
         reject('archive-too-large')
@@ -109,7 +114,8 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
             text = content.decode('utf-8')
         except UnicodeDecodeError:
             reject('invalid-artifact-text')
-        if key in ''.join(text.split()) or runner.TOKEN.search(text):
+        if ((key and key in ''.join(text.split())) or runner.TOKEN.search(text)
+                or runner.DEVICE_CODE.search(text)):
             reject('credential-found')
     result = load_json(files, 'result.json', 'invalid-result')
     expected_status = 'pass' if exit_code == 0 else 'failed'
@@ -128,6 +134,25 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
                 or service.get('checkout_verified') is not True
                 or service.get('socket_connected') is not True):
             reject('acceptance-evidence-missing')
+        if provider == 'codex' and auth_method == 'device':
+            payload = load_json(files, 'provider-payload-receipt.json', 'acceptance-evidence-missing')
+            target = load_json(files, 'codex-target-receipt.json', 'acceptance-evidence-missing')
+            if (payload != result.get('provider_payload_receipt')
+                    or payload.get('commit') != auth_source_commit
+                    or not isinstance(payload.get('paths'), dict)
+                    or not payload['paths']
+                    or payload.get('file_count') != len(payload['paths'])
+                    or target != result.get('codex_target_receipt')
+                    or target.get('fallback_proof') is not True
+                    or target.get('auth_method') != 'device'
+                    or target.get('host_codex_absent_before_wizard') is not True
+                    or target.get('personal_auth_absent_before_wizard') is not True
+                    or target.get('personal_auth_absent_after_wizard') is not True
+                    or target.get('device_handoff_observed') is not True
+                    or target.get('retained_agent') != {
+                        'group_count': 1, 'provider': 'codex', 'verified_via': 'ncl',
+                    }):
+                reject('acceptance-evidence-missing')
     temporary = Path(tempfile.mkdtemp(prefix='.wizard-export-', dir=destination.parent))
     try:
         for name, content in files.items():
@@ -151,7 +176,7 @@ def main():
     parser.add_argument('--commit', required=True)
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--exit-code', required=True, type=int)
-    parser.add_argument('--key-file', required=True, type=Path)
+    parser.add_argument('--key-file', type=Path)
     parser.add_argument('--provider')
     parser.add_argument('--auth-method')
     parser.add_argument('--auth-source-commit')
