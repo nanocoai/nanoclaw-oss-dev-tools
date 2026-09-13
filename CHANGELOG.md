@@ -27,6 +27,11 @@ tags were published for those versions.
 
 ### Added
 
+- `shared-terminal`: one real local PTY shared by browser and agent controls,
+  with private session access, prompt guards, reconnect recovery and bounded
+  shutdown. Bundled terminal assets and Python dependencies are pinned; actual
+  HTTP/PTY tests cover the control boundary (plugin 0.10.0).
+
 - Supervised public-wizard authentication for Codex device pairing and Claude
   subscription sign-in through the Proxmox and direct wizard entry points.
   Private handoffs carry browser links and authorization codes; the runner still
