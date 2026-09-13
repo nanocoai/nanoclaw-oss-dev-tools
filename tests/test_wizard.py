@@ -593,7 +593,10 @@ result={'schema_version':1,'mode':'wizard','run_id':options['--run-id'],
  'retained_reply_verified':True,'provider':options['--provider'],'auth_method':options['--auth-method'],
  'auth_source_commit':options['--expected-auth-source-commit'],
  'service':{'checkout_verified':True,'socket_connected':True}}
+if result['provider']=='codex':
+ result['provider_payload_receipt']={'commit':result['auth_source_commit'],'paths':{'setup/providers/codex.ts':'fixture'},'file_count':1,'combined_sha256':'fixture'}
 files={'terminal.txt':'sanitized output','choices.json':'[]','setup-logs/setup.log':'completed', 'result.json':json.dumps(result)}
+if result['provider']=='codex': files['provider-payload-receipt.json']=json.dumps(result['provider_payload_receipt'])
 manifest={'schema_version':1,'run_id':options['--run-id'],'sanitized':True,'files':{}}
 for name,content in files.items():
  path=dest/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content)

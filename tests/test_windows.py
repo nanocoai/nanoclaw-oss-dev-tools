@@ -146,12 +146,18 @@ setupLog.userInput('codex_auth_method', method);
                   'auth_method': options['--auth-method'],
                   'auth_source_commit': options['--expected-auth-source-commit'],
                   'service': {'checkout_verified': True, 'socket_connected': True}}
+        if result['provider'] == 'codex':
+            payload = {'commit': result['auth_source_commit'], 'paths': {'setup/providers/codex.ts': 'fixture'},
+                       'file_count': 1, 'combined_sha256': 'fixture'}
+            result['provider_payload_receipt'] = payload
         if self.fixture_mode == 'missing-reply':
             result['retained_reply_verified'] = False
         if self.fixture_mode == 'wrong-commit':
             result['commit'] = '0' * 40
         files = {'result.json': json.dumps(result), 'choices.json': '[]',
                  'terminal.txt': 'computed answer', 'setup-logs/setup.log': 'progress'}
+        if result['provider'] == 'codex':
+            files['provider-payload-receipt.json'] = json.dumps(payload)
         if self.fixture_mode == 'secret-leak':
             files['terminal.txt'] = self.key.read_text()
         manifest = {'schema_version': 1, 'sanitized': True, 'run_id': options['--run-id'],

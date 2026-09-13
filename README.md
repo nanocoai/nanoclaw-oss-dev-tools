@@ -95,8 +95,9 @@ Before a live run, the agent resolves the requested NanoClaw commit, runs
 providers, and asks which one to test. It then shows that provider's own auth
 prompt/options and asks which method to use. Installable-provider auth is read
 from the exact fetched provider payload and records its separate SHA. Unattended
-drivers accept only credential-file flows they can prove; browser/device login
-needs a live handoff and `skip` cannot pass. See the
+drivers accept only credential-file flows they can prove. The Proxmox and direct
+wizard entry points also support supervised Codex device pairing and Claude
+subscription sign-in with a live human handoff; `skip` cannot pass. See the
 [provider-selection workflow](skills/e2e-wizard/SKILL.md#install-and-run).
 
 ### 3. Run a test

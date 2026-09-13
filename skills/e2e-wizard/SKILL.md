@@ -60,9 +60,13 @@ single `nc:copy from-branch:` payload from the owning remote, and pass that
 fetched ref as `--payload-ref` to discovery and the lifecycle driver. Record
 both `nanoclaw_commit` and `auth_source_commit`; never guess the remote or use
 the working tree as provider evidence. Only methods marked `credential-file`
-are unattended. Browser, subscription, or device methods require a separately
-authorized live human handoff and these drivers reject them before provisioning.
-`skip` is invalid for E2E. Read the credential after its matching method is chosen.
+are unattended. The Proxmox and direct wizard entry points support the discovered
+Codex `device` and Claude `subscription` methods with `--supervised-human-auth`;
+read [Supervised authentication](references/supervised-auth.md) for those runs.
+Start a live flow after the operator chooses the method and is ready to complete
+it; reuse that authorization rather than asking again for the same handoff.
+Other human-login methods or entry points fail preflight. `skip` is invalid for
+E2E. Read a credential file only after its matching paste method is chosen.
 
 ```bash
 E2E_SKILL_DIR=/absolute/path/to/installed/e2e-exe-dev
@@ -83,13 +87,13 @@ The live run provisions a cloud VM and sends the selected provider credential
 to its private file over SSH stdin. Use an existing credential file, normally
 `~/.nanoclaw-e2e/anthropic_key` for Claude, with mode `0600`;
 `--credential-file` selects another (`--key-file` remains an alias). Keep the test VM and credential transfer within
-the operator's authorized scope. This scenario never opens browser sign-in or
-creates an account.
+the operator's authorized scope. This unattended exe.dev scenario never opens
+browser sign-in or creates an account.
 
 `--interactive` requires `--result-file`. Sanitized evidence goes to
 `<result-file>.artifacts`; `--artifacts-dir` chooses another new directory.
-`--wizard-timeout` sets the total PTY deadline (default 1200 seconds); the runner
-also stops after 180 seconds without output. Unknown prompts fail rather than
+`--wizard-timeout` sets the total PTY deadline (default 1200 seconds); unattended
+runs also stop after 180 seconds without output. Unknown prompts fail rather than
 choosing a default. Failures and failed exports retain the VM. Successful
 removal requires the existing opt-in `--rm` flag and happens after validated
 artifact export. It also requires a matching run-ownership marker, an inactive
@@ -121,6 +125,14 @@ Use an existing Debian 13 amd64 template, storage and DHCP bridge. This accepts
 adapter supplies the public-wizard harness. Both lifecycle modes use the same
 scenario, terminal driver and artifact validation.
 
+For Codex device pairing or Claude subscription sign-in, add
+`--supervised-human-auth` and omit `--credential-file`. The private handoff,
+authorization-code return path and extra provider proof are described in
+[Supervised authentication](references/supervised-auth.md). The adapter transports
+an explicitly selected installable-provider payload into the guest and makes
+the wizard install it through the normal registry remote. It compares the copied
+files with the selected commit before authentication and again before acceptance.
+
 The adapter reuses unprivileged LXC creation, random ownership markers, a regular
 developer account and its systemd user session. It installs only the shared OS
 bootstrap and test-harness prerequisites; NanoClaw's public wizard performs all
@@ -138,8 +150,8 @@ persistence, triage, ownership, or controller validation is incomplete.
 
 The bundled [fresh-cli scenario](scenarios/fresh-cli.json) selects Standard
 setup, a fresh agent and a locally built image. It declines the Echo and Slack
-browser offers whenever they appear, pastes the credential using the matching
-API-key or OAuth choice, chooses terminal chat to retain an agent, submits a
+browser offers whenever they appear, completes the selected credential-file or
+supported supervised sign-in method, chooses terminal chat to retain an agent, submits a
 random arithmetic question, keeps UTC and skips the phone channel. Portal
 availability checks may still run; declining an offer does not disable them.
 
@@ -154,6 +166,11 @@ A pass requires all of the following from this invocation:
   at least one registered group, configured mount allowlist and a local image.
 - UTC persisted by the wizard, the intended checkout's current service process
   and a reachable CLI socket. This final socket connection sends no message.
+
+Supervised runs also verify the provider's vault entry and the retained agent's
+actual provider through read-only `ncl` queries. Claude subscription auth records
+`auth: interactive` in the source contract; that one status is accepted only for
+the corresponding supervised method and with all its additional proof.
 
 Cancellation, unknown or skipped prompts, timeout, missing proof, failed steps
 and ambiguous evidence cannot pass, even if the public process exits zero.
@@ -175,6 +192,8 @@ setup logs, `logs/nanoclaw.log`, `logs/nanoclaw.error.log`, a bounded
 `docker ps -a` status snapshot, and a checksum manifest. It never exports raw
 PTY input bytes. Passwords and long tokens are redacted after complete texts
 are assembled, including values split across chunks or wrapped terminal lines.
+Supervised handoff files stay outside that export; authorization URLs/codes and
+generated subscription tokens are redacted from terminal and log evidence.
 
 NanoClaw at the source revision below writes the pasted credential into the
 raw auth step's command header. The runner protects the target `logs/` directory
@@ -265,8 +284,7 @@ same owned launcher, PID, exact-entrypoint and socket checks directly, with
 offline regression coverage. The merged PR later added post-install restart
 handling for channel skills; that separate path was not part of the live run.
 
-The current 133-test offline suite passed on macOS; CI runs it on Linux and
-macOS. Those checks qualify
+The offline suite runs on Linux and macOS. Those checks qualify
 terminal behavior, acceptance rules and simulated lifecycle boundaries. The
 distributed interactive exe.dev path without a task-only adapter and a native
 macOS wizard install have not been live qualified. Headless installation evidence

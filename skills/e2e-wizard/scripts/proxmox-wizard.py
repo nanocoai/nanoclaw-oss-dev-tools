@@ -27,11 +27,25 @@ def module(name, path):
     return loaded
 
 
-def wrapper(run_id, timeout, provider, auth_method, payload_ref, expected_auth_source_commit=''):
+def wrapper(run_id, timeout, provider, auth_method, payload_ref, expected_auth_source_commit='',
+            supervised_human_auth=False, require_codex_cli_fallback=False):
     # Only public harness code travels in this bundle. The lifecycle separately
     # uploads the credential over SSH stdin with its existing private-file rules.
     files = {name: base64.b64encode((HERE.parent / name).read_bytes()).decode()
              for name in BUNDLE}
+    payload_setup = ''
+    if expected_auth_source_commit and payload_ref:
+        payload_setup = """git fetch origin %s
+git cat-file -e %s^{commit}
+payload_repo="$HOME/.nanoclaw-e2e/provider-payload.git"
+git clone --quiet --bare . "$payload_repo"
+git --git-dir="$payload_repo" update-ref refs/heads/providers %s
+git remote add e2e-payload "$payload_repo"
+export NANOCLAW_CHANNELS_REMOTE=e2e-payload
+""" % ((shlex.quote(expected_auth_source_commit),) * 3)
+    credential_arg = '' if supervised_human_auth else ' --credential-file "$HOME/.nanoclaw-e2e/anthropic_key"'
+    supervised_arg = ' --supervised-human-auth' if supervised_human_auth else ''
+    fallback_arg = ' --require-codex-cli-fallback' if require_codex_cli_fallback else ''
     return """#!/usr/bin/env bash
 set -euo pipefail
 umask 077
@@ -44,18 +58,10 @@ for name, data in json.loads(%r).items():
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(base64.b64decode(data))
 WIZARD_BUNDLE
-git fetch origin %s
-git cat-file -e %s^{commit}
-payload_repo="$HOME/.nanoclaw-e2e/provider-payload.git"
-git clone --quiet --bare . "$payload_repo"
-git --git-dir="$payload_repo" update-ref refs/heads/providers %s
-git remote add e2e-payload "$payload_repo"
-export NANOCLAW_CHANNELS_REMOTE=e2e-payload
-exec bash "$HOME/.nanoclaw-e2e/wizard/scripts/wizard-install.sh" --run-id %s --timeout %s --provider %s --auth-method %s%s%s
-""" % (json.dumps(files), shlex.quote(expected_auth_source_commit),
-         shlex.quote(expected_auth_source_commit),
-         shlex.quote(expected_auth_source_commit), shlex.quote(run_id), timeout,
+%sexec bash "$HOME/.nanoclaw-e2e/wizard/scripts/wizard-install.sh" --run-id %s --timeout %s --provider %s --auth-method %s%s%s%s%s%s
+""" % (json.dumps(files), payload_setup, shlex.quote(run_id), timeout,
          shlex.quote(provider), shlex.quote(auth_method),
+         credential_arg, supervised_arg, fallback_arg,
          (' --payload-ref ' + shlex.quote(expected_auth_source_commit))
          if expected_auth_source_commit else '',
          (' --expected-auth-source-commit ' + shlex.quote(expected_auth_source_commit))
@@ -69,6 +75,10 @@ def main(argv=None):
     own.add_argument('--provider', help='provider value discovered from the exact NanoClaw revision')
     own.add_argument('--auth-method', help='provider-owned authentication method value')
     own.add_argument('--payload-ref', help='already-fetched provider payload ref')
+    own.add_argument('--supervised-human-auth', action='store_true',
+                     help='allow live Codex device pairing or Claude subscription sign-in')
+    own.add_argument('--require-codex-cli-fallback', action='store_true',
+                     help='require the manifest-pinned Codex CLI fallback path')
     options, remaining = own.parse_known_args(argv)
     if not LIFECYCLE.is_file():
         print('[e2e-wizard] install e2e-proxmox alongside this skill', file=sys.stderr)
@@ -101,6 +111,7 @@ def main(argv=None):
             self.report['mode'] = 'wizard'
             self.report['agent_provider'] = options.provider
             self.report['auth_method'] = options.auth_method
+            self.report['require_codex_cli_fallback'] = options.require_codex_cli_fallback
             if custom_installer:
                 raise base.Failure('--installer is unavailable in wizard mode', 64)
             # Fallible bundle preparation happens only after execute() has
@@ -118,21 +129,32 @@ def main(argv=None):
                 raise base.Failure('Could not discover provider/auth choices: ' + message, 65)
             methods = [item for item in selected['auth_methods']
                        if item['value'] == options.auth_method]
-            if (len(methods) != 1 or options.provider != 'codex'
-                    or options.auth_method != 'device'
-                    or methods[0]['automation'] != 'human-handoff'):
-                raise base.Failure('Task adapter supports only supervised Codex device pairing', 64)
+            if len(methods) != 1 or not methods[0]['usable_for_e2e']:
+                raise base.Failure('Selected provider authentication is unavailable for E2E', 64)
+            human = methods[0]['automation'] == 'human-handoff'
+            if human and not (options.supervised_human_auth and (
+                    (options.provider, options.auth_method) == ('codex', 'device')
+                    or (options.provider, options.auth_method) == ('claude', 'subscription'))):
+                raise base.Failure('This live provider sign-in requires --supervised-human-auth', 64)
+            if not human and methods[0]['automation'] != 'credential-file':
+                raise base.Failure('Selected provider authentication is unsupported', 64)
+            if options.require_codex_cli_fallback and not (
+                    human and (options.provider, options.auth_method) == ('codex', 'device')):
+                raise base.Failure('--require-codex-cli-fallback requires supervised Codex device pairing', 64)
             # super().preflight() temporarily used the headless lifecycle's
             # Claude defaults. From here on, its result validator must bind to
             # the provider and auth method the wizard will actually exercise.
             self.args.provider = options.provider
             self.args.auth_method = options.auth_method
             self.report['auth_source_commit'] = selected['auth_source_commit']
-            self.args.key_file = None
+            if human:
+                self.args.key_file = None
             self.args.installer.write_text(wrapper(
                 self.run_id, options.wizard_timeout, options.provider,
                 options.auth_method, options.payload_ref,
                 selected['auth_source_commit'],
+                human,
+                options.require_codex_cli_fallback,
             ))
             if not 1 <= options.wizard_timeout <= 2100:
                 raise base.Failure('--wizard-timeout must be between 1 and 2100 seconds', 64)
@@ -166,8 +188,10 @@ def main(argv=None):
                     nested = Path(temporary) / 'result.json'
                     collector.collect(io.BytesIO(archive.stdout), artifacts, nested,
                                       self.commit, self.run_id, report['exit_code'],
-                                      None, options.provider,
-                                      options.auth_method, self.report['auth_source_commit'])
+                                      self.args.key_file.expanduser() if self.args.key_file else None,
+                                      options.provider,
+                                      options.auth_method, self.report['auth_source_commit'],
+                                      True if options.require_codex_cli_fallback else None)
                     self.report['wizard'] = json.loads(nested.read_text())
             except collector.ValidationError as error:
                 raise base.Failure('Sanitized wizard artifact validation failed: ' + error.code, 74)

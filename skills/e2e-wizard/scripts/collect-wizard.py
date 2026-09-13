@@ -19,6 +19,7 @@ LIMIT = 64 * 1024 * 1024
 EXACT_PATHS = {
     'manifest.json', 'result.json', 'choices.json', 'terminal.txt',
     'provider-payload-receipt.json', 'codex-target-receipt.json',
+    'claude-target-receipt.json',
     'setup-logs/setup.log', 'runtime-logs/nanoclaw.log',
     'runtime-logs/nanoclaw.error.log', 'runtime-logs/docker-containers.txt',
 }
@@ -56,7 +57,8 @@ def load_json(files, name, code):
 
 
 def collect(source, destination, result_path, expected, run_id, exit_code, key_file,
-            provider=None, auth_method=None, auth_source_commit=None):
+            provider=None, auth_method=None, auth_source_commit=None,
+            require_codex_cli_fallback=None):
     destination, result_path = Path(destination), Path(result_path)
     if destination.exists() or destination.is_symlink():
         reject('destination-exists')
@@ -68,7 +70,7 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
             reject('credential-unreadable')
         if not key:
             reject('credential-empty')
-    elif provider != 'codex' or auth_method != 'device':
+    elif (provider, auth_method) not in {('codex', 'device'), ('claude', 'subscription')}:
         reject('credential-unreadable')
     data = source.read(LIMIT + 1)
     if len(data) > LIMIT:
@@ -126,6 +128,9 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
             or (auth_source_commit is not None
                 and result.get('auth_source_commit') != auth_source_commit)):
         reject('provider-selection-mismatch')
+    if (require_codex_cli_fallback is not None
+            and result.get('require_codex_cli_fallback') is not require_codex_cli_fallback):
+        reject('provider-selection-mismatch')
     required = {'terminal.txt', 'choices.json', 'result.json', 'setup-logs/setup.log'}
     if exit_code == 0:
         service = result.get('service', {})
@@ -134,23 +139,39 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
                 or service.get('checkout_verified') is not True
                 or service.get('socket_connected') is not True):
             reject('acceptance-evidence-missing')
-        if provider == 'codex' and auth_method == 'device':
+        if provider == 'codex':
             payload = load_json(files, 'provider-payload-receipt.json', 'acceptance-evidence-missing')
-            target = load_json(files, 'codex-target-receipt.json', 'acceptance-evidence-missing')
             if (payload != result.get('provider_payload_receipt')
                     or payload.get('commit') != auth_source_commit
                     or not isinstance(payload.get('paths'), dict)
                     or not payload['paths']
                     or payload.get('file_count') != len(payload['paths'])
-                    or target != result.get('codex_target_receipt')
-                    or target.get('fallback_proof') is not True
+                    ):
+                reject('acceptance-evidence-missing')
+        if provider == 'codex' and auth_method == 'device':
+            target = load_json(files, 'codex-target-receipt.json', 'acceptance-evidence-missing')
+            if (target != result.get('codex_target_receipt')
                     or target.get('auth_method') != 'device'
-                    or target.get('host_codex_absent_before_wizard') is not True
                     or target.get('personal_auth_absent_before_wizard') is not True
                     or target.get('personal_auth_absent_after_wizard') is not True
                     or target.get('device_handoff_observed') is not True
                     or target.get('retained_agent') != {
                         'group_count': 1, 'provider': 'codex', 'verified_via': 'ncl',
+                    }):
+                reject('acceptance-evidence-missing')
+            if result.get('require_codex_cli_fallback') is True and (
+                    target.get('cli_fallback_required') is not True
+                    or target.get('host_codex_absent_before_wizard') is not True
+                    or target.get('fallback_proof') is not True):
+                reject('acceptance-evidence-missing')
+        if provider == 'claude' and auth_method == 'subscription':
+            target = load_json(files, 'claude-target-receipt.json', 'acceptance-evidence-missing')
+            if (target != result.get('claude_target_receipt')
+                    or target.get('authorization_handoff_observed') is not True
+                    or not isinstance(target.get('authorization_response_submitted'), bool)
+                    or target.get('token_capture_and_vault_proof') is not True
+                    or target.get('retained_agent') != {
+                        'group_count': 1, 'provider': 'claude', 'verified_via': 'ncl',
                     }):
                 reject('acceptance-evidence-missing')
     temporary = Path(tempfile.mkdtemp(prefix='.wizard-export-', dir=destination.parent))
@@ -180,11 +201,12 @@ def main():
     parser.add_argument('--provider')
     parser.add_argument('--auth-method')
     parser.add_argument('--auth-source-commit')
+    parser.add_argument('--require-codex-cli-fallback', action='store_true', default=None)
     args = parser.parse_args()
     try:
         collect(sys.stdin.buffer, args.artifacts_dir, args.result_file, args.commit, args.run_id,
                 args.exit_code, args.key_file, args.provider, args.auth_method,
-                args.auth_source_commit)
+                args.auth_source_commit, args.require_codex_cli_fallback)
     except ValidationError as error:
         print('[e2e-wizard] artifact validation failed: ' + error.code, file=sys.stderr)
         return 74

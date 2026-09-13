@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
 Verified: **2026-09-13**. This checkout contains **6 skills**, with plugin
-manifest version **0.8.0**. Three drive headless setup steps; `e2e-wizard` and
+manifest version **0.9.0** (unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below.
@@ -50,8 +50,10 @@ provider list from Git objects. After the operator chooses a provider, the
 workflow reads that provider's auth prompt/options from the same NanoClaw SHA or
 its exact fetched provider-payload SHA, shows them, and asks for the auth method.
 Unattended drivers accept only methods they can fulfill with the matching private
-credential file. Human browser/device flows require a live handoff; `skip` never
-qualifies a pass.
+credential file. The Proxmox and direct wizard entry points also support
+supervised Codex device pairing and Claude subscription sign-in after the
+operator chooses the method and is ready for the live handoff. Other entry
+points remain unattended. `skip` never qualifies a pass.
 
 A pass requires an actual CLI-agent response and successful NanoClaw service
 verification for the requested commit. JSON reports record status, phase, exit
@@ -178,11 +180,12 @@ Macs are the preferred path and MacinCloud is parked.
 `--interactive`, or [proxmox-wizard.py](../skills/e2e-wizard/scripts/proxmox-wizard.py),
 with the matching lifecycle skill installed alongside `e2e-wizard`.
 
-- Needs Python 3.10+, the lifecycle driver's prerequisites and an authorized
-  credential matching the discovered provider auth method. The target installs the hash-pinned
-  terminal emulator in a private venv.
+- Needs Python 3.10+, the lifecycle driver's prerequisites and either an
+  authorized credential file or a live operator for a supported supervised auth
+  method. The target installs the hash-pinned terminal emulator in a private venv.
 - Drives Standard setup, a fresh agent for the selected offered provider, a local sandbox image and a
-  retained terminal chat. It declines browser offers and skips phone channels.
+  retained terminal chat. It declines optional Echo and Slack browser offers and
+  skips phone channels; a chosen supervised authentication flow is handled separately.
 - Requires known active prompts, recorded choices, successful required steps and
   actual public-wizard completion. A random arithmetic answer must come from the
   retained agent; echoed input and the temporary ping agent do not prove it.
@@ -192,6 +195,12 @@ with the matching lifecycle skill installed alongside `e2e-wizard`.
   choices, setup/runtime logs and a bounded container-status snapshot. The
   collector reports safe diagnostic codes while checking paths, hashes, identity
   and proof before accepting a local success. Failure retains the machine.
+- Proxmox and direct wizard runs can use `--supervised-human-auth` for the
+  discovered Codex `device` or Claude `subscription` method. They require the
+  matching vault entry and a retained agent configured for the selected provider,
+  in addition to all normal acceptance checks. Live qualification of these new
+  authentication paths remains pending; existing API/OAuth evidence does not
+  qualify them.
 - Live qualification: a fresh unprivileged Debian 13 LXC under Proxmox VE 9.2.18
   passed against an earlier candidate of NanoClaw
   [PR 3767](https://github.com/nanocoai/nanoclaw/pull/3767), exact commit

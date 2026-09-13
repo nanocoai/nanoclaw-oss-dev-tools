@@ -27,6 +27,16 @@ tags were published for those versions.
 
 ### Added
 
+- Supervised public-wizard authentication for Codex device pairing and Claude
+  subscription sign-in through the Proxmox and direct wizard entry points.
+  Private handoffs carry browser links and authorization codes; the runner still
+  requires vault, retained-provider, model-reply, service and sanitized-export
+  evidence. Existing credential-file methods remain available (plugin 0.9.0;
+  live qualification pending).
+- Exact provider-payload transport for Proxmox wizard runs: fetch the selected
+  payload commit, expose it through the normal registry remote, and verify the
+  installed files before authentication and again before accepting a result.
+
 - Provider-aware preflight for every full E2E workflow. A read-only helper
   discovers the exact revision's offered provider picker, then the selected
   provider's auth prompt/options from either that NanoClaw SHA or its fetched
