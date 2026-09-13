@@ -29,7 +29,7 @@ import time
 MAX_LOG_BYTES = 32 * 1024 * 1024
 ANSI = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])')
 TOKEN = re.compile(r'sk-ant-[A-Za-z0-9_-]+')
-DEVICE_CODE = re.compile(r'\b[A-Z0-9]{4}(?:-[A-Z0-9]{4})+\b')
+DEVICE_CODE = re.compile(r'\b[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+\b')
 DEVICE_URL = 'https://auth.openai.com/codex/device'
 CLAUDE_AUTH_URL = re.compile(
     r'(https://claude\.ai/oauth/authorize[A-Za-z0-9._~:/?#\[\]@!$&\x27()*+,;=%-]+'
@@ -292,6 +292,7 @@ class Redactor:
             # Terminal wrapping can introduce whitespace inside a long credential.
             text = re.sub(r'\s*'.join(map(re.escape, value)), '[REDACTED]', text)
         text = TOKEN.sub('[REDACTED]', text)
+        text = DEVICE_CODE.sub('[REDACTED]', text)
         text = re.sub(r'(?im)((?:[\w-]*(?:token|password|secret|api.?key)[\w-]*)["\x27]?\s*[:=]\s*)[^\s,}\n]+', r'\1[REDACTED]', text)
         text = re.sub(r'(?i)(--(?:value|token|password|api-key)\s+)(?:"[^"]*"|\x27[^\x27]*\x27|\S+)', r'\1[REDACTED]', text)
         compact = re.sub(r'\s+', '', text)
@@ -399,7 +400,10 @@ class WizardTerminal:
             if token not in self.private_values:
                 self.private_values.append(token)
         if self.handoff_method == 'device' and not self.handoff_emitted:
-            block = '\n'.join(self.text().splitlines()[-24:])
+            # Codex prints a short prompt at the top of a freshly cleared
+            # 48-row screen. Trailing blank rows must not push it outside a
+            # fixed tail slice; inspect the complete live screen, not history.
+            block = '\n'.join(self.screen.display)
             codes = DEVICE_CODE.findall(block)
             if DEVICE_URL in block and codes and re.search(r'(?i)device|pairing', block):
                 code = codes[-1]

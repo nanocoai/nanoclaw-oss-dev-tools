@@ -110,26 +110,53 @@ class AdapterTests(unittest.TestCase):
         redactor = wizard.Redactor(['ABCD-EFGH'])
         self.assertNotIn('ABCD', redactor.clean('code ABCD-\nEFGH'))
 
-    def test_collector_rejects_unredacted_device_code(self):
-        files = {
-            'result.json': json.dumps({'schema_version': 1}).encode(),
-            'terminal.txt': b'Use code ABCD-EFGH',
-        }
-        manifest = {'schema_version': 1, 'run_id': 'run', 'sanitized': True, 'files': {}}
+    def test_pinned_codex_prompt_recognizes_and_redacts_uneven_code(self):
+        with tempfile.TemporaryDirectory(prefix='pr3792-handoff-') as temporary:
+            handoff = Path(temporary) / 'request.json'
+            terminal = wizard.WizardTerminal(
+                {'prompts': []}, {}, handoff_method='device', run_id='run12345',
+                handoff_path=handoff, handoff_response_path=Path(temporary) / 'response.json',
+            )
+            prompt = (
+                'Welcome to Codex [v0.146.0]\n'
+                'Follow these steps to sign in with ChatGPT using device code authorization:\n\n'
+                '1. Open this link in your browser and sign in to your account\n'
+                '   https://auth.openai.com/codex/device\n\n'
+                '2. Enter this one-time code (expires in 15 minutes)\n'
+                '   ABCD-EFGHI\n\n'
+                'Continue only if you started this login in Codex.\n'
+            )
+            terminal.feed(prompt.encode())
+            self.assertEqual(json.loads(handoff.read_text())['user_code'], 'ABCD-EFGHI')
+            rendered = terminal.text()
+            sanitized = wizard.Redactor(terminal.private_values).clean(
+                rendered + '\nwrapped again: ABCD-\nEFGHI\n'
+            )
+            self.assertNotIn('ABCD-EFGHI', sanitized)
+            self.assertNotIn('EFGHI', sanitized)
+
+    def test_collector_rejects_original_and_uneven_device_codes(self):
         import hashlib
-        manifest['files'] = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
-        stream = io.BytesIO()
-        with tarfile.open(fileobj=stream, mode='w') as archive:
-            for name, data in {**files, 'manifest.json': json.dumps(manifest).encode()}.items():
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                archive.addfile(info, io.BytesIO(data))
-        stream.seek(0)
-        with tempfile.TemporaryDirectory(prefix='pr3792-collect-') as temporary:
-            with self.assertRaises(collector.ValidationError) as caught:
-                collector.collect(stream, Path(temporary) / 'out', Path(temporary) / 'result.json',
-                                  'a' * 40, 'run', 1, None, 'codex', 'device', 'b' * 40)
-            self.assertEqual(caught.exception.code, 'credential-found')
+        for code in ('ABCD-EFGH', 'ABCD-EFGHI'):
+            with self.subTest(code_shape=tuple(map(len, code.split('-')))):
+                files = {
+                    'result.json': json.dumps({'schema_version': 1}).encode(),
+                    'terminal.txt': ('Use code ' + code).encode(),
+                }
+                manifest = {'schema_version': 1, 'run_id': 'run', 'sanitized': True, 'files': {}}
+                manifest['files'] = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+                stream = io.BytesIO()
+                with tarfile.open(fileobj=stream, mode='w') as archive:
+                    for name, data in {**files, 'manifest.json': json.dumps(manifest).encode()}.items():
+                        info = tarfile.TarInfo(name)
+                        info.size = len(data)
+                        archive.addfile(info, io.BytesIO(data))
+                stream.seek(0)
+                with tempfile.TemporaryDirectory(prefix='pr3792-collect-') as temporary:
+                    with self.assertRaises(collector.ValidationError) as caught:
+                        collector.collect(stream, Path(temporary) / 'out', Path(temporary) / 'result.json',
+                                          'a' * 40, 'run', 1, None, 'codex', 'device', 'b' * 40)
+                    self.assertEqual(caught.exception.code, 'credential-found')
 
     def test_retained_agent_must_report_codex_through_ncl(self):
         frames = [
