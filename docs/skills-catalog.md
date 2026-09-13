@@ -197,9 +197,9 @@ with the matching lifecycle skill installed alongside `e2e-wizard`.
   and proof before accepting a local success. Failure retains the machine.
 - Proxmox and direct wizard runs can use `--supervised-human-auth` for the
   discovered Codex `device` or Claude `subscription` method. They require the
-  matching vault entry and a retained agent configured for the selected provider,
-  in addition to all normal acceptance checks. Claude subscription sign-in still
-  awaits live qualification; existing API/OAuth evidence does not qualify it.
+  matching vault entry and a retained session whose effective provider resolves
+  to the selected provider through NanoClaw's exact installed resolver, in
+  addition to all normal acceptance checks.
 - On 2026-09-13, Codex device pairing passed in a fresh Debian 13.6 Proxmox LXC
   using tooling `7200211d9c86592a25e66694451b6e503202f014`, NanoClaw core
   `3f9ed607b7e7a4872747295f75286f1c377d7c33`, and [PR #3792](https://github.com/nanocoai/nanoclaw/pull/3792)
@@ -209,6 +209,15 @@ with the matching lifecycle skill installed alongside `e2e-wizard`.
   and socket checks passed. An earlier harness timeout remains a failed,
   retained attempt. Later split-chunk and owning-remote transport fixes have
   offline coverage; they were not part of this recorded live run.
+- On 2026-09-13, Claude subscription sign-in passed through a shared visible
+  real PTY on a fresh Debian 13.6 Proxmox LXC at NanoClaw core
+  `3f9ed607b7e7a4872747295f75286f1c377d7c33`. A human completed authorization
+  directly in the terminal; one Anthropic vault entry, the retained answer to
+  `350 * 193`, saved session history, service identity and the CLI socket after
+  logout were independently verified. Null group and session provider fields
+  resolved to Claude through the installed resolver. This qualifies the visible
+  manual public-wizard flow; the unattended handoff remains unqualified after
+  two retained timeouts.
 - Live qualification: a fresh unprivileged Debian 13 LXC under Proxmox VE 9.2.18
   passed against an earlier candidate of NanoClaw
   [PR 3767](https://github.com/nanocoai/nanoclaw/pull/3767), exact commit

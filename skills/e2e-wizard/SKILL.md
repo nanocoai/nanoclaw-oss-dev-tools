@@ -173,7 +173,10 @@ A pass requires all of the following from this invocation:
   and a reachable CLI socket. This final socket connection sends no message.
 
 Supervised runs also verify the provider's vault entry and the retained agent's
-actual provider through read-only `ncl` queries. Claude subscription auth records
+effective provider through read-only `ncl` queries and the exact installed
+`resolveProviderName` implementation. This preserves NanoClaw's null/default
+Claude configuration and honors session-level overrides while rejecting an
+effective mismatch. Claude subscription auth records
 `auth: interactive` in the source contract; that one status is accepted only for
 the corresponding supervised method and with all its additional proof.
 

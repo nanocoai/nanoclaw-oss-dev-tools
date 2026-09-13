@@ -32,8 +32,10 @@ tags were published for those versions.
   Private handoffs carry browser links and authorization codes; the runner still
   requires vault, retained-provider, model-reply, service and sanitized-export
   evidence. Existing credential-file methods remain available (plugin 0.9.0).
-  Codex device sign-in has a retained live acceptance run; Claude subscription
-  sign-in still awaits live qualification.
+  Codex device sign-in and the visible, manually driven Claude subscription
+  wizard have retained live acceptance runs; the unattended Claude handoff still
+  awaits a successful live run. Retained-provider checks use the exact installed
+  NanoClaw resolver, including Claude defaults and session overrides.
 - Exact provider-payload transport for Proxmox wizard runs: fetch the selected
   payload commit, expose it through the normal registry remote, and verify the
   installed files before authentication and again before accepting a result.

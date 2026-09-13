@@ -70,7 +70,11 @@ never permission to select another method or inject a saved credential.
 
 All normal wizard, retained-reply, service, socket, UTC, evidence and ownership
 checks still apply. Supervised auth additionally requires the selected provider's
-vault entry and an actual retained agent configuration matching that provider.
+vault entry and an actual retained session whose effective provider matches that
+provider. The verifier reads the group configuration and every retained session
+through `ncl`, then calls the exact installed `resolveProviderName`. A null group
+provider and null session override correctly resolve to Claude; a non-null session
+override takes precedence and an effective mismatch fails verification.
 Claude's `auth: interactive` status is accepted only for supervised subscription
 auth, with evidence of token capture and vault registration. It is not a generic
 replacement for a successful setup step.
@@ -94,14 +98,31 @@ It verified all 22 copied provider files, the missing-host-CLI fallback to
 `@openai/codex@0.146.0`, a dedicated vault entry, an actual retained Codex-agent
 reply, and the running systemd user service and socket. The first attempt failed
 in the harness before human sign-in and remains a failed, retained run.
-Claude subscription sign-in is still awaiting live qualification. A fresh
-Claude attempt at tooling `4d2c8309a604a0e1fa7decdfe479a73f00ad226b` reached
+
+On 2026-09-13, a fresh Debian 13.6 Proxmox LXC completed the public wizard at
+that NanoClaw core through a shared, visible real PTY. A human completed Claude
+subscription authorization directly in the terminal. The run verified one
+Anthropic vault entry, the retained agent's answer to `350 * 193`, saved session
+history, the running systemd user service, its exact checkout entrypoint, and
+the CLI socket after SSH logout. NanoClaw's null group-provider and null
+session-provider fields resolved to Claude through the exact installed resolver.
+This qualifies the visible manual public-wizard flow only; the unattended
+handoff runner still awaits a successful live pass.
+
+An earlier fresh Claude attempt at tooling
+`4d2c8309a604a0e1fa7decdfe479a73f00ad226b` reached
 Claude Code 2.1.270's code prompt but timed out before human authorization:
 that CLI prints `https://claude.com/cai/oauth/authorize`, which the older
 recognizer did not support. The retained failure drove regression coverage
 for the current and legacy endpoints, wrapped URLs, blank lines before the
 code prompt, and authorization-link redaction independent of prompt detection.
 The collector also rejects remaining authorization URLs before accepting an
-export. Subsequent split-chunk and owning-remote transport corrections have
-offline regression coverage; the Codex live result applies to its recorded
-tooling commit.
+export. A second attempt at tooling `2d564277bf1e228fc17a0331a1e80fb9d26aaf86`
+also timed out before handoff. Its export correctly redacted the link. The
+exact raw transport mismatch remains unverified; Claude handoff and response
+gating now use the terminal emulator's current rendered screen. Synthetic
+nested-PTY, redraw, wrapping, stale-prompt and exactly-once input regressions
+pass. The unattended correction still requires its own successful live run.
+Subsequent split-chunk and owning-remote
+transport corrections have offline regression coverage; the Codex live result
+applies to its recorded tooling commit.

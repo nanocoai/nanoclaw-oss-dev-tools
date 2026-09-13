@@ -261,6 +261,31 @@ def verify_codex_target(root, terminal, method, require_fallback=False):
     }
 
 
+def resolve_installed_provider_names(root, pairs):
+    """Resolve provider pairs through the exact NanoClaw build under test."""
+    resolver = root / 'dist/providers/provider-name.js'
+    program = (
+        "import { pathToFileURL } from 'node:url';"
+        "const modulePath = process.argv[1];"
+        "const pairs = JSON.parse(process.argv[2]);"
+        "const loaded = await import(pathToFileURL(modulePath).href);"
+        "process.stdout.write(JSON.stringify("
+        "pairs.map(([sessionProvider, configProvider]) => "
+        "loaded.resolveProviderName(sessionProvider, configProvider))));"
+    )
+    try:
+        resolved = json.loads(subprocess.check_output(
+            ['node', '--input-type=module', '-e', program, str(resolver), json.dumps(pairs)],
+            cwd=root, text=True, timeout=30,
+        ))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        raise Failure('verify', 'Could not run the installed NanoClaw provider resolver', 1)
+    if (not isinstance(resolved, list) or len(resolved) != len(pairs)
+            or not all(isinstance(item, str) and item for item in resolved)):
+        raise Failure('verify', 'Installed NanoClaw provider resolver returned invalid output', 1)
+    return resolved
+
+
 def verify_retained_provider_group(root, provider):
     command = root / 'bin/ncl'
     try:
@@ -275,11 +300,35 @@ def verify_retained_provider_group(root, provider):
             cwd=root, text=True, timeout=30,
         ))
         config = config_frame.get('data')
+        sessions_frame = json.loads(subprocess.check_output(
+            [str(command), 'sessions', 'list', '--json'], cwd=root, text=True, timeout=30,
+        ))
+        sessions = sessions_frame.get('data')
     except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
         raise Failure('verify', 'Could not verify the retained agent provider through ncl', 1)
-    if not isinstance(config, dict) or config.get('provider') != provider:
-        raise Failure('verify', 'Retained agent container config has the wrong provider', 1)
-    return {'group_count': 1, 'provider': provider, 'verified_via': 'ncl'}
+    group_id = str(groups[0]['id'])
+    if not isinstance(config, dict) or not isinstance(sessions, list):
+        raise Failure('verify', 'Retained agent provider data has an invalid shape', 1)
+    retained = [item for item in sessions if (
+        isinstance(item, dict) and str(item.get('agent_group_id')) == group_id
+    )]
+    if not retained:
+        raise Failure('verify', 'Retained agent has no session to verify', 1)
+    configured = config.get('provider')
+    session_providers = [item.get('agent_provider') for item in retained]
+    resolved = resolve_installed_provider_names(
+        root, [[session_provider, configured] for session_provider in session_providers],
+    )
+    if any(item != provider for item in resolved):
+        raise Failure('verify', 'Retained agent resolves to the wrong provider', 1)
+    return {
+        'group_count': 1,
+        'provider': provider,
+        'configured_provider': configured,
+        'session_providers': session_providers,
+        'effective_providers': resolved,
+        'verified_via': 'ncl and exact installed resolveProviderName',
+    }
 
 
 def verify_claude_target(terminal, host_claude_absent_before):
@@ -407,6 +456,7 @@ class WizardTerminal:
         self.payload_receipt = None
         self.handoff_response_submitted = False
         self.claude_command_submitted = False
+        self.claude_setup_token_observed = False
         self.raw_handoff_input = ''
         self.raw_handoff_buffer = ''
         self.run_id = run_id
@@ -419,6 +469,10 @@ class WizardTerminal:
                    for line in self.screen.history.top]
         return '\n'.join(history + [line.rstrip() for line in self.screen.display])
 
+    def live_screen_text(self):
+        """Return the current rendered screen without its unused trailing rows."""
+        return '\n'.join(line.rstrip() for line in self.screen.display).rstrip()
+
     def feed(self, data):
         self.output_bytes += len(data)
         if self.output_bytes > MAX_LOG_BYTES or len(self.screen.history.top) >= 30000:
@@ -428,6 +482,8 @@ class WizardTerminal:
         # Retain raw input so split ANSI sequences complete on the next feed.
         self.raw_handoff_input = (self.raw_handoff_input + decoded)[-131072:]
         self.raw_handoff_buffer = ANSI.sub('', self.raw_handoff_input)
+        if 'setup-token' in self.raw_handoff_buffer:
+            self.claude_setup_token_observed = True
         for captured in CLAUDE_OAUTH_CAPTURE.findall(self.raw_handoff_buffer):
             token = re.sub(r'\s+', '', captured)
             if token not in self.private_values:
@@ -453,8 +509,16 @@ class WizardTerminal:
                 self.handoff_path.chmod(0o600)
                 self.handoff_emitted = True
         elif self.handoff_method == 'subscription' and not self.handoff_emitted:
-            urls = find_claude_auth_urls(self.raw_handoff_buffer)
-            if urls and 'setup-token' in self.raw_handoff_buffer:
+            # Claude runs in a nested PTY and redraws its long URL. Parse the
+            # emulator's complete live screen so physical wraps and cursor
+            # movement have already been resolved. The final code prompt is
+            # the terminator proving the rendered URL is complete.
+            rendered = self.live_screen_text()
+            urls = find_claude_auth_urls(rendered)
+            active_code_prompt = re.search(
+                r'(?:^|\n)\s*Paste code here if prompted[^\n]*\Z', rendered,
+            )
+            if urls and active_code_prompt and self.claude_setup_token_observed:
                 url = urls[-1]
                 self.private_values.append(url)
                 write_json(self.handoff_path, {
@@ -476,8 +540,12 @@ class WizardTerminal:
                 and '$ claude setup-token' in text):
             os.write(fd, b'\r')
             self.claude_command_submitted = True
+        # Only submit into the prompt that is currently visible at the bottom
+        # of the rendered terminal. Raw nested-PTY bytes can contain obsolete
+        # prompts and duplicated carriage returns from earlier redraws.
+        rendered = self.live_screen_text()
         active_code_prompt = re.search(
-            r'Paste code here if prompted[^\r\n]*\s*$', self.raw_handoff_buffer,
+            r'(?:^|\n)\s*Paste code here if prompted[^\n]*\Z', rendered,
         )
         if (self.handoff_method == 'subscription' and self.handoff_emitted
                 and not self.handoff_response_submitted
