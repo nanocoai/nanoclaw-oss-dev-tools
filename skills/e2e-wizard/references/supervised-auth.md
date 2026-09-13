@@ -94,6 +94,14 @@ It verified all 22 copied provider files, the missing-host-CLI fallback to
 `@openai/codex@0.146.0`, a dedicated vault entry, an actual retained Codex-agent
 reply, and the running systemd user service and socket. The first attempt failed
 in the harness before human sign-in and remains a failed, retained run.
-Claude subscription sign-in is still awaiting live qualification. Subsequent
-split-chunk and owning-remote transport corrections have offline regression
-coverage; this live result applies to the recorded tooling commit.
+Claude subscription sign-in is still awaiting live qualification. A fresh
+Claude attempt at tooling `4d2c8309a604a0e1fa7decdfe479a73f00ad226b` reached
+Claude Code 2.1.270's code prompt but timed out before human authorization:
+that CLI prints `https://claude.com/cai/oauth/authorize`, which the older
+recognizer did not support. The retained failure drove regression coverage
+for the current and legacy endpoints, wrapped URLs, blank lines before the
+code prompt, and authorization-link redaction independent of prompt detection.
+The collector also rejects remaining authorization URLs before accepting an
+export. Subsequent split-chunk and owning-remote transport corrections have
+offline regression coverage; the Codex live result applies to its recorded
+tooling commit.

@@ -284,6 +284,44 @@ class AdapterTests(unittest.TestCase):
                 'https://claude.ai/oauth/authorize?client_id=abc&state=complete-private-state',
             )
 
+    def test_current_claude_wrapped_layout_emits_only_after_code_prompt(self):
+        with tempfile.TemporaryDirectory(prefix='pr3792-handoff-') as temporary:
+            handoff = Path(temporary) / 'request.json'
+            terminal = wizard.WizardTerminal(
+                {'prompts': []}, {}, handoff_method='subscription', run_id='run12345',
+                handoff_path=handoff, handoff_response_path=Path(temporary) / 'response.json',
+            )
+            # Derived from Claude Code 2.1.270's retained layout. Every query
+            # value is synthetic; the blank lines and leading prompt space are retained.
+            chunks = [
+                b'claude setup-token\nhttps://claude.com/cai/oauth/authorize?client_id=client-fixture&code=code-',
+                b'fixture&code_challenge=challenge-fixture&\n code_challenge_method=S256&redirect_uri=https%3A%2F%2Fconsole.fixture%2Fcallback&',
+                b'\n response_type=code&scope=scope-fixture&state=state-fixture',
+            ]
+            for chunk in chunks:
+                terminal.feed(chunk)
+                self.assertFalse(handoff.exists())
+            terminal.feed(b'\n\n Paste code here if prompted')
+            request = json.loads(handoff.read_text())
+            self.assertEqual(
+                request['authorization_url'],
+                'https://claude.com/cai/oauth/authorize?client_id=client-fixture&code=code-fixture'
+                '&code_challenge=challenge-fixture&code_challenge_method=S256'
+                '&redirect_uri=https%3A%2F%2Fconsole.fixture%2Fcallback&response_type=code'
+                '&scope=scope-fixture&state=state-fixture',
+            )
+
+    def test_claude_authorization_url_redacts_without_complete_prompt(self):
+        incomplete = (
+            'https://claude.com/cai/oauth/authorize?client_id=private-client&\n'
+            ' state=private-state-without-prompt'
+        )
+        self.assertTrue(wizard.contains_authorization_url(incomplete))
+        sanitized = wizard.Redactor([]).clean(incomplete)
+        self.assertFalse(wizard.contains_authorization_url(sanitized))
+        self.assertNotIn('private-client', sanitized)
+        self.assertNotIn('private-state-without-prompt', sanitized)
+
 
 if __name__ == '__main__':
     unittest.main()

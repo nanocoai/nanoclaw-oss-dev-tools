@@ -117,7 +117,8 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
         except UnicodeDecodeError:
             reject('invalid-artifact-text')
         if ((key and key in ''.join(text.split())) or runner.TOKEN.search(text)
-                or runner.DEVICE_CODE.search(text)):
+                or runner.DEVICE_CODE.search(text)
+                or runner.contains_authorization_url(text)):
             reject('credential-found')
     result = load_json(files, 'result.json', 'invalid-result')
     expected_status = 'pass' if exit_code == 0 else 'failed'

@@ -35,10 +35,15 @@ DEVICE_CODE_PROMPT = re.compile(
     r'Enter this one-time code[^\r\n]*\r?\n[ \t]*('
     + DEVICE_CODE.pattern + r')[ \t]*\r?\n'
 )
+CLAUDE_AUTH_ENDPOINT = r'https://(?:claude\.ai/oauth/authorize|claude\.com/cai/oauth/authorize)'
+CLAUDE_URL_CHARS = r'[A-Za-z0-9._~:/?#\[\]@!$&\x27()*+,;=%-]'
 CLAUDE_AUTH_URL = re.compile(
-    r'(https://claude\.ai/oauth/authorize[A-Za-z0-9._~:/?#\[\]@!$&\x27()*+,;=%-]+'
-    r'(?:\r?\n[A-Za-z0-9._~:/?#\[\]@!$&\x27()*+,;=%-]+)*)'
-    r'\r?\nPaste code here if prompted'
+    r'(' + CLAUDE_AUTH_ENDPOINT + CLAUDE_URL_CHARS + r'+'
+    r'(?:\r?\n[ \t]*(?!Paste code here if prompted)' + CLAUDE_URL_CHARS + r'+)*)'
+    r'(?:\r?\n[ \t]*)+Paste code here if prompted'
+)
+CLAUDE_AUTH_PRIVATE = re.compile(
+    CLAUDE_AUTH_ENDPOINT + r'(?:' + CLAUDE_URL_CHARS + r'|\s){0,8192}'
 )
 CLAUDE_OAUTH_CAPTURE = re.compile(r'sk-ant-oat(?:[A-Za-z0-9_-]|\s){80,700}AA')
 HANDOFF_ROOT = Path.home() / '.nanoclaw-e2e/auth-handoffs'
@@ -48,6 +53,26 @@ class Failure(Exception):
     def __init__(self, phase, message, code=1):
         self.phase, self.code = phase, code
         super().__init__(message)
+
+
+def find_claude_auth_urls(text):
+    """Return complete supported auth URLs only after the known code prompt."""
+    urls = []
+    for captured in CLAUDE_AUTH_URL.findall(text):
+        compact = re.sub(r'\s+', '', captured).rstrip('.,)')
+        if re.fullmatch(CLAUDE_AUTH_ENDPOINT + CLAUDE_URL_CHARS + r'+', compact):
+            urls.append(compact)
+    return urls
+
+
+def redact_claude_auth_urls(text):
+    """Redact supported auth endpoints even when output is wrapped or incomplete."""
+    return CLAUDE_AUTH_PRIVATE.sub('[AUTHORIZATION URL REDACTED]', text)
+
+
+def contains_authorization_url(text):
+    """Detect supported authorization URLs even when whitespace-wrapped."""
+    return re.search(CLAUDE_AUTH_ENDPOINT, re.sub(r'\s+', '', text)) is not None
 
 
 def provider_discovery():
@@ -292,6 +317,7 @@ class Redactor:
 
     def clean(self, text):
         text = ANSI.sub('', text)
+        text = redact_claude_auth_urls(text)
         for value in self.values:
             # Terminal wrapping can introduce whitespace inside a long credential.
             text = re.sub(r'\s*'.join(map(re.escape, value)), '[REDACTED]', text)
@@ -427,9 +453,9 @@ class WizardTerminal:
                 self.handoff_path.chmod(0o600)
                 self.handoff_emitted = True
         elif self.handoff_method == 'subscription' and not self.handoff_emitted:
-            urls = CLAUDE_AUTH_URL.findall(self.raw_handoff_buffer)
+            urls = find_claude_auth_urls(self.raw_handoff_buffer)
             if urls and 'setup-token' in self.raw_handoff_buffer:
-                url = re.sub(r'\s+', '', urls[-1]).rstrip('.,)')
+                url = urls[-1]
                 self.private_values.append(url)
                 write_json(self.handoff_path, {
                     'run_id': self.run_id,
