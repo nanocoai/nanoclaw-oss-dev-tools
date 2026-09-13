@@ -19,6 +19,7 @@ setup steps and record the exact commit tested.
 | [e2e-proxmox](skills/e2e-proxmox/SKILL.md) | The same install and model ping in a new unprivileged Debian 13 LXC on your Proxmox host, with a retained guest and local report. |
 | [e2e-macos](skills/e2e-macos/SKILL.md) | A native install and model ping on an existing Mac, locally or over SSH, with a separate checkout and preservation checks for existing services and OneCLI. |
 | [e2e-wizard](skills/e2e-wizard/SKILL.md) | Drive the real public setup wizard through a PTY on a fresh exe.dev VM or Proxmox LXC, with a retained agent reply, service proof and sanitized evidence. |
+| [e2e-windows](skills/e2e-windows/SKILL.md) | Qualify Windows WSL2 with the local Docker Desktop engine, then run the public wizard with validated reply, service and sanitized evidence. |
 
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
 Codex, Claude Code, OpenCode, or another agent that supports the format. The

@@ -27,6 +27,10 @@ tags were published for those versions.
 
 ### Added
 
+- `e2e-windows` for a prepared Windows WSL2 distribution, with same-engine
+  Docker Desktop proof, a Linux-home bind test, unchanged public-wizard reuse,
+  validated artifacts and a Proxmox Windows preparation reference (plugin 0.6.0).
+
 - Export sanitized NanoClaw runtime logs and a bounded container-status snapshot
   with wizard evidence, while retaining container log bodies on the private target.
 - Verify the nohup fallback through its owned launcher and PID file, exact
