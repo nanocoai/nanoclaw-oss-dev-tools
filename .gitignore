@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .DS_Store
+
+# Private live-run evidence and machine-specific terminal prototype.
+/evidence/
+/tools/shared-terminal/

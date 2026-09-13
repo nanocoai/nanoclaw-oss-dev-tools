@@ -84,9 +84,11 @@ For an installable provider, fetch its single `nc:copy from-branch:` payload
 from the owning remote and pass the fetched ref as `--payload-ref` during
 discovery. Record both source SHAs. The headless Proxmox driver currently accepts
 only Claude `api` or `oauth`; use the public-wizard adapter for a discovered
-credential-file method from another offered provider. Human browser,
-subscription, and device flows need a separately authorized live handoff and
-are unavailable to this unattended driver. `skip` cannot pass.
+credential-file method from another offered provider. For a chosen live sign-in,
+use the sibling wizard's supervised flow: Codex `device` or Claude
+`subscription`, with `--supervised-human-auth` and an operator ready to complete
+the handoff. Those methods remain unavailable to this headless driver.
+`skip` cannot pass.
 
 Read-only inventory commands on the node include `pveversion`, `pct list`,
 `pveam list local`, `pvesm status`, and `ip -brief link show type bridge`.

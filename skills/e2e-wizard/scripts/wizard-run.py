@@ -15,6 +15,7 @@ import pty
 import re
 import secrets
 import shlex
+import shutil
 import select
 import signal
 import socket
@@ -28,12 +29,50 @@ import time
 MAX_LOG_BYTES = 32 * 1024 * 1024
 ANSI = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])')
 TOKEN = re.compile(r'sk-ant-[A-Za-z0-9_-]+')
+DEVICE_CODE = re.compile(r'\b[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+\b')
+DEVICE_URL = 'https://auth.openai.com/codex/device'
+DEVICE_CODE_PROMPT = re.compile(
+    r'Enter this one-time code[^\r\n]*\r?\n[ \t]*('
+    + DEVICE_CODE.pattern + r')[ \t]*\r?\n'
+)
+CLAUDE_AUTH_ENDPOINT = r'https://(?:claude\.ai/oauth/authorize|claude\.com/cai/oauth/authorize)'
+CLAUDE_URL_CHARS = r'[A-Za-z0-9._~:/?#\[\]@!$&\x27()*+,;=%-]'
+CLAUDE_AUTH_URL = re.compile(
+    r'(' + CLAUDE_AUTH_ENDPOINT + CLAUDE_URL_CHARS + r'+'
+    r'(?:\r?\n[ \t]*(?!Paste code here if prompted)' + CLAUDE_URL_CHARS + r'+)*)'
+    r'(?:\r?\n[ \t]*)+Paste code here if prompted'
+)
+CLAUDE_AUTH_PRIVATE = re.compile(
+    CLAUDE_AUTH_ENDPOINT + r'(?:' + CLAUDE_URL_CHARS + r'|\s){0,8192}'
+)
+CLAUDE_OAUTH_CAPTURE = re.compile(r'sk-ant-oat(?:[A-Za-z0-9_-]|\s){80,700}AA')
+HANDOFF_ROOT = Path.home() / '.nanoclaw-e2e/auth-handoffs'
 
 
 class Failure(Exception):
     def __init__(self, phase, message, code=1):
         self.phase, self.code = phase, code
         super().__init__(message)
+
+
+def find_claude_auth_urls(text):
+    """Return complete supported auth URLs only after the known code prompt."""
+    urls = []
+    for captured in CLAUDE_AUTH_URL.findall(text):
+        compact = re.sub(r'\s+', '', captured).rstrip('.,)')
+        if re.fullmatch(CLAUDE_AUTH_ENDPOINT + CLAUDE_URL_CHARS + r'+', compact):
+            urls.append(compact)
+    return urls
+
+
+def redact_claude_auth_urls(text):
+    """Redact supported auth endpoints even when output is wrapped or incomplete."""
+    return CLAUDE_AUTH_PRIVATE.sub('[AUTHORIZATION URL REDACTED]', text)
+
+
+def contains_authorization_url(text):
+    """Detect supported authorization URLs even when whitespace-wrapped."""
+    return re.search(CLAUDE_AUTH_ENDPOINT, re.sub(r'\s+', '', text)) is not None
 
 
 def provider_discovery():
@@ -46,7 +85,8 @@ def provider_discovery():
     return module
 
 
-def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source_commit=None):
+def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source_commit=None,
+                  supervised_human_auth=False):
     module = provider_discovery()
     try:
         report = module.discover(root, provider, payload_ref)
@@ -62,16 +102,26 @@ def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source
     method = methods[0]
     if not method['usable_for_e2e']:
         raise Failure('preflight', 'Skipping provider authentication cannot produce an E2E pass', 64)
-    if method['automation'] != 'credential-file':
+    if method['automation'] == 'human-handoff' and not supervised_human_auth:
         raise Failure(
             'preflight',
-            f'{method["label"]} requires a live human handoff; the unattended PTY runner supports credential-file methods',
+            f'{method["label"]} requires --supervised-human-auth',
+            64,
+        )
+    if method['automation'] not in ('credential-file', 'human-handoff'):
+        raise Failure(
+            'preflight',
+            f'{method["label"]} is unsupported by this supervised PTY runner',
             64,
         )
     return selected, method
 
 
 def credential_for(path, kind):
+    if kind is None:
+        if path is not None:
+            raise Failure('preflight', 'Human handoff authentication must not use --credential-file', 66)
+        return ''
     if path is None:
         raise Failure('preflight', 'The selected authentication method requires --credential-file', 66)
     try:
@@ -110,6 +160,205 @@ def write_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def create_handoff_paths(run_id):
+    """Create this run's private handoff directory without touching other runs."""
+    HANDOFF_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if HANDOFF_ROOT.is_symlink() or not HANDOFF_ROOT.is_dir():
+        raise Failure('preflight', 'Authentication handoff root is unsafe', 66)
+    HANDOFF_ROOT.chmod(0o700)
+    run_dir = HANDOFF_ROOT / run_id
+    try:
+        run_dir.mkdir(mode=0o700)
+    except FileExistsError:
+        raise Failure('preflight', 'Authentication handoff identity already exists', 66)
+    return run_dir, run_dir / 'request.json', run_dir / 'response.json'
+
+
+def cleanup_handoff(run_dir, request_path, response_path, run_id, nonce=None):
+    """Remove only files that can be proven to belong to this invocation."""
+    if run_dir is None or run_dir.is_symlink() or run_dir.parent != HANDOFF_ROOT:
+        return
+    for path in (request_path, response_path):
+        if path is None or path.parent != run_dir or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            document = json.loads(path.read_text())
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if document.get('run_id') == run_id and (nonce is None or document.get('nonce') == nonce):
+            path.unlink(missing_ok=True)
+    try:
+        run_dir.rmdir()
+    except OSError:
+        pass
+
+
+def verify_provider_payload(root, selected):
+    skill = read_limited(root / selected['source'])
+    match = re.search(r'```nc:copy from-branch:providers\n(.*?)\n```', skill, re.S)
+    if not match:
+        raise Failure('payload', 'Provider skill has no readable providers copy directive', 65)
+    paths = [line.strip().split(' -> ')[-1] for line in match.group(1).splitlines() if line.strip()]
+    if not paths:
+        raise Failure('payload', 'Provider copy directive has no payload files', 65)
+    receipt = {'commit': selected['auth_source_commit'], 'paths': {}}
+    for relative in paths:
+        installed = root / relative
+        if installed.is_symlink() or not installed.is_file():
+            raise Failure('payload', 'Installed provider payload is incomplete: ' + relative, 65)
+        expected = subprocess.run(
+            ['git', 'show', selected['auth_source_commit'] + ':' + relative], cwd=root,
+            capture_output=True, timeout=30,
+        )
+        if expected.returncode or installed.read_bytes() != expected.stdout:
+            raise Failure('payload', 'Installed provider payload does not match selected commit: ' + relative, 65)
+        receipt['paths'][relative] = hashlib.sha256(expected.stdout).hexdigest()
+    receipt['file_count'] = len(paths)
+    canonical = json.dumps(receipt['paths'], sort_keys=True, separators=(',', ':')).encode()
+    receipt['combined_sha256'] = hashlib.sha256(canonical).hexdigest()
+    return receipt
+
+
+def verify_codex_target(root, terminal, method, require_fallback=False):
+    if method['value'] != 'device':
+        raise Failure('preflight', 'This supervised adapter supports only Codex device pairing', 64)
+    manifest = json.loads(read_limited(root / 'container/cli-tools.json'))
+    matches = [item for item in manifest if item.get('name') == '@openai/codex']
+    if len(matches) != 1 or not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', matches[0].get('version', '')):
+        raise Failure('payload', 'Installed manifest has no exact Codex CLI pin', 65)
+    version = matches[0]['version']
+    fallback_proof = f'Preparing the pinned Codex CLI ({version}) for sign-in' in terminal.text()
+    if require_fallback and not fallback_proof:
+        raise Failure('auth', 'Missing proof that the manifest-pinned Codex CLI fallback ran', 1)
+    if not terminal.handoff_emitted:
+        raise Failure('auth', 'Device handoff was never observed', 1)
+    if (Path.home() / '.codex/auth.json').exists():
+        raise Failure('auth', 'Isolated Codex login left a personal auth file behind', 1)
+    try:
+        secrets_report = json.loads(subprocess.check_output(
+            ['onecli', 'secrets', 'list'], text=True, timeout=30,
+        ))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise Failure('auth', 'Could not verify the OneCLI Codex vault entry', 1)
+    entries = secrets_report.get('data', [])
+    matching = [item for item in entries if (
+        str(item.get('name', '')).lower() == 'codex'
+        and str(item.get('hostPattern', '')).lower() == 'chatgpt.com'
+    )]
+    if len(matching) != 1:
+        raise Failure('auth', 'OneCLI does not contain exactly one dedicated Codex session', 1)
+    return {
+        'host_codex_absent_before_wizard': shutil.which('codex') is None,
+        'personal_auth_absent_before_wizard': True,
+        'personal_auth_absent_after_wizard': True,
+        'cli_package': '@openai/codex',
+        'cli_version': version,
+        'cli_fallback_required': require_fallback,
+        'fallback_proof': fallback_proof,
+        'auth_method': 'device',
+        'device_handoff_observed': True,
+        'vault': {'name': 'Codex', 'host_pattern': 'chatgpt.com', 'entry_count': 1},
+    }
+
+
+def resolve_installed_provider_names(root, pairs):
+    """Resolve provider pairs through the exact NanoClaw build under test."""
+    resolver = root / 'dist/providers/provider-name.js'
+    program = (
+        "import { pathToFileURL } from 'node:url';"
+        "const modulePath = process.argv[1];"
+        "const pairs = JSON.parse(process.argv[2]);"
+        "const loaded = await import(pathToFileURL(modulePath).href);"
+        "process.stdout.write(JSON.stringify("
+        "pairs.map(([sessionProvider, configProvider]) => "
+        "loaded.resolveProviderName(sessionProvider, configProvider))));"
+    )
+    try:
+        resolved = json.loads(subprocess.check_output(
+            ['node', '--input-type=module', '-e', program, str(resolver), json.dumps(pairs)],
+            cwd=root, text=True, timeout=30,
+        ))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        raise Failure('verify', 'Could not run the installed NanoClaw provider resolver', 1)
+    if (not isinstance(resolved, list) or len(resolved) != len(pairs)
+            or not all(isinstance(item, str) and item for item in resolved)):
+        raise Failure('verify', 'Installed NanoClaw provider resolver returned invalid output', 1)
+    return resolved
+
+
+def verify_retained_provider_group(root, provider):
+    command = root / 'bin/ncl'
+    try:
+        listed = json.loads(subprocess.check_output(
+            [str(command), 'groups', 'list', '--json'], cwd=root, text=True, timeout=30,
+        ))
+        groups = listed.get('data')
+        if not isinstance(groups, list) or len(groups) != 1 or not groups[0].get('id'):
+            raise ValueError()
+        config_frame = json.loads(subprocess.check_output(
+            [str(command), 'groups', 'config', 'get', '--id', str(groups[0]['id']), '--json'],
+            cwd=root, text=True, timeout=30,
+        ))
+        config = config_frame.get('data')
+        sessions_frame = json.loads(subprocess.check_output(
+            [str(command), 'sessions', 'list', '--json'], cwd=root, text=True, timeout=30,
+        ))
+        sessions = sessions_frame.get('data')
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        raise Failure('verify', 'Could not verify the retained agent provider through ncl', 1)
+    group_id = str(groups[0]['id'])
+    if not isinstance(config, dict) or not isinstance(sessions, list):
+        raise Failure('verify', 'Retained agent provider data has an invalid shape', 1)
+    retained = [item for item in sessions if (
+        isinstance(item, dict) and str(item.get('agent_group_id')) == group_id
+    )]
+    if not retained:
+        raise Failure('verify', 'Retained agent has no session to verify', 1)
+    configured = config.get('provider')
+    session_providers = [item.get('agent_provider') for item in retained]
+    resolved = resolve_installed_provider_names(
+        root, [[session_provider, configured] for session_provider in session_providers],
+    )
+    if any(item != provider for item in resolved):
+        raise Failure('verify', 'Retained agent resolves to the wrong provider', 1)
+    return {
+        'group_count': 1,
+        'provider': provider,
+        'configured_provider': configured,
+        'session_providers': session_providers,
+        'effective_providers': resolved,
+        'verified_via': 'ncl and exact installed resolveProviderName',
+    }
+
+
+def verify_claude_target(terminal, host_claude_absent_before):
+    if not terminal.handoff_emitted:
+        raise Failure('auth', 'Claude subscription handoff was not completed', 1)
+    if 'Got token:' not in terminal.text() or 'Saving it to your OneCLI vault' not in terminal.text():
+        raise Failure('auth', 'Missing proof that Claude setup-token was parsed and vaulted', 1)
+    try:
+        report = json.loads(subprocess.check_output(
+            ['onecli', 'secrets', 'list'], text=True, timeout=30,
+        ))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise Failure('auth', 'Could not verify the OneCLI Anthropic vault entry', 1)
+    entries = report.get('data', [])
+    matching = [item for item in entries if (
+        str(item.get('name', '')).lower() == 'anthropic'
+        and str(item.get('hostPattern', '')).lower() == 'api.anthropic.com'
+    )]
+    if len(matching) != 1:
+        raise Failure('auth', 'OneCLI does not contain exactly one Anthropic subscription entry', 1)
+    return {
+        'host_claude_absent_before_wizard': host_claude_absent_before,
+        'auth_method': 'subscription',
+        'authorization_handoff_observed': True,
+        'authorization_response_submitted': terminal.handoff_response_submitted,
+        'token_capture_and_vault_proof': True,
+        'vault': {'name': 'Anthropic', 'host_pattern': 'api.anthropic.com', 'entry_count': 1},
+    }
+
+
 class Redactor:
     """Redact whole rendered/log texts, so chunk boundaries cannot split secrets."""
     def __init__(self, values):
@@ -117,10 +366,12 @@ class Redactor:
 
     def clean(self, text):
         text = ANSI.sub('', text)
+        text = redact_claude_auth_urls(text)
         for value in self.values:
             # Terminal wrapping can introduce whitespace inside a long credential.
             text = re.sub(r'\s*'.join(map(re.escape, value)), '[REDACTED]', text)
         text = TOKEN.sub('[REDACTED]', text)
+        text = DEVICE_CODE.sub('[REDACTED]', text)
         text = re.sub(r'(?im)((?:[\w-]*(?:token|password|secret|api.?key)[\w-]*)["\x27]?\s*[:=]\s*)[^\s,}\n]+', r'\1[REDACTED]', text)
         text = re.sub(r'(?i)(--(?:value|token|password|api-key)\s+)(?:"[^"]*"|\x27[^\x27]*\x27|\S+)', r'\1[REDACTED]', text)
         compact = re.sub(r'\s+', '', text)
@@ -139,8 +390,8 @@ def read_limited(path):
     return data.decode('utf-8', errors='replace')
 
 
-def private_values(root, credential):
-    values = [credential]
+def private_values(root, credential, extra=()):
+    values = [credential, *extra]
     # Generated gateway credentials may appear in raw step output. Read only
     # known local configuration; these files themselves are never exported.
     for path in [root / '.env', Path.home() / '.config/onecli/config.json']:
@@ -175,14 +426,17 @@ def child_environment():
     # inherited product settings may silently perform/bypass wizard choices.
     allowed = ('HOME', 'USER', 'LOGNAME', 'PATH', 'SHELL', 'TMPDIR',
                'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS',
-               'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL')
+               'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL',
+               'NANOCLAW_CHANNELS_REMOTE')
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     env.update(TERM='xterm-256color', COLORTERM='truecolor', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC')
     return env
 
 
 class WizardTerminal:
-    def __init__(self, scenario, values, timeout=1200, idle_timeout=180, columns=160, rows=48):
+    def __init__(self, scenario, values, timeout=1200, idle_timeout=180, columns=160, rows=48,
+                 handoff_method=None, payload_verifier=None, run_id=None,
+                 handoff_path=None, handoff_response_path=None):
         import pyte
         self.scenario, self.values = scenario, values
         self.timeout, self.idle_timeout = timeout, idle_timeout
@@ -194,17 +448,140 @@ class WizardTerminal:
         self.reply_verified = False
         self.output_bytes = 0
         self.last_prompt_index = -1
+        self.private_values = []
+        self.handoff_emitted = False
+        self.handoff_method = handoff_method
+        self.handoff_idle_timeout = 600
+        self.payload_verifier = payload_verifier
+        self.payload_receipt = None
+        self.handoff_response_submitted = False
+        self.claude_command_submitted = False
+        self.claude_setup_token_observed = False
+        self.raw_handoff_input = ''
+        self.raw_handoff_buffer = ''
+        self.run_id = run_id
+        self.handoff_nonce = secrets.token_hex(16)
+        self.handoff_path = handoff_path
+        self.handoff_response_path = handoff_response_path
 
     def text(self):
         history = [''.join(line[x].data for x in range(self.columns)).rstrip()
                    for line in self.screen.history.top]
         return '\n'.join(history + [line.rstrip() for line in self.screen.display])
 
+    def live_screen_text(self):
+        """Return the current rendered screen without its unused trailing rows."""
+        return '\n'.join(line.rstrip() for line in self.screen.display).rstrip()
+
     def feed(self, data):
         self.output_bytes += len(data)
         if self.output_bytes > MAX_LOG_BYTES or len(self.screen.history.top) >= 30000:
             raise Failure('terminal', 'Terminal evidence limit exceeded')
-        self.stream.feed(self.decoder.decode(data))
+        decoded = self.decoder.decode(data)
+        self.stream.feed(decoded)
+        # Retain raw input so split ANSI sequences complete on the next feed.
+        self.raw_handoff_input = (self.raw_handoff_input + decoded)[-131072:]
+        self.raw_handoff_buffer = ANSI.sub('', self.raw_handoff_input)
+        if 'setup-token' in self.raw_handoff_buffer:
+            self.claude_setup_token_observed = True
+        for captured in CLAUDE_OAUTH_CAPTURE.findall(self.raw_handoff_buffer):
+            token = re.sub(r'\s+', '', captured)
+            if token not in self.private_values:
+                self.private_values.append(token)
+        if self.handoff_method == 'device' and not self.handoff_emitted:
+            # Codex prints a short prompt at the top of a freshly cleared
+            # 48-row screen. Trailing blank rows must not push it outside a
+            # fixed tail slice; inspect the complete live screen, not history.
+            block = '\n'.join(self.screen.display)
+            # A partial code can itself match a shorter valid shape. Require
+            # the code line's newline before emitting an immutable handoff.
+            codes = DEVICE_CODE_PROMPT.findall(self.raw_handoff_buffer)
+            if DEVICE_URL in block and codes and 'Enter this one-time code' in block:
+                code = codes[-1]
+                self.private_values.append(code)
+                write_json(self.handoff_path, {
+                    'run_id': self.run_id,
+                    'nonce': self.handoff_nonce,
+                    'user_code': code,
+                    'verification_url': DEVICE_URL,
+                    'created_at': now(),
+                })
+                self.handoff_path.chmod(0o600)
+                self.handoff_emitted = True
+        elif self.handoff_method == 'subscription' and not self.handoff_emitted:
+            # Claude runs in a nested PTY and redraws its long URL. Parse the
+            # emulator's complete live screen so physical wraps and cursor
+            # movement have already been resolved. The final code prompt is
+            # the terminator proving the rendered URL is complete.
+            rendered = self.live_screen_text()
+            urls = find_claude_auth_urls(rendered)
+            active_code_prompt = re.search(
+                r'(?:^|\n)\s*Paste code here if prompted[^\n]*\Z', rendered,
+            )
+            if urls and active_code_prompt and self.claude_setup_token_observed:
+                url = urls[-1]
+                self.private_values.append(url)
+                write_json(self.handoff_path, {
+                    'run_id': self.run_id,
+                    'nonce': self.handoff_nonce,
+                    'provider': 'claude',
+                    'auth_method': 'subscription',
+                    'authorization_url': url,
+                    'response_required': True,
+                    'created_at': now(),
+                })
+                self.handoff_path.chmod(0o600)
+                self.handoff_emitted = True
+
+    def handle_handoff(self, fd):
+        text = self.raw_handoff_buffer
+        if (self.handoff_method == 'subscription' and not self.claude_command_submitted
+                and 'Press Enter to continue, or edit the command first.' in text
+                and '$ claude setup-token' in text):
+            os.write(fd, b'\r')
+            self.claude_command_submitted = True
+        # Only submit into the prompt that is currently visible at the bottom
+        # of the rendered terminal. Raw nested-PTY bytes can contain obsolete
+        # prompts and duplicated carriage returns from earlier redraws.
+        rendered = self.live_screen_text()
+        active_code_prompt = re.search(
+            r'(?:^|\n)\s*Paste code here if prompted[^\n]*\Z', rendered,
+        )
+        if (self.handoff_method == 'subscription' and self.handoff_emitted
+                and not self.handoff_response_submitted
+                and active_code_prompt
+                and self.handoff_response_path.exists()):
+            try:
+                flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                response_fd = os.open(self.handoff_response_path, flags)
+                metadata = os.fstat(response_fd)
+                if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077
+                        or metadata.st_uid != os.getuid() or metadata.st_size > 8192):
+                    raise Failure('auth', 'Private authorization response file must be an owned regular 0600 file', 66)
+                with os.fdopen(response_fd, 'rb') as source:
+                    response_fd = None
+                    raw_response = source.read(8193)
+                if len(raw_response) > 8192:
+                    raise ValueError()
+                response_doc = json.loads(raw_response.decode('utf-8'))
+                response = response_doc['authorization_code']
+            except Failure:
+                raise
+            except (OSError, ValueError, KeyError, TypeError):
+                raise Failure('auth', 'Private authorization response is not valid JSON', 66)
+            finally:
+                if 'response_fd' in locals() and response_fd is not None:
+                    os.close(response_fd)
+            if (response_doc.get('run_id') != self.run_id
+                    or response_doc.get('nonce') != self.handoff_nonce):
+                raise Failure('auth', 'Private authorization response belongs to another run', 66)
+            if (not isinstance(response, str) or not 8 <= len(response) <= 4096
+                    or any(ord(char) < 0x20 or ord(char) == 0x7f for char in response)):
+                raise Failure('auth', 'Private authorization response has an invalid shape', 66)
+            self.private_values.append(response)
+            os.write(fd, response.encode() + b'\r')
+            self.handoff_response_path.unlink()
+            self.handoff_response_submitted = True
 
     def active(self):
         lines = self.screen.display
@@ -240,6 +617,8 @@ class WizardTerminal:
             raise Failure('prompt', 'Unknown active wizard prompt: ' + header)
         index, prompt = matches[0]
         prompt_id = prompt['id']
+        if prompt_id == 'auth' and self.payload_verifier and self.payload_receipt is None:
+            self.payload_receipt = self.payload_verifier()
         if prompt_id in self.seen or index < self.last_prompt_index:
             raise Failure('prompt', 'Repeated or out-of-order prompt: ' + prompt_id)
         missing = [p['id'] for p in self.scenario['prompts'][:index]
@@ -302,7 +681,8 @@ class WizardTerminal:
                 clock = time.monotonic()
                 if clock - start > self.timeout:
                     raise Failure('timeout', 'Wizard exceeded total timeout', 124)
-                if clock - last_output > self.idle_timeout:
+                idle_limit = self.handoff_idle_timeout if self.handoff_emitted else self.idle_timeout
+                if clock - last_output > idle_limit:
                     raise Failure('timeout', 'Wizard stopped producing output', 124)
                 ready, _, _ = select.select([fd], [], [], 0.05)
                 if ready:
@@ -315,6 +695,7 @@ class WizardTerminal:
                     if chunk:
                         self.feed(chunk)
                         last_output = clock
+                self.handle_handoff(fd)
                 if status is None:
                     done, raw_status = os.waitpid(pid, os.WNOHANG)
                     if done:
@@ -418,7 +799,8 @@ def check_progress(root, scenario):
         raise Failure('proof', 'Public wizard has no clean completion footer')
     steps, inputs = progression(text)
     for name in scenario['required_steps']:
-        if steps.get(name, {}).get('status') != 'success':
+        expected_status = scenario.get('required_step_statuses', {}).get(name, 'success')
+        if steps.get(name, {}).get('status') != expected_status:
             raise Failure('proof', 'Required wizard step was not successful: ' + name)
     for name, value in scenario['required_inputs'].items():
         if inputs.get(name) != value:
@@ -530,9 +912,21 @@ def collect_container_status():
 def export_evidence(root, destination, terminal, result, credential, container_status=None):
     if destination.exists() or destination.is_symlink():
         raise Failure('export', 'Artifact directory already exists', 74)
-    redactor = Redactor(private_values(root, credential))
+    redactor = Redactor(private_values(root, credential, terminal.private_values if terminal else ()))
     files = {'terminal.txt': redactor.clean(terminal.text()) if terminal else '',
              'choices.json': redactor.clean(json.dumps(terminal.choices if terminal else [], indent=2)) + '\n'}
+    if result.get('provider_payload_receipt'):
+        files['provider-payload-receipt.json'] = redactor.clean(
+            json.dumps(result['provider_payload_receipt'], indent=2) + '\n'
+        )
+    if result.get('codex_target_receipt'):
+        files['codex-target-receipt.json'] = redactor.clean(
+            json.dumps(result['codex_target_receipt'], indent=2) + '\n'
+        )
+    if result.get('claude_target_receipt'):
+        files['claude-target-receipt.json'] = redactor.clean(
+            json.dumps(result['claude_target_receipt'], indent=2) + '\n'
+        )
     logs = [(root / 'logs/setup.log', Path('setup-logs/setup.log'))]
     logs += [(path, Path('setup-logs/setup-steps') / path.name)
              for path in sorted((root / 'logs/setup-steps').glob('*.log'))]
@@ -580,6 +974,10 @@ def main(argv=None):
     parser.add_argument('--payload-ref', help='already-fetched provider payload ref, when the provider is installable')
     parser.add_argument('--expected-auth-source-commit',
                         help='bind the run to the provider auth source inspected before provisioning')
+    parser.add_argument('--supervised-human-auth', action='store_true',
+                        help='allow an explicitly supervised live provider sign-in')
+    parser.add_argument('--require-codex-cli-fallback', action='store_true',
+                        help='require the manifest-pinned Codex CLI fallback path')
     parser.add_argument('--credential-file', '--key-file', dest='credential_file', type=Path,
                         help='private credential for an automated paste method; --key-file is a compatibility alias')
     parser.add_argument('--result-file', type=Path)
@@ -593,9 +991,11 @@ def main(argv=None):
     artifacts = args.artifacts_dir or root / 'logs/e2e-wizard'
     result = {'schema_version': 1, 'mode': 'wizard', 'run_id': args.run_id, 'status': 'running',
               'phase': 'preflight', 'commit': None, 'exit_code': None, 'started_at': now(),
-              'provider': args.provider, 'auth_method': args.auth_method}
+              'provider': args.provider, 'auth_method': args.auth_method,
+              'require_codex_cli_fallback': args.require_codex_cli_fallback}
     write_json(result_path, result)  # Invalidate stale success before any check.
     terminal, credential = None, ''
+    handoff_dir = handoff_path = handoff_response_path = None
     previous_signals = {}
     def interrupted(signum, frame):
         raise KeyboardInterrupt
@@ -615,9 +1015,31 @@ def main(argv=None):
                 raise Failure('preflight', 'Fresh scenario refuses prior product state: ' + path, 65)
         if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=root).returncode:
             raise Failure('preflight', 'Checkout has tracked edits', 65)
+        if args.supervised_human_auth:
+            handoff_dir, handoff_path, handoff_response_path = create_handoff_paths(args.run_id)
+        if (args.provider, args.auth_method) == ('codex', 'device'):
+            if (Path.home() / '.codex/auth.json').exists():
+                raise Failure('preflight', 'Dedicated device pairing refuses a personal Codex login', 65)
+        if ((args.provider, args.auth_method) == ('claude', 'subscription')
+                and (Path.home() / '.claude/.credentials.json').exists()):
+            raise Failure('preflight', 'Dedicated Claude subscription sign-in refuses personal Claude credentials', 65)
+        if args.require_codex_cli_fallback:
+            if not (args.supervised_human_auth
+                    and (args.provider, args.auth_method) == ('codex', 'device')):
+                raise Failure('preflight', '--require-codex-cli-fallback requires supervised Codex device pairing', 64)
+            if shutil.which('codex') is not None:
+                raise Failure('preflight', 'Codex CLI is globally available; fallback path would not run', 65)
+        host_claude_absent_before = shutil.which('claude') is None
         result['commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
-        selected, method = selected_auth(root, args.provider, args.auth_method, args.payload_ref,
-                                         args.expected_auth_source_commit)
+        selected, method = selected_auth(
+            root, args.provider, args.auth_method, args.payload_ref,
+            args.expected_auth_source_commit, args.supervised_human_auth,
+        )
+        if (method['automation'] == 'human-handoff'
+                and (args.provider, args.auth_method) not in {
+                    ('codex', 'device'), ('claude', 'subscription'),
+                }):
+            raise Failure('preflight', 'This supervised adapter does not implement that live handoff', 64)
         credential = credential_for(args.credential_file, method['credential_kind'])
         result.update(provider_label=selected['label'], auth_method_label=method['label'],
                       auth_source=selected['auth_source'], auth_source_ref=selected['auth_source_ref'],
@@ -625,15 +1047,22 @@ def main(argv=None):
         left, right = 10000 + secrets.randbelow(80000), 11 + secrets.randbelow(88)
         values = {'credential': credential, 'display_name': 'Wizard Tester',
                   'provider_label': selected['label'], 'auth_option': method['label'],
-                  'auth_prompt': selected['auth_prompt'],
-                  'credential_prompt': {
+                  'auth_prompt': selected['auth_prompt']}
+        if method['automation'] == 'credential-file':
+            values['credential_prompt'] = {
                       'anthropic-oauth': 'Paste your OAuth token',
                       'anthropic-api-key': 'Paste your API key',
                       'openai-api-key': 'Paste your OpenAI API key (sk-…)',
-                  }[method['credential_kind']],
-                  'challenge': f'Reply with only the decimal value of {left} * {right}.',
-                  'answer': str(left * right)}
+                  }[method['credential_kind']]
+        values.update(
+            challenge=f'Reply with only the decimal value of {left} * {right}.',
+            answer=str(left * right),
+        )
         scenario = json.loads((Path(__file__).resolve().parent.parent / 'scenarios/fresh-cli.json').read_text())
+        if method['automation'] == 'human-handoff':
+            scenario['prompts'] = [prompt for prompt in scenario['prompts'] if prompt['id'] != 'credential']
+        if (args.provider, args.auth_method) == ('claude', 'subscription'):
+            scenario['required_step_statuses'] = {'auth': 'interactive'}
         scenario['required_inputs'].update(
             agent_provider=args.provider,
             **{selected['auth_input_key']: args.auth_method},
@@ -646,10 +1075,34 @@ def main(argv=None):
         # parent directory while leaving the product log contents untouched.
         (root / 'logs').mkdir(mode=0o700, exist_ok=True)
         (root / 'logs').chmod(0o700)
-        terminal = WizardTerminal(scenario, values, args.timeout, args.idle_timeout)
+        installable = selected.get('source', selected['auth_source']).endswith('/SKILL.md')
+        terminal = WizardTerminal(
+            scenario, values, args.timeout, args.idle_timeout,
+            handoff_method=args.auth_method if method['automation'] == 'human-handoff' else None,
+            payload_verifier=(lambda: verify_provider_payload(root, selected)) if installable else None,
+            run_id=args.run_id,
+            handoff_path=handoff_path,
+            handoff_response_path=handoff_response_path,
+        )
         terminal.run(root)
+        if installable:
+            if terminal.payload_receipt is None:
+                raise Failure('payload', 'Provider payload was not verified before authentication', 65)
+            if verify_provider_payload(root, selected) != terminal.payload_receipt:
+                raise Failure('payload', 'Provider payload changed during authentication', 65)
+            result['provider_payload_receipt'] = terminal.payload_receipt
+        if (args.provider, args.auth_method) == ('codex', 'device'):
+            result['codex_target_receipt'] = verify_codex_target(
+                root, terminal, method, args.require_codex_cli_fallback,
+            )
+        if (args.provider, args.auth_method) == ('claude', 'subscription'):
+            result['claude_target_receipt'] = verify_claude_target(terminal, host_claude_absent_before)
         verify, service = check_progress(root, scenario)
         live = verify_live_service(root, service)
+        if (args.provider, args.auth_method) == ('codex', 'device'):
+            result['codex_target_receipt']['retained_agent'] = verify_retained_provider_group(root, 'codex')
+        if (args.provider, args.auth_method) == ('claude', 'subscription'):
+            result['claude_target_receipt']['retained_agent'] = verify_retained_provider_group(root, 'claude')
         result.update(status='pass', phase='complete', exit_code=0, ping='ok',
                       service_type=live['type'], service=live, verification=verify,
                       wizard_completed=True, retained_reply_verified=True)
@@ -663,13 +1116,19 @@ def main(argv=None):
     result['finished_at'] = now()
     result_redactor = Redactor([credential])
     try:
-        result_redactor = Redactor(private_values(root, credential))
+        result_redactor = Redactor(private_values(
+            root, credential, terminal.private_values if terminal else (),
+        ))
         export_evidence(root, artifacts, terminal, result, credential, collect_container_status())
         result['artifacts'] = str(artifacts)
     except Exception as error:
         result.update(status='failed', phase='export', exit_code=74, error='Sanitized evidence export failed: ' + type(error).__name__)
     safe_result = json.loads(result_redactor.clean(json.dumps(result)))
     write_json(result_path, safe_result)
+    cleanup_handoff(
+        handoff_dir, handoff_path, handoff_response_path, args.run_id,
+        terminal.handoff_nonce if terminal else None,
+    )
     print('[e2e-wizard] ' + safe_result['status'] + ' phase=' + safe_result['phase'] + ' result=' + str(result_path))
     for signum, handler in previous_signals.items():
         signal.signal(signum, handler)

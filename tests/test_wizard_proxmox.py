@@ -56,6 +56,7 @@ setupLog.userInput('codex_auth_method', method);
         self.report = self.root / 'result.json'
         self.calls = self.root / 'calls.jsonl'
         self.git('remote', 'add', 'origin', 'https://github.com/example/nanoclaw.git')
+        self.git('update-ref', 'refs/remotes/origin/providers', self.payload_commit)
         self.env.update(MOCK_CALLS=str(self.calls), MOCK_STATE=str(self.root / 'state.json'), MOCK_COMMIT=self.commit)
         self.executable('ssh', PYTHON + r'''
 import hashlib, io, json, os, shlex, sys, tarfile
@@ -89,6 +90,10 @@ elif args[:2] == ['pct', 'exec']:
                   'provider': os.environ['MOCK_PROVIDER'], 'auth_method': os.environ['MOCK_AUTH_METHOD'],
                   'auth_source_commit': os.environ['MOCK_AUTH_SOURCE_COMMIT'],
                   'service': {'checkout_verified': True, 'socket_connected': True}}
+        if result['provider'] == 'codex':
+            payload = {'commit': result['auth_source_commit'], 'paths': {'setup/providers/codex.ts': 'fixture'},
+                       'file_count': 1, 'combined_sha256': 'fixture'}
+            result['provider_payload_receipt'] = payload
         if script.startswith('cat '): print(json.dumps(result))
         else:
             if mode == 'missing-proof': result['retained_reply_verified'] = False
@@ -97,6 +102,8 @@ elif args[:2] == ['pct', 'exec']:
                      'runtime-logs/nanoclaw.log': b'host ready',
                      'runtime-logs/nanoclaw.error.log': b'',
                      'runtime-logs/docker-containers.txt': b'container status'}
+            if result['provider'] == 'codex':
+                files['provider-payload-receipt.json'] = json.dumps(payload).encode()
             manifest = {'schema_version': 1, 'sanitized': True, 'run_id': run_id,
                         'files': {k: hashlib.sha256(v).hexdigest() for k,v in files.items()}}
             if mode == 'corrupt-export': files['terminal.txt'] = b'changed after hashing'
@@ -137,7 +144,7 @@ elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exi
 
     def test_installable_provider_result_uses_payload_auth_identity(self):
         self.key.write_text('sk-fake-openai-private-fixture')
-        run = self.run_driver('--payload-ref', 'providers', provider='codex',
+        run = self.run_driver('--payload-ref', 'refs/remotes/origin/providers', provider='codex',
                               auth_source_commit=self.payload_commit)
         self.assertEqual(run.returncode, 0, run.stderr)
         report = json.loads(self.report.read_text())

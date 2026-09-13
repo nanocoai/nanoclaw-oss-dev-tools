@@ -409,6 +409,28 @@ class EvidenceTests(unittest.TestCase):
                     collector.collect(self.archive(destination), self.root/'local', self.root/'result.json', 'a'*40, run_id, 0, self.key)
                 self.assertFalse((self.root/'result.json').exists())
 
+    def test_collector_rejects_unrecognized_claude_authorization_urls(self):
+        import hashlib
+        destination = self.export()
+        urls = [
+            'https://claude.ai/oauth/authorize?state=synthetic-state&code_challenge=synthetic-challenge',
+            'https://claude.com/cai/oauth/authorize?state=synthetic-state&code_challenge=synthetic-challenge',
+        ]
+        for url in urls:
+            # No known code prompt: export validation must still reject the URL.
+            for body in [url, url[:53] + '\r\n  ' + url[53:]]:
+                with self.subTest(endpoint=url.split('?')[0], wrapped='\n' in body):
+                    (destination / 'terminal.txt').write_text(body)
+                    manifest = json.loads((destination / 'manifest.json').read_text())
+                    manifest['files']['terminal.txt'] = hashlib.sha256(body.encode()).hexdigest()
+                    (destination / 'manifest.json').write_text(json.dumps(manifest))
+                    local, result = self.root / 'local', self.root / 'collected-result.json'
+                    with self.assertRaises(collector.ValidationError) as caught:
+                        collector.collect(self.archive(destination), local, result, 'a'*40, 'regression123', 0, self.key)
+                    self.assertEqual(caught.exception.code, 'credential-found')
+                    self.assertFalse(local.exists())
+                    self.assertFalse(result.exists())
+
     def test_collector_rejects_archive_traversal(self):
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode='w') as archive:
@@ -593,7 +615,10 @@ result={'schema_version':1,'mode':'wizard','run_id':options['--run-id'],
  'retained_reply_verified':True,'provider':options['--provider'],'auth_method':options['--auth-method'],
  'auth_source_commit':options['--expected-auth-source-commit'],
  'service':{'checkout_verified':True,'socket_connected':True}}
+if result['provider']=='codex':
+ result['provider_payload_receipt']={'commit':result['auth_source_commit'],'paths':{'setup/providers/codex.ts':'fixture'},'file_count':1,'combined_sha256':'fixture'}
 files={'terminal.txt':'sanitized output','choices.json':'[]','setup-logs/setup.log':'completed', 'result.json':json.dumps(result)}
+if result['provider']=='codex': files['provider-payload-receipt.json']=json.dumps(result['provider_payload_receipt'])
 manifest={'schema_version':1,'run_id':options['--run-id'],'sanitized':True,'files':{}}
 for name,content in files.items():
  path=dest/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content)
