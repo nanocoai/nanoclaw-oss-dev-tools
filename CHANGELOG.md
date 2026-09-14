@@ -70,6 +70,9 @@ instead of being backfilled as releases.
 - `e2e-windows` for a prepared Windows WSL2 distribution, with same-engine
   Docker Desktop proof, a Linux-home bind test, unchanged public-wizard reuse,
   validated artifacts and a Proxmox Windows preparation reference (plugin 0.6.0).
+  The 0.10.0 candidate was requalified against current NanoClaw `main`: fresh
+  setup, terminal-close inference and manual full-Windows-reboot recovery passed;
+  WSL-only recovery and Docker Desktop autostart remain unqualified.
 
 - Export sanitized NanoClaw runtime logs and a bounded container-status snapshot
   with wizard evidence, while retaining container log bodies on the private target.

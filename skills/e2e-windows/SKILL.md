@@ -180,3 +180,27 @@ an empty root-owned directory at `/tmp/onecli-proxy-ca.pem`; SDK 2.2.1 raises
 This is related to [issue 2513](https://github.com/nanocoai/nanoclaw/issues/2513),
 which reports a CA bind-mount directory problem on Colima. The directory-creation
 mechanism in this Windows run remains unproven.
+
+A release requalification on 2026-09-14 used current NanoClaw
+[`3f9ed607b7e7a4872747295f75286f1c377d7c33`](https://github.com/nanocoai/nanoclaw/commit/3f9ed607b7e7a4872747295f75286f1c377d7c33)
+and dev-tools candidate
+[`075f74285d8e0cc3f54a84e7012d0d09c1e36646`](https://github.com/nanocoai/nanoclaw-oss-dev-tools/commit/075f74285d8e0cc3f54a84e7012d0d09c1e36646).
+On a fresh clone of the same Windows template, Ubuntu 24.04.4 ran under WSL
+2.7.14 with the same kernel and Docker versions. The unchanged public wizard
+passed in about 10 minutes using Claude OAuth; its retained agent replied, final
+verification succeeded, and the systemd user service and CLI socket were
+independently verified. No product step failed or was repaired. The fresh
+environment and a separately repeated post-reboot environment both passed the
+packaged `--preflight-only` qualification. The complete sanitized export was
+checksum-matched and revalidated locally into 20 artifacts by the exact candidate
+collector.
+
+The retained agent also replied after the setup terminal closed. Terminating
+only `Ubuntu-24.04` still left its service/socket unavailable after 60 seconds,
+with no repair applied. A later full Windows reboot logged the test account in,
+but Docker Desktop had not started 132 seconds after boot. Launching Docker
+Desktop normally restored the same engine ID, passed a Windows `hello-world`,
+restored WSL integration and the existing service/socket, and the retained agent
+returned a fresh exact reply. This qualifies manual full-reboot recovery for the
+tested configuration. WSL-only recovery and automatic Docker Desktop startup
+remain unqualified.

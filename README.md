@@ -191,10 +191,13 @@ handoff remains unqualified after two bounded timeouts; see the
 [wizard evidence](docs/skills-catalog.md#e2e-wizard).
 
 Windows WSL2 and Docker Desktop passed a fresh public-wizard installation with a
-real reply and validated evidence. The recorded WSL restart lost Docker
-integration, and inference after a Windows reboot timed out even after a normal
-Docker Desktop launch restored the service. Treat restart inference as
-unqualified until a fresh run verifies it; see the
+real reply and validated evidence. A 2026-09-14 requalification against current
+NanoClaw `main` also passed, including inference after the setup terminal closed.
+Terminating only the WSL distribution still left the service/socket unavailable.
+After a full Windows reboot, Docker Desktop did not start within 132 seconds;
+launching it normally restored the same engine, the packaged environment
+qualification, the service/socket and a fresh retained-agent reply without a
+product repair. Automatic restart recovery remains unqualified; see the
 [Windows evidence](docs/skills-catalog.md#e2e-windows).
 
 The shared terminal passed real HTTP/PTY tests and a macOS browser handoff with
