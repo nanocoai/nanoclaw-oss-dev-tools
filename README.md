@@ -33,13 +33,18 @@ live validation and remaining coverage gaps.
 
 ## Quick start
 
-The commands below use exe.dev. For other targets, follow the
-[Proxmox LXC workflow](skills/e2e-proxmox/SKILL.md) or the
-[local/SSH Mac workflow](skills/e2e-macos/SKILL.md).
+The commands below start with exe.dev. For other targets, follow the
+[Proxmox LXC workflow](skills/e2e-proxmox/SKILL.md), the
+[local/SSH Mac workflow](skills/e2e-macos/SKILL.md), or the
+[Windows WSL2 workflow](skills/e2e-windows/SKILL.md).
 The [macOS test environment notes](docs/macos-test-environments.md) record the
 physical-hardware plan and the deferred MacinCloud evaluation.
 To test the public interactive installer, follow the
 [wizard workflow](skills/e2e-wizard/SKILL.md); the commands below test headless setup.
+The Windows workflow runs from a prepared WSL2 distribution and reuses the wizard
+harness. For supervised Codex device or Claude subscription authentication on
+macOS or Linux, [shared-terminal](skills/shared-terminal/SKILL.md) gives the
+operator and agent one private local PTY.
 
 ### 1. Install the skill
 
@@ -47,13 +52,19 @@ With Node.js and npm available, install for your user account and choose your
 agent when prompted:
 
 ```bash
-npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-exe-dev
-npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-wizard
-npx skills add nanocoai/nanoclaw-oss-dev-tools --global --skill e2e-triage
+npx skills add nanocoai/nanoclaw-oss-dev-tools --list
+npx skills add nanocoai/nanoclaw-oss-dev-tools --global \
+  --skill e2e-exe-dev \
+  --skill e2e-wizard \
+  --skill e2e-windows \
+  --skill e2e-triage \
+  --skill shared-terminal
 ```
 
 `--global` makes the skill available across checkouts. Omit it to install into
-one project. The [skills CLI](https://github.com/vercel-labs/skills) supports both
+one project. Multiple `--skill` options install a selected set in one run; add
+`e2e-proxmox` or `e2e-macos` for those targets, or use `--all` to install every
+skill. The [skills CLI](https://github.com/vercel-labs/skills) supports both
 symlink and copy installation.
 
 <details>
@@ -113,6 +124,15 @@ In other agents, ask them to use the `e2e-exe-dev` skill for the same task.
 For shell commands, cached VMs, snapshots and standalone installs, follow the
 [workflow](skills/e2e-exe-dev/SKILL.md#workflow).
 
+From a prepared NanoClaw checkout inside Windows WSL2, ask:
+
+```text
+$e2e-windows Qualify this Windows/WSL2 environment, run the public wizard, and preserve the result locally.
+```
+
+The Windows skill checks that WSL and Windows use the same local Docker Desktop
+engine before it reads a credential or starts the wizard.
+
 The driver resolves the requested ref to an exact commit. A passing installer
 result includes a real agent reply and successful service verification. Results
 are written to `logs/e2e/result.json` on the target; `--result-file` saves a local
@@ -164,13 +184,36 @@ version 0.4.1. See the [catalog's Mac evidence](docs/skills-catalog.md#e2e-macos
 for exact configurations, the separate upstream migration-fix validation and
 remaining gaps.
 
+The public wizard passed in a fresh Proxmox LXC. Later supervised runs verified
+Codex device pairing and a visible Claude subscription login with retained-agent
+replies, provider identity, service and socket checks. The unattended Claude
+handoff remains unqualified after two bounded timeouts; see the
+[wizard evidence](docs/skills-catalog.md#e2e-wizard).
+
+Windows WSL2 and Docker Desktop passed a fresh public-wizard installation with a
+real reply and validated evidence. A 2026-09-14 requalification against current
+NanoClaw `main` also passed, including inference after the setup terminal closed.
+Terminating only the WSL distribution still left the service/socket unavailable.
+After a full Windows reboot, Docker Desktop did not start within 132 seconds;
+launching it normally restored the same engine, the packaged environment
+qualification, the service/socket and a fresh retained-agent reply without a
+product repair. Automatic restart recovery remains unqualified; see the
+[Windows evidence](docs/skills-catalog.md#e2e-windows).
+
+The shared terminal passed real HTTP/PTY tests and a macOS browser handoff with
+direct human and agent control of the same shell. Native Windows, WSL and remote
+browser forwarding remain outside that qualification.
+
 ## Update
 
 For a global skills CLI installation:
 
 ```bash
-npx skills update e2e-exe-dev --global
+npx skills update --global
 ```
+
+This updates all globally installed skills. Pass one or more skill names before
+`--global` to update only that selected set.
 
 For a Claude Code plugin installation:
 

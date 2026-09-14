@@ -3,11 +3,15 @@
 Notable changes to NanoClaw OSS Dev Tools are recorded here, grouped by plugin
 version and following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-The initial history below was reconstructed from manifest versions and commits.
-Those entries link to source history; they do not imply that GitHub releases or
-tags were published for those versions.
+The initial history through 0.4.0 was reconstructed from manifest versions and
+commits. Those entries link to source history; they do not imply that GitHub
+releases or tags were published for those versions. Versions 0.5.0 through 0.9.0
+were development manifest milestones; their changes are consolidated in 0.10.0
+instead of being backfilled as releases.
 
 ## Unreleased
+
+## 0.10.0 - 2026-09-14
 
 ### Fixed
 
@@ -66,6 +70,9 @@ tags were published for those versions.
 - `e2e-windows` for a prepared Windows WSL2 distribution, with same-engine
   Docker Desktop proof, a Linux-home bind test, unchanged public-wizard reuse,
   validated artifacts and a Proxmox Windows preparation reference (plugin 0.6.0).
+  The 0.10.0 candidate was requalified against current NanoClaw `main`: fresh
+  setup, terminal-close inference and manual full-Windows-reboot recovery passed;
+  WSL-only recovery and Docker Desktop autostart remain unqualified.
 
 - Export sanitized NanoClaw runtime logs and a bounded container-status snapshot
   with wizard evidence, while retaining container log bodies on the private target.

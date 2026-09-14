@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
 Verified: **2026-09-14**. This checkout contains **7 skills**, with plugin
-manifest version **0.10.0** (unreleased). Three drive headless setup steps; `e2e-wizard` and
+manifest version **0.10.0**. Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
@@ -22,7 +22,7 @@ successful SSH qualification described below.
 | [e2e-proxmox](../skills/e2e-proxmox/SKILL.md) | Fresh unprivileged Debian 13 amd64 LXC, managed through SSH to the Proxmox node. | Fresh install passed on 2026-09-11 with a real reply and a running systemd user service. | Reboot recovery, cached clones and the transactional updater were not tested. |
 | [e2e-macos](../skills/e2e-macos/SKILL.md) | Existing native Mac, local or SSH, using a new persistent checkout and its own LaunchAgent. | Local arm64 passed with 0.4.0; SSH on M4 Pro passed on 2026-09-11 with the readiness fix now merged in 0.4.1. Both proved a real reply, service and preservation. | Intel/older macOS, cold prerequisites and reboot/logout recovery remain unqualified. |
 | [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. | The distributed exe.dev path without a task-only adapter, native macOS, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
-| [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed on 2026-09-11 through WSL2/Docker Desktop, with a retained agent reply, service/socket proof and locally validated sanitized export. | WSL restart lost integration. After Windows reboot and Docker launch, service/socket returned but the model request timed out. Reboot inference is unqualified. |
+| [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed again on 2026-09-14 at current NanoClaw `main`; terminal-close and post-Windows-reboot inference also passed with locally validated sanitized evidence. | WSL-only restart still left the service/socket unavailable, and Docker Desktop did not start automatically after Windows reboot. |
 | [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
 | [shared-terminal](../skills/shared-terminal/SKILL.md) | One local PTY with browser and agent control, for supervised interactive work. | macOS browser typing, interactive prompts, agent/human handoff and shutdown passed; real HTTP/PTY tests passed. | Native Windows, WSL and browser forwarding are unqualified. |
 
@@ -260,13 +260,28 @@ run inside the dedicated WSL2 distribution from the NanoClaw checkout.
   records Windows template capture, clone identity, per-user WSL registration,
   Docker integration and credential handling. VM provisioning is not automated
   by this runner; the tested template still needs first-boot console assistance.
+- Release requalification on **2026-09-14** used NanoClaw
+  [`3f9ed607`](https://github.com/nanocoai/nanoclaw/commit/3f9ed607b7e7a4872747295f75286f1c377d7c33)
+  and dev-tools candidate
+  [`075f7428`](https://github.com/nanocoai/nanoclaw-oss-dev-tools/commit/075f74285d8e0cc3f54a84e7012d0d09c1e36646).
+  Windows 11 Enterprise Evaluation 25H2, Ubuntu 24.04.4, WSL 2.7.14,
+  Docker Desktop 4.90.0 and engine 29.7.2 passed the unchanged public wizard in
+  about 10 minutes with Claude OAuth, a retained-agent reply, final verification,
+  service/socket proof and an independently revalidated 20-file sanitized export.
+  The same installed agent replied after the setup terminal closed. A WSL-only
+  termination still left the service/socket unavailable after 60 seconds. After
+  a full Windows reboot, Docker Desktop was absent at 132 seconds; launching it
+  normally restored the same engine, the packaged environment qualification,
+  the service/socket and a fresh retained-agent reply without a product repair.
+  This qualifies manual full-reboot recovery for that exact configuration, while
+  WSL-only and automatic Docker-start recovery remain unqualified.
 
 
 ## e2e-triage
 
 **Entry point:** [SKILL.md](../skills/e2e-triage/SKILL.md), invoked by the testing
 agent after an unexpected failure or directly against a retained run. Install it
-alongside the E2E skill; the plugin includes all six. This workflow adds no
+alongside the E2E skill; the plugin includes all seven. This workflow adds no
 runtime or GitHub dependency to the shell/Python test drivers.
 
 - Captures distinct failures without rewriting installation/recovery outcomes.
@@ -312,8 +327,10 @@ regressions failing before the fix. Its
 [hosted CI run](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/runs/34616868865)
 passed on Ubuntu and macOS. These checks simulate infrastructure and exercise
 parsing, transport, ownership, timeouts and result validation; the live records
-above provide the model/service proof. The current suite contains **168 tests**;
-it passed locally on macOS and CI runs it on Linux and macOS. Coverage includes
+above provide the model/service proof. The current suite contains **205 tests**;
+it passed in
+[CI on Linux and macOS](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/runs/34792207939).
+Coverage includes
 real PTY redraws, cancellation and process cleanup, strict proof rejection,
 archive handling, runtime evidence and repository metadata contracts.
 

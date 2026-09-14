@@ -13,6 +13,7 @@ class RepositoryContractTests(unittest.TestCase):
         self.skills = sorted(path.parent.name for path in (ROOT / 'skills').glob('*/SKILL.md'))
         self.readme = (ROOT / 'README.md').read_text()
         self.catalog = (ROOT / 'docs/skills-catalog.md').read_text()
+        self.changelog = (ROOT / 'CHANGELOG.md').read_text()
 
     def test_every_distributed_skill_is_listed_in_readme_and_catalog(self):
         for name in self.skills:
@@ -30,6 +31,14 @@ class RepositoryContractTests(unittest.TestCase):
         count = re.search(r'contains \*\*(\d+) skills\*\*', self.catalog)
         self.assertIsNotNone(count, 'catalog must state the distributed skill count')
         self.assertEqual(int(count.group(1)), len(self.skills))
+        version_reference = re.compile(
+            rf'(?m)(^## \[?{re.escape(version)}\]? - \d{{4}}-\d{{2}}-\d{{2}}$|\(plugin {re.escape(version)}\))'
+        )
+        self.assertRegex(
+            self.changelog,
+            version_reference,
+            'changelog must identify the current plugin version as a milestone or dated release',
+        )
         marketplace = json.loads((ROOT / '.claude-plugin/marketplace.json').read_text())
         entries = [item for item in marketplace.get('plugins', [])
                    if item.get('name') == manifest['name']]
