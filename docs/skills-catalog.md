@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
 Verified: **2026-09-14**. This checkout contains **7 skills**, with plugin
-manifest version **0.10.0** (unreleased). Three drive headless setup steps; `e2e-wizard` and
+manifest version **0.10.0**. Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
@@ -312,8 +312,10 @@ regressions failing before the fix. Its
 [hosted CI run](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/runs/34616868865)
 passed on Ubuntu and macOS. These checks simulate infrastructure and exercise
 parsing, transport, ownership, timeouts and result validation; the live records
-above provide the model/service proof. The current suite contains **168 tests**;
-it passed locally on macOS and CI runs it on Linux and macOS. Coverage includes
+above provide the model/service proof. The current suite contains **205 tests**;
+it passed in
+[CI on Linux and macOS](https://github.com/nanocoai/nanoclaw-oss-dev-tools/actions/runs/34792207939).
+Coverage includes
 real PTY redraws, cancellation and process cleanup, strict proof rejection,
 archive handling, runtime evidence and repository metadata contracts.
 

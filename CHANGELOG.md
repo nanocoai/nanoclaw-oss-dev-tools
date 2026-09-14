@@ -3,11 +3,15 @@
 Notable changes to NanoClaw OSS Dev Tools are recorded here, grouped by plugin
 version and following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-The initial history below was reconstructed from manifest versions and commits.
-Those entries link to source history; they do not imply that GitHub releases or
-tags were published for those versions.
+The initial history through 0.4.0 was reconstructed from manifest versions and
+commits. Those entries link to source history; they do not imply that GitHub
+releases or tags were published for those versions. Versions 0.5.0 through 0.9.0
+were development manifest milestones; their changes are consolidated in 0.10.0
+instead of being backfilled as releases.
 
 ## Unreleased
+
+## 0.10.0 - 2026-09-14
 
 ### Fixed
 
