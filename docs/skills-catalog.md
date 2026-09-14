@@ -1,10 +1,11 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-13**. This checkout contains **6 skills**, with plugin
-manifest version **0.9.0** (unreleased). Three drive headless setup steps; `e2e-wizard` and
+Verified: **2026-09-14**. This checkout contains **7 skills**, with plugin
+manifest version **0.10.0** (unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
-workflows and their qualifications are listed separately below.
+workflows and their qualifications are listed separately below. `shared-terminal`
+provides a local terminal for human and agent handoffs.
 
 Installed skill copies must be updated separately, and the manifest version
 does not imply a tagged GitHub release.
@@ -23,6 +24,7 @@ successful SSH qualification described below.
 | [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. | The distributed exe.dev path without a task-only adapter, native macOS, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
 | [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed on 2026-09-11 through WSL2/Docker Desktop, with a retained agent reply, service/socket proof and locally validated sanitized export. | WSL restart lost integration. After Windows reboot and Docker launch, service/socket returned but the model request timed out. Reboot inference is unqualified. |
 | [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
+| [shared-terminal](../skills/shared-terminal/SKILL.md) | One local PTY with browser and agent control, for supervised interactive work. | macOS browser typing, interactive prompts, agent/human handoff and shutdown passed; real HTTP/PTY tests passed. | Native Windows, WSL and browser forwarding are unqualified. |
 
 The shared baseline for the three headless skills tested NanoClaw
 [`74224f62a6c08418acccc727114ab02f92e403bf`](https://github.com/nanocoai/nanoclaw/commit/74224f62a6c08418acccc727114ab02f92e403bf).
@@ -319,3 +321,25 @@ Recheck compatibility after NanoClaw setup changes. Record the tools revision,
 full NanoClaw commit, target OS/architecture, access mode, result JSON and live
 reply/service evidence for each additional environment. Keep reboot recovery,
 upgrades and real-channel testing as explicit additional milestones.
+
+## shared-terminal
+
+**Entry points:** [server.py](../skills/shared-terminal/scripts/server.py) and
+[control.py](../skills/shared-terminal/scripts/control.py).
+
+- Needs macOS or Linux, Python 3.10+, Bash and a browser on the same host.
+- Uses a loopback-only server, private per-session access files and one real PTY.
+  The browser and agent share its shell; no raw transcript is written to disk.
+- Real HTTP/PTY regression tests cover terminal resizing, cookie access, SSE
+  reconnection, guarded input and shutdown. CI runs the full suite on Linux and
+  macOS; loopback startup also has coverage with name resolution unavailable.
+- A separate macOS browser run verified direct typing, an interactive Python
+  prompt, an agent-started prompt answered in the browser, and owned-session
+  shutdown. The existing operator terminal stayed open.
+- Bundled xterm assets include exact versions, SHA-256 digests and MIT licenses;
+  Python emulator dependencies are installed from a hash-pinned requirements file.
+- Authentication remains a human handoff. The terminal grants no additional
+  permission to log in, publish, provision or remove resources.
+
+See the [workflow](../skills/shared-terminal/SKILL.md) for private access,
+sensitive-screen handling and session lifetime. Added in plugin **0.10.0**.
