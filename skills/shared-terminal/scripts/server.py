@@ -14,6 +14,7 @@ import pty
 import secrets
 import signal
 import socket
+import socketserver
 import stat
 import struct
 import sys
@@ -145,6 +146,12 @@ class Server(http.server.ThreadingHTTPServer):
         self.origin = f'http://127.0.0.1:{self.server_port}'
         self.cookie_name = f'shared_terminal_{self.server_port}'
         self.session = None
+
+    def server_bind(self):
+        # This numeric loopback service has no DNS dependency. HTTPServer would
+        # resolve its FQDN here, which can block startup on an offline resolver.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
 
     def handle_error(self, request, client_address):
         # No request data or terminal content in diagnostics.

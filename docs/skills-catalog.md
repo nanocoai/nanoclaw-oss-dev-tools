@@ -331,7 +331,8 @@ upgrades and real-channel testing as explicit additional milestones.
 - Uses a loopback-only server, private per-session access files and one real PTY.
   The browser and agent share its shell; no raw transcript is written to disk.
 - Real HTTP/PTY regression tests cover terminal resizing, cookie access, SSE
-  reconnection, guarded input and shutdown. The full suite passed 204 tests.
+  reconnection, guarded input and shutdown. CI runs the full suite on Linux and
+  macOS; loopback startup also has coverage with name resolution unavailable.
 - A separate macOS browser run verified direct typing, an interactive Python
   prompt, an agent-started prompt answered in the browser, and owned-session
   shutdown. The existing operator terminal stayed open.

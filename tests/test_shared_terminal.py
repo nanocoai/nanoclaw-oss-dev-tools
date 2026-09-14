@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import http.cookiejar
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 
@@ -37,9 +39,19 @@ class SharedTerminalTests(unittest.TestCase):
         while not self.state_path.exists() and self.process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.025)
         if not self.state_path.exists():
+            startup_status = self.process.poll()
             self.process.terminate()
-            self.process.wait(timeout=5)
-            self.fail('Shared terminal did not create its private state file.')
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+            self.output.seek(0)
+            diagnostic = self.output.read(2048)
+            self.output.close()
+            self.temp.cleanup()
+            self.fail(f'Shared terminal did not create its private state file '
+                      f'(startup exit={startup_status}): {diagnostic}')
         self.state = json.loads(self.state_path.read_text())
         self.url = self.state['url']
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -213,6 +225,20 @@ class SharedTerminalTests(unittest.TestCase):
 
 
 class SharedTerminalAssetsTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform in ('darwin', 'linux'), 'Requires a native POSIX PTY')
+    def test_loopback_server_starts_when_host_name_resolution_is_unavailable(self):
+        spec = importlib.util.spec_from_file_location('shared_terminal_server', SERVER)
+        server_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server_module)
+        with mock.patch('socket.getfqdn', side_effect=OSError('No name resolver')):
+            server = server_module.Server(0, 'test-session-access')
+            try:
+                self.assertEqual(server.server_name, '127.0.0.1')
+                self.assertGreater(server.server_port, 0)
+                self.assertEqual(server.origin, f'http://127.0.0.1:{server.server_port}')
+            finally:
+                server.server_close()
+
     def test_vendored_assets_match_the_pinned_package_manifest(self):
         manifest = json.loads((SKILL / 'assets/vendor-manifest.json').read_text())
         for name, expected in manifest['sha256'].items():
