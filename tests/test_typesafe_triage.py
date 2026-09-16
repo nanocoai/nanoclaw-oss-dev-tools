@@ -23,7 +23,7 @@ def load():
 
 
 triage = load()
-THRESHOLDS = {"area": 0.6, "kind": 0.6, "priority": 0.8, "noul": 0.7}
+THRESHOLDS = {"area": 0.6, "kind": 0.6, "priority": 0.6, "noul": 0.7}
 
 
 def choice(option, confidence, options):
@@ -164,7 +164,7 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(result["kind"]["verdict"], "NEW")
 
     def test_low_confidence_proposes_unresolved_instead_of_guessing(self):
-        result = self.proposals(issue(), answers(area_conf=0.59, kind_conf=0.6, priority_conf=0.79))
+        result = self.proposals(issue(), answers(area_conf=0.59, kind_conf=0.6, priority_conf=0.59))
         self.assertEqual(result["area"]["label"], "triage/unresolved")
         self.assertTrue(result["area"]["gated"])
         self.assertIn("area/core", result["area"]["note"])
@@ -489,7 +489,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(summary["area"]["disagree"], 0)
         self.assertEqual(summary["area"]["below_gate"], 1)
         self.assertEqual(summary["needs_repro"]["agree"], 1)
-        self.assertEqual(summary["priority"]["below_gate"], 3)
+        self.assertEqual(summary["priority"]["below_gate"], 2)
         self.assertEqual(payload["summary"]["items_below_gate"], 5)
 
     def test_flags_override_the_gate(self):

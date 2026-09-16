@@ -746,7 +746,7 @@ def parse_args(argv):
     parser.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout per request in seconds")
     parser.add_argument("--area-threshold", type=float, default=0.6)
     parser.add_argument("--kind-threshold", type=float, default=0.6)
-    parser.add_argument("--priority-threshold", type=float, default=0.8)
+    parser.add_argument("--priority-threshold", type=float, default=0.6)
     parser.add_argument("--noul-threshold", type=float, default=0.7, help="yes/no probability needed to propose a triage label")
     parser.add_argument("--json", action="store_true", help="print the full result JSON to stdout instead of the table")
     args = parser.parse_args(argv)

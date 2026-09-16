@@ -33,7 +33,7 @@ probability distribution. Noul answers are a probability of yes.
 | Question | Default gate | Flag |
 |---|---|---|
 | `area`, `kind` | confidence >= 0.6 | `--area-threshold`, `--kind-threshold` |
-| `priority` | confidence >= 0.8 | `--priority-threshold` |
+| `priority` | confidence >= 0.6 | `--priority-threshold` |
 | `needs_repro`, `pr_ready` | yes if p >= 0.7, no if p <= 0.3, otherwise uncertain | `--noul-threshold` |
 
 Below the gate the script proposes `triage/unresolved` and shows the model's top
