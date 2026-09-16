@@ -205,13 +205,15 @@ def verify_provider_payload(root, selected):
     except module.DiscoveryError as error:
         raise Failure('payload', str(error), 65)
     receipt = {'commit': selected['auth_source_commit'], 'paths': {}}
+    # Bundled and branch-owned files of one skill come from different commits.
+    commits = {item['destination']: item.get('commit') for item in selected.get('payload_files', [])}
     for entry in entries:
         relative = entry['destination']
         installed = root / relative
         if installed.is_symlink() or not installed.is_file():
             raise Failure('payload', 'Installed provider payload is incomplete: ' + relative, 65)
         expected = subprocess.run(
-            ['git', 'show', selected['auth_source_commit'] + ':' + entry['source']], cwd=root,
+            ['git', 'show', (commits.get(relative) or selected['auth_source_commit']) + ':' + entry['source']], cwd=root,
             capture_output=True, timeout=30,
         )
         if expected.returncode or installed.read_bytes() != expected.stdout:

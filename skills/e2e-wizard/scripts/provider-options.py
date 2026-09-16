@@ -247,7 +247,9 @@ def copy_entries(markdown, skill_path):
                 source = posixpath.join(posixpath.dirname(skill_path), source)
             entries.append({'source': source, 'destination': destination,
                             'branch': branch.group(1) if branch else None})
-    if not entries or len({item['branch'] for item in entries}) != 1:
+    # A skill may bundle some files (read at the NanoClaw commit) and take the
+    # rest from one payload branch; two different branches are not supported.
+    if not entries or len({item['branch'] for item in entries if item['branch']}) > 1:
         raise DiscoveryError('provider skill must declare one bundled or branch-owned payload')
     if len({item['destination'] for item in entries}) != len(entries):
         raise DiscoveryError('provider skill has duplicate payload destinations')
@@ -329,27 +331,36 @@ def discover(root, selected=None, payload_ref=None, revision="HEAD"):
     else:
         skill = tree_read(root, commit, provider["source"])
         entries = copy_entries(skill, provider['source'])
-        branch = entries[0]['branch']
+        branch = next((item['branch'] for item in entries if item['branch']), None)
+        payload_commit = None
         if branch:
-            source_ref = resolve_payload_ref(root, branch, payload_ref)
-            source_commit = git(root, 'rev-parse', source_ref + '^{commit}')
-        else:
-            if payload_ref and git(root, 'rev-parse', payload_ref + '^{commit}') != commit:
-                raise DiscoveryError('bundled provider payload must use the NanoClaw revision')
-            source_ref, source_commit = revision, commit
-        provider.update(payload_kind='branch' if branch else 'bundled', payload_files=entries)
+            payload_ref = resolve_payload_ref(root, branch, payload_ref)
+            payload_commit = git(root, 'rev-parse', payload_ref + '^{commit}')
+        elif payload_ref and git(root, 'rev-parse', payload_ref + '^{commit}') != commit:
+            raise DiscoveryError('bundled provider payload must use the NanoClaw revision')
+        # Each file records the commit it is read from: bundled files come from
+        # the NanoClaw revision, branch-owned files from the payload ref.
+        for item in entries:
+            item['commit'] = payload_commit if item['branch'] else commit
+        kinds = {'branch' if item['branch'] else 'bundled' for item in entries}
+        provider.update(payload_kind=kinds.pop() if len(kinds) == 1 else 'mixed', payload_files=entries)
+        if payload_commit:
+            provider['payload_ref'] = payload_ref
+            provider['payload_commit'] = payload_commit
         matches = [item for item in entries if item['destination'] == f'setup/providers/{selected}.ts']
         if len(matches) != 1:
             raise DiscoveryError('provider skill has no setup registration payload')
-        source_path = matches[0]['source']
+        source_path, source_commit = matches[0]['source'], matches[0]['commit']
+        source_ref = payload_ref if matches[0]['branch'] else revision
         source = tree_read(root, source_commit, source_path)
     if selected == 'opencode':
         # OpenCode's registry entry delegates auth to this skill-owned helper.
         if 'runOpenCodeSetupAuth' not in source:
             raise DiscoveryError('unsupported OpenCode setup auth contract')
-        source_path = next((item['source'] for item in provider.get('payload_files', [])
-                            if item['destination'] == 'scripts/opencode-auth.ts'), 'scripts/opencode-auth.ts')
-        source = tree_read(root, source_commit, source_path)
+        helper = next((item for item in provider.get('payload_files', [])
+                       if item['destination'] == 'scripts/opencode-auth.ts'), None)
+        source_path = helper['source'] if helper else 'scripts/opencode-auth.ts'
+        source = tree_read(root, helper['commit'] if helper else source_commit, source_path)
     prompt, input_key, methods = auth_methods(source, selected)
     provider.update({
         "auth_prompt": prompt,

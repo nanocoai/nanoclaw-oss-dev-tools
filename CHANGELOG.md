@@ -37,6 +37,11 @@ Development milestone (plugin 0.11.0); not yet released.
 
 ### Fixed
 
+- Provider discovery accepts a skill that bundles some payload files and takes
+  the rest from one payload branch (NanoClaw's gateway stack bundles
+  `setup/providers/codex.ts` this way). Each file records the commit it is read
+  from; the wizard verifies installed files against those commits and Proxmox
+  transports the branch part.
 - Find Node, pnpm and OneCLI installed by the wizard in `~/.local/bin` (or pnpm
   in npm's global prefix) during post-wizard provider verification. The child
   wizard's PATH changes do not propagate to the parent harness.

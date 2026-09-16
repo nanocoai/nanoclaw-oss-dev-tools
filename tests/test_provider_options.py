@@ -134,6 +134,44 @@ class ProviderOptionsTests(unittest.TestCase):
                          ["human-handoff", "human-handoff", "credential-file", "unsupported"])
         self.assertEqual(selected["auth_methods"][2]["credential_kind"], "openai-api-key")
 
+    def test_mixed_bundled_and_branch_payload_reads_each_file_from_its_own_commit(self):
+        # nanocoai/nanoclaw's gateway stack bundles setup/providers/codex.ts with
+        # the skill while src/providers/* stay on the providers branch.
+        skill = self.root / ".claude/skills/add-codex"
+        (skill / "payload/setup/providers").mkdir(parents=True)
+        (skill / "payload/setup/providers/codex.ts").write_text(textwrap.dedent("""
+            registerSetupProvider({ value: 'codex', label: 'Codex', hint: 'OpenAI account', runAuth: runCodexAuthStep });
+            const method = await brightSelect({
+              message: 'How would you like to connect Codex?',
+              options: [
+                { value: 'device', label: 'ChatGPT device pairing', hint: 'URL and code' },
+                { value: 'api', label: 'Paste an OpenAI API key', hint: 'pay per use' },
+              ],
+            });
+            setupLog.userInput('codex_auth_method', method);
+        """))
+        markdown = (skill / "SKILL.md").read_text()
+        markdown = markdown.replace(
+            "setup/providers/codex.ts\n```",
+            "src/providers/codex.ts\n```\n```nc:copy\npayload/setup/providers/codex.ts -> setup/providers/codex.ts\n```",
+        )
+        (skill / "SKILL.md").write_text(markdown)
+        self.git("add", ".")
+        self.git("commit", "-m", "bundle the setup registration")
+        bundled_commit = self.git("rev-parse", "HEAD")
+        selected = provider_options.discover(self.root, "codex", payload_ref="provider-payload")["selected"]
+        self.assertEqual(selected["payload_kind"], "mixed")
+        self.assertEqual(selected["payload_commit"], self.payload_commit)
+        self.assertEqual(selected["auth_source_commit"], bundled_commit)
+        self.assertEqual(selected["auth_source"], ".claude/skills/add-codex/payload/setup/providers/codex.ts")
+        self.assertEqual([item["value"] for item in selected["auth_methods"]], ["device", "api"])
+        commits = {item["destination"]: item["commit"] for item in selected["payload_files"]}
+        self.assertEqual(commits, {"src/providers/codex.ts": self.payload_commit,
+                                   "setup/providers/codex.ts": bundled_commit})
+        with self.assertRaises(provider_options.DiscoveryError):
+            provider_options.copy_entries(
+                "```nc:copy from-branch:one\na.ts\n```\n```nc:copy from-branch:two\nb.ts\n```", "x/SKILL.md")
+
     def test_unresolved_or_changed_payload_fails_instead_of_guessing(self):
         with self.assertRaises(provider_options.DiscoveryError):
             provider_options.discover(self.root, "codex", payload_ref="missing-ref")

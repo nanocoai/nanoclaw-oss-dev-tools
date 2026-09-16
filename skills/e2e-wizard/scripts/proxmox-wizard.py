@@ -215,9 +215,10 @@ def main(argv=None):
             self.report['auth_source_commit'] = selected['auth_source_commit']
             try:
                 transport = payload_transport(
-                    Path.cwd(), options.payload_ref, selected['auth_source_commit'],
+                    Path.cwd(), options.payload_ref,
+                    selected.get('payload_commit', selected['auth_source_commit']),
                 ) if (selected['source'].endswith('/SKILL.md')
-                      and selected.get('payload_kind', 'branch') == 'branch') else None
+                      and selected.get('payload_kind', 'branch') in ('branch', 'mixed')) else None
             except (OSError, subprocess.SubprocessError, ValueError) as error:
                 raise base.Failure(str(error), 65)
             if human:
