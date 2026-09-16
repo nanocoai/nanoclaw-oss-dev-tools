@@ -91,7 +91,7 @@ export NANOCLAW_CHANNELS_REMOTE=e2e-payload
 
 def wrapper(run_id, timeout, provider, auth_method, payload_ref, expected_auth_source_commit='',
             supervised_human_auth=False, require_codex_cli_fallback=False,
-            payload_transport_spec=None):
+            payload_transport_spec=None, opencode_model=None, opencode_base_url=None, opencode_provider=None):
     # Only public harness code travels in this bundle. The lifecycle separately
     # uploads the credential over SSH stdin with its existing private-file rules.
     files = {name: base64.b64encode((HERE.parent / name).read_bytes()).decode()
@@ -100,6 +100,10 @@ def wrapper(run_id, timeout, provider, auth_method, payload_ref, expected_auth_s
     credential_arg = '' if supervised_human_auth else ' --credential-file "$HOME/.nanoclaw-e2e/anthropic_key"'
     supervised_arg = ' --supervised-human-auth' if supervised_human_auth else ''
     fallback_arg = ' --require-codex-cli-fallback' if require_codex_cli_fallback else ''
+    for flag, value in (('--opencode-model', opencode_model), ('--opencode-base-url', opencode_base_url),
+                        ('--opencode-provider', opencode_provider)):
+        if value:
+            fallback_arg += ' ' + flag + ' ' + shlex.quote(value)
     return """#!/usr/bin/env bash
 set -euo pipefail
 umask 077
@@ -128,6 +132,9 @@ def main(argv=None):
     own.add_argument('--wizard-timeout', type=int, default=1200, help='total PTY deadline, 1–2100 seconds (default: 1200)')
     own.add_argument('--provider', help='provider value discovered from the exact NanoClaw revision')
     own.add_argument('--auth-method', help='provider-owned authentication method value')
+    own.add_argument('--opencode-model', help='full OpenCode backend/model ID')
+    own.add_argument('--opencode-base-url', help='custom HTTP(S) API endpoint')
+    own.add_argument('--opencode-provider', help='custom endpoint API scheme (default: openai)')
     own.add_argument('--payload-ref', help='already-fetched provider payload ref')
     own.add_argument('--supervised-human-auth', action='store_true',
                      help='allow live Codex device pairing or Claude subscription sign-in')
@@ -168,6 +175,9 @@ def main(argv=None):
             self.report['require_codex_cli_fallback'] = options.require_codex_cli_fallback
             if custom_installer:
                 raise base.Failure('--installer is unavailable in wizard mode', 64)
+            if (options.provider == 'opencode' and options.auth_method in ('custom', 'local')
+                    and not any(arg.split('=', 1)[0] in ('--credential-file', '--key-file') for arg in remaining)):
+                raise base.Failure('custom/local OpenCode requires explicit --credential-file', 66)
             # Fallible bundle preparation happens only after execute() has
             # protected input paths and invalidated any old success report.
             self.args.installer.write_text(wrapper(self.run_id, options.wizard_timeout,
@@ -178,6 +188,8 @@ def main(argv=None):
                 discovery = module('wizard_provider_options', HERE / 'provider-options.py')
                 selected = discovery.discover(Path.cwd(), options.provider,
                                               options.payload_ref, self.commit)['selected']
+                discovery.validate_model(options.provider, options.auth_method, options.opencode_model,
+                                         options.opencode_base_url, options.opencode_provider)
             except Exception as error:
                 message = str(error) if error.__class__.__name__ == 'DiscoveryError' else type(error).__name__
                 raise base.Failure('Could not discover provider/auth choices: ' + message, 65)
@@ -204,7 +216,8 @@ def main(argv=None):
             try:
                 transport = payload_transport(
                     Path.cwd(), options.payload_ref, selected['auth_source_commit'],
-                ) if selected['source'].endswith('/SKILL.md') else None
+                ) if (selected['source'].endswith('/SKILL.md')
+                      and selected.get('payload_kind', 'branch') == 'branch') else None
             except (OSError, subprocess.SubprocessError, ValueError) as error:
                 raise base.Failure(str(error), 65)
             if human:
@@ -215,7 +228,7 @@ def main(argv=None):
                 selected['auth_source_commit'],
                 human,
                 options.require_codex_cli_fallback,
-                transport,
+                transport, options.opencode_model, options.opencode_base_url, options.opencode_provider,
             ))
             if not 1 <= options.wizard_timeout <= 2100:
                 raise base.Failure('--wizard-timeout must be between 1 and 2100 seconds', 64)
@@ -252,7 +265,8 @@ def main(argv=None):
                                       self.args.key_file.expanduser() if self.args.key_file else None,
                                       options.provider,
                                       options.auth_method, self.report['auth_source_commit'],
-                                      True if options.require_codex_cli_fallback else None)
+                                      True if options.require_codex_cli_fallback else None, options.opencode_model,
+                                      options.opencode_base_url, options.opencode_provider)
                     self.report['wizard'] = json.loads(nested.read_text())
             except collector.ValidationError as error:
                 raise base.Failure('Sanitized wizard artifact validation failed: ' + error.code, 74)

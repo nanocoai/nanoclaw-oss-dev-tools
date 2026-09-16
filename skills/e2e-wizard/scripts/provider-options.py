@@ -3,18 +3,19 @@
 
 This is a read-only source inspection. It follows the same two sources as the
 public picker: setup provider registrations and offered provider descriptors.
-For an installable provider, auth belongs to the payload branch named by the
-skill's ``nc:copy from-branch`` directive, so that payload commit is reported
-separately from the NanoClaw checkout commit.
+Installable providers may bundle their payload in the same Git tree or name a
+branch with ``nc:copy from-branch``. Report the exact auth source commit for both.
 """
 
 import argparse
 import ast
 import json
+import posixpath
 from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 
 class DiscoveryError(Exception):
@@ -107,7 +108,8 @@ def option_objects(array):
 
 
 def auth_methods(source, provider):
-    markers = list(re.finditer(r"setupLog\.userInput\(\s*['\"]([a-z0-9_-]*auth_method)['\"]", source))
+    key = 'opencode_backend' if provider == 'opencode' else '[a-z0-9_-]*auth_method'
+    markers = list(re.finditer(r"setupLog\.userInput\(\s*['\"](" + key + r")['\"]", source))
     if not markers:
         raise DiscoveryError("provider auth source does not expose an auth-method choice")
     marker = markers[0]
@@ -129,7 +131,9 @@ def auth_methods(source, provider):
         lowered = (value + " " + label).lower()
         skipped = value == "skip" or label.lower().startswith("skip")
         credential_kind = None
-        if value == "oauth" and provider == "claude":
+        if provider == 'opencode' and value in ('openrouter', 'deepseek', 'local', 'custom'):
+            credential_kind = 'opencode-api-key'
+        elif value == "oauth" and provider == "claude":
             credential_kind = "anthropic-oauth"
         elif "anthropic api" in lowered or (value == "api" and provider == "claude"):
             credential_kind = "anthropic-api-key"
@@ -224,11 +228,30 @@ def offered_descriptors(root, commit, installed):
     return entries
 
 
-def provider_branch(markdown):
-    branches = set(re.findall(r"\bnc:copy\s+from-branch:([A-Za-z0-9._/-]+)", markdown))
-    if len(branches) != 1:
-        raise DiscoveryError("installable provider skill must name one payload branch")
-    return branches.pop()
+def copy_entries(markdown, skill_path):
+    """Read copy sources from Git, supporting bundled and branch-owned payloads."""
+    entries = []
+    for attrs, body in re.findall(r'```nc:copy([^\n]*)\n(.*?)\n```', markdown, re.S):
+        branch = re.search(r'\bfrom-branch:([A-Za-z0-9._/-]+)', attrs)
+        for line in body.splitlines():
+            if not line.strip():
+                continue
+            parts = [part.strip() for part in line.strip().split(' -> ')]
+            if len(parts) > 2:
+                raise DiscoveryError('unsupported provider copy declaration')
+            source, destination = parts[0], parts[-1]
+            for path in (source, destination):
+                if path.startswith('/') or '..' in path.split('/') or not re.fullmatch(r'[A-Za-z0-9_./-]+', path):
+                    raise DiscoveryError('unsafe provider copy path')
+            if not branch:
+                source = posixpath.join(posixpath.dirname(skill_path), source)
+            entries.append({'source': source, 'destination': destination,
+                            'branch': branch.group(1) if branch else None})
+    if not entries or len({item['branch'] for item in entries}) != 1:
+        raise DiscoveryError('provider skill must declare one bundled or branch-owned payload')
+    if len({item['destination'] for item in entries}) != len(entries):
+        raise DiscoveryError('provider skill has duplicate payload destinations')
+    return entries
 
 
 def resolve_payload_ref(root, branch, explicit):
@@ -241,6 +264,37 @@ def resolve_payload_ref(root, branch, explicit):
             f"cannot choose the {branch} payload ref; fetch its owning remote and pass --payload-ref"
         )
     return candidates[0]
+
+
+def validate_model(provider, backend, model, base_url=None, model_provider=None):
+    if provider != 'opencode':
+        if model or base_url or model_provider:
+            raise DiscoveryError('OpenCode options require --provider opencode')
+        return
+    if backend not in ('openrouter', 'deepseek', 'local', 'custom'):
+        raise DiscoveryError('OpenCode automation supports API-key backends only')
+    runtime_provider = backend
+    if backend in ('local', 'custom'):
+        runtime_provider = model_provider or 'openai'
+        if runtime_provider not in ('openai', 'openrouter', 'deepseek', 'google', 'anthropic'):
+            raise DiscoveryError('Unsupported --opencode-provider API-key scheme')
+        if backend == 'local' and runtime_provider != 'openai':
+            raise DiscoveryError('The local backend requires the openai provider')
+        try:
+            url = urlsplit(base_url or '')
+            valid = (base_url and len(base_url) <= 2048 and url.scheme in ('http', 'https')
+                     and url.hostname and url.port != 0 and url.username is None and url.password is None
+                     and not url.query and not url.fragment and '?' not in base_url and '#' not in base_url
+                     and not re.search(r'[\s\x00-\x1f\x7f\\]', base_url))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise DiscoveryError('--opencode-base-url must be an HTTP(S) endpoint without credentials, query or fragment')
+    elif base_url or model_provider:
+        raise DiscoveryError('Endpoint/provider overrides require --auth-method custom or local')
+    if not model or len(model) > 256 or not re.fullmatch(re.escape(runtime_provider) + r'/[A-Za-z0-9][A-Za-z0-9._:/-]*', model):
+        raise DiscoveryError('--opencode-model must be a full model ID matching the OpenCode provider')
+    return runtime_provider
 
 
 def discover(root, selected=None, payload_ref=None, revision="HEAD"):
@@ -274,11 +328,28 @@ def discover(root, selected=None, payload_ref=None, revision="HEAD"):
         source_ref, source_commit = revision, commit
     else:
         skill = tree_read(root, commit, provider["source"])
-        branch = provider_branch(skill)
-        source_ref = resolve_payload_ref(root, branch, payload_ref)
-        source_commit = git(root, "rev-parse", source_ref + "^{commit}")
-        source_path = f"setup/providers/{selected}.ts"
-        source = git(root, "show", f"{source_commit}:{source_path}")
+        entries = copy_entries(skill, provider['source'])
+        branch = entries[0]['branch']
+        if branch:
+            source_ref = resolve_payload_ref(root, branch, payload_ref)
+            source_commit = git(root, 'rev-parse', source_ref + '^{commit}')
+        else:
+            if payload_ref and git(root, 'rev-parse', payload_ref + '^{commit}') != commit:
+                raise DiscoveryError('bundled provider payload must use the NanoClaw revision')
+            source_ref, source_commit = revision, commit
+        provider.update(payload_kind='branch' if branch else 'bundled', payload_files=entries)
+        matches = [item for item in entries if item['destination'] == f'setup/providers/{selected}.ts']
+        if len(matches) != 1:
+            raise DiscoveryError('provider skill has no setup registration payload')
+        source_path = matches[0]['source']
+        source = tree_read(root, source_commit, source_path)
+    if selected == 'opencode':
+        # OpenCode's registry entry delegates auth to this skill-owned helper.
+        if 'runOpenCodeSetupAuth' not in source:
+            raise DiscoveryError('unsupported OpenCode setup auth contract')
+        source_path = next((item['source'] for item in provider.get('payload_files', [])
+                            if item['destination'] == 'scripts/opencode-auth.ts'), 'scripts/opencode-auth.ts')
+        source = tree_read(root, source_commit, source_path)
     prompt, input_key, methods = auth_methods(source, selected)
     provider.update({
         "auth_prompt": prompt,

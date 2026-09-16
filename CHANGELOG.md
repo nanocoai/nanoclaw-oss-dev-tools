@@ -11,6 +11,35 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
+Development milestone (plugin 0.11.0); not yet released.
+
+### Added
+
+- OpenCode public-wizard E2E for OpenRouter, DeepSeek, and custom/self-hosted
+  API-key endpoints across exe.dev, Proxmox and Windows WSL2. Select the model
+  with `--opencode-model`, the endpoint with `--opencode-base-url`, and its API
+  format with optional `--opencode-provider` (custom defaults to `openai`).
+- Drive custom endpoint credential/catalog prompts in the provider-owned order;
+  preserve opaque API-key symbols and bind endpoint/provider settings to evidence.
+- Discover bundled provider payloads and delegated OpenCode backend choices from
+  the exact NanoClaw commit. Verify installed payload files, saved backend/model
+  defaults and the retained agent's effective provider in sanitized evidence.
+
+### Fixed
+
+- Find Node, pnpm and OneCLI installed by the wizard in `~/.local/bin` (or pnpm
+  in npm's global prefix) during post-wizard provider verification. The child
+  wizard's PATH changes do not propagate to the parent harness.
+
+OpenCode support has offline source, PTY and acceptance coverage. A live custom
+endpoint run completed setup and returned a real model reply, but its
+final harness check failed on the tool path above. The corrected verifier passed
+a separate read-only recheck and a second fresh exe.dev run passed the full
+public wizard, retained-agent reply, provider, service and evidence checks at
+NanoClaw `1100f83f57e0b61b60efabea3ec4f8360535b7b4`. ChatGPT
+subscription and keyless endpoints are not automated. Headless setup remains
+Claude-only.
+
 ## 0.10.0 - 2026-09-14
 
 ### Fixed

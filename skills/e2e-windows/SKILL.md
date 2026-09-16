@@ -52,11 +52,16 @@ python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
 
 Show the first result to the operator and ask for a provider, then show the
 selected provider's exact auth prompt/options and ask for an auth method. For
-an installable provider, fetch its one `nc:copy from-branch:` payload from its
+a bundled provider, use the same NanoClaw SHA without `--payload-ref`. For a
+branch-owned provider, fetch its one `nc:copy from-branch:` payload from its
 owning remote and pass that fetched ref as `--payload-ref` to discovery and the
 runner. Record the NanoClaw and auth-source SHAs. The unattended WSL wizard can
 use only a discovered `credential-file` method, such as Claude `api`/`oauth` or
-Codex `api`. Browser, subscription, and device methods require a separately
+Codex `api`, or OpenCode `openrouter`/`deepseek`/`custom`/`local` with
+`--opencode-model`. Custom/self-hosted endpoints also require
+`--opencode-base-url`; `--opencode-provider` selects the API format for `custom`. Follow
+the [OpenCode workflow](../e2e-wizard/SKILL.md#opencode); live OpenCode on WSL2
+is not yet qualified. Browser, subscription, and device methods require a separately
 authorized live handoff and stop before setup here. `skip` cannot pass. Read the
 credential only after its matching method is selected.
 

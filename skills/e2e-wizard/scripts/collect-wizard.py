@@ -19,7 +19,7 @@ LIMIT = 64 * 1024 * 1024
 EXACT_PATHS = {
     'manifest.json', 'result.json', 'choices.json', 'terminal.txt',
     'provider-payload-receipt.json', 'codex-target-receipt.json',
-    'claude-target-receipt.json',
+    'claude-target-receipt.json', 'opencode-target-receipt.json',
     'setup-logs/setup.log', 'runtime-logs/nanoclaw.log',
     'runtime-logs/nanoclaw.error.log', 'runtime-logs/docker-containers.txt',
 }
@@ -58,7 +58,8 @@ def load_json(files, name, code):
 
 def collect(source, destination, result_path, expected, run_id, exit_code, key_file,
             provider=None, auth_method=None, auth_source_commit=None,
-            require_codex_cli_fallback=None):
+            require_codex_cli_fallback=None, opencode_model=None,
+            opencode_base_url=None, opencode_provider=None):
     destination, result_path = Path(destination), Path(result_path)
     if destination.exists() or destination.is_symlink():
         reject('destination-exists')
@@ -121,6 +122,9 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
                 or runner.contains_authorization_url(text)):
             reject('credential-found')
     result = load_json(files, 'result.json', 'invalid-result')
+    provider = provider or result.get('provider')
+    auth_method = auth_method or result.get('auth_method')
+    auth_source_commit = auth_source_commit or result.get('auth_source_commit')
     expected_status = 'pass' if exit_code == 0 else 'failed'
     if result.get('schema_version') != 1 or result.get('mode') != 'wizard' or result.get('run_id') != run_id or result.get('commit') != expected or result.get('exit_code') != exit_code or result.get('status') != expected_status:
         reject('invocation-mismatch')
@@ -132,6 +136,11 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
     if (require_codex_cli_fallback is not None
             and result.get('require_codex_cli_fallback') is not require_codex_cli_fallback):
         reject('provider-selection-mismatch')
+    if opencode_model is not None and result.get('opencode_model') != opencode_model:
+        reject('provider-selection-mismatch')
+    for key, value in (('opencode_base_url', opencode_base_url), ('opencode_provider', opencode_provider)):
+        if value is not None and result.get(key) != value:
+            reject('provider-selection-mismatch')
     required = {'terminal.txt', 'choices.json', 'result.json', 'setup-logs/setup.log'}
     if exit_code == 0:
         service = result.get('service', {})
@@ -140,7 +149,7 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
                 or service.get('checkout_verified') is not True
                 or service.get('socket_connected') is not True):
             reject('acceptance-evidence-missing')
-        if provider == 'codex':
+        if provider in ('codex', 'opencode'):
             payload = load_json(files, 'provider-payload-receipt.json', 'acceptance-evidence-missing')
             if (payload != result.get('provider_payload_receipt')
                     or payload.get('commit') != auth_source_commit
@@ -148,6 +157,29 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
                     or not payload['paths']
                     or payload.get('file_count') != len(payload['paths'])
                     ):
+                reject('acceptance-evidence-missing')
+        if provider == 'opencode':
+            target = load_json(files, 'opencode-target-receipt.json', 'acceptance-evidence-missing')
+            if auth_method in ('local', 'custom'):
+                base_url, model_provider = result.get('opencode_base_url'), result.get('opencode_provider')
+                if (not isinstance(base_url, str) or not isinstance(model_provider, str)
+                        or not isinstance(result.get('opencode_model'), str)
+                        or target.get('base_url') != base_url or target.get('model_provider') != model_provider):
+                    reject('acceptance-evidence-missing')
+                discovery = runner.provider_discovery()
+                try:
+                    discovery.validate_model('opencode', auth_method, result['opencode_model'], base_url, model_provider)
+                except discovery.DiscoveryError:
+                    reject('acceptance-evidence-missing')
+            retained = target.get('retained_agent', {})
+            if (target != result.get('opencode_target_receipt')
+                    or target.get('backend') != auth_method
+                    or not target.get('model') or target.get('model') != result.get('opencode_model')
+                    or not isinstance(retained, dict) or retained.get('provider') != 'opencode'
+                    or retained.get('group_count') != 1
+                    or not isinstance(retained.get('effective_providers'), list)
+                    or not retained['effective_providers']
+                    or any(value != 'opencode' for value in retained['effective_providers'])):
                 reject('acceptance-evidence-missing')
         if provider == 'codex' and auth_method == 'device':
             target = load_json(files, 'codex-target-receipt.json', 'acceptance-evidence-missing')
@@ -202,12 +234,16 @@ def main():
     parser.add_argument('--provider')
     parser.add_argument('--auth-method')
     parser.add_argument('--auth-source-commit')
+    parser.add_argument('--opencode-model')
+    parser.add_argument('--opencode-base-url')
+    parser.add_argument('--opencode-provider')
     parser.add_argument('--require-codex-cli-fallback', action='store_true', default=None)
     args = parser.parse_args()
     try:
         collect(sys.stdin.buffer, args.artifacts_dir, args.result_file, args.commit, args.run_id,
                 args.exit_code, args.key_file, args.provider, args.auth_method,
-                args.auth_source_commit, args.require_codex_cli_fallback)
+                args.auth_source_commit, args.require_codex_cli_fallback, args.opencode_model,
+                args.opencode_base_url, args.opencode_provider)
     except ValidationError as error:
         print('[e2e-wizard] artifact validation failed: ' + error.code, file=sys.stderr)
         return 74

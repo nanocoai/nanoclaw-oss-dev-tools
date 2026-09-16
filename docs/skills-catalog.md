@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-14**. This checkout contains **7 skills**, with plugin
-manifest version **0.10.0**. Three drive headless setup steps; `e2e-wizard` and
+Verified: **2026-09-15**. This checkout contains **7 skills**, with plugin
+manifest version **0.11.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
@@ -14,6 +14,13 @@ The host-readiness fix merged in
 [PR 6](https://github.com/nanocoai/nanoclaw-oss-dev-tools/pull/6) and includes the
 successful SSH qualification described below.
 
+OpenCode OpenRouter/DeepSeek and custom/self-hosted API-key wizard support
+has offline coverage. On 2026-09-15, a fresh exe.dev run passed the full public
+wizard through an operator-supplied OpenAI-compatible endpoint, including the
+retained reply, provider, service, socket and sanitized evidence checks. An earlier
+attempt exposed a harness tool-path bug and remains a retained failure. See the
+[OpenCode workflow](../skills/e2e-wizard/SKILL.md#opencode) for flags and limits.
+
 ## Choose a skill
 
 | Skill | Target and purpose | Live evidence | Main remaining gap |
@@ -21,7 +28,7 @@ successful SSH qualification described below.
 | [e2e-exe-dev](../skills/e2e-exe-dev/SKILL.md) | Fresh or cached exe.dev Debian/Ubuntu VM; portable shared installer also usable on a prepared Linux host or CI runner. | Fresh and cached installs passed on 2026-09-10 with real replies and final verification. | Evidence used the nohup service fallback; do not infer every Linux service mode or arbitrary NanoClaw ref is qualified. |
 | [e2e-proxmox](../skills/e2e-proxmox/SKILL.md) | Fresh unprivileged Debian 13 amd64 LXC, managed through SSH to the Proxmox node. | Fresh install passed on 2026-09-11 with a real reply and a running systemd user service. | Reboot recovery, cached clones and the transactional updater were not tested. |
 | [e2e-macos](../skills/e2e-macos/SKILL.md) | Existing native Mac, local or SSH, using a new persistent checkout and its own LaunchAgent. | Local arm64 passed with 0.4.0; SSH on M4 Pro passed on 2026-09-11 with the readiness fix now merged in 0.4.1. Both proved a real reply, service and preservation. | Intel/older macOS, cold prerequisites and reboot/logout recovery remain unqualified. |
-| [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. | The distributed exe.dev path without a task-only adapter, native macOS, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
+| [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. On 2026-09-15 a fresh exe.dev VM passed the distributed harness with OpenCode through a custom OpenAI-compatible endpoint. | Native macOS, OpenCode on Proxmox/WSL2 and the OpenRouter/DeepSeek backends, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
 | [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed again on 2026-09-14 at current NanoClaw `main`; terminal-close and post-Windows-reboot inference also passed with locally validated sanitized evidence. | WSL-only restart still left the service/socket unavailable, and Docker Desktop did not start automatically after Windows reboot. |
 | [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
 | [shared-terminal](../skills/shared-terminal/SKILL.md) | One local PTY with browser and agent control, for supervised interactive work. | macOS browser typing, interactive prompts, agent/human handoff and shutdown passed; real HTTP/PTY tests passed. | Native Windows, WSL and browser forwarding are unqualified. |
@@ -220,6 +227,17 @@ with the matching lifecycle skill installed alongside `e2e-wizard`.
   resolved to Claude through the installed resolver. This qualifies the visible
   manual public-wizard flow; the unattended handoff remains unqualified after
   two retained timeouts.
+- On 2026-09-15, OpenCode passed twice on fresh exe.dev VMs at NanoClaw
+  `1100f83f57e0b61b60efabea3ec4f8360535b7b4` with an `openai/<model>` id
+  through an operator-supplied OpenAI-compatible endpoint and an API-key file.
+  The endpoint and model are the operator's choice, not a harness default. The bundled
+  payload (37 files) matched the source, the saved endpoint/model defaults and
+  the retained agent's effective OpenCode provider were verified, and the agent
+  answered the random arithmetic challenge. The first attempt's product setup
+  succeeded but the harness verifier could not find `pnpm` installed by the
+  child wizard; that run remains a retained failure. The corrected verifier
+  passed on the second fresh VM. OpenRouter/DeepSeek backends and the Proxmox
+  and Windows launchers have offline coverage only.
 - Live qualification: a fresh unprivileged Debian 13 LXC under Proxmox VE 9.2.18
   passed against an earlier candidate of NanoClaw
   [PR 3767](https://github.com/nanocoai/nanoclaw/pull/3767), exact commit

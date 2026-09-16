@@ -21,7 +21,10 @@
 #   --interactive  drive the real public wizard (fresh VM, requires --result-file)
 #   --provider  provider value selected from provider-options.py
 #   --auth-method  provider-owned auth method value
-#   --payload-ref  fetched payload ref for an installable provider
+#   --opencode-model  full backend/model ID for OpenCode wizard runs
+#   --opencode-base-url  custom HTTP(S) API endpoint
+#   --opencode-provider  API scheme for a custom endpoint (default: openai)
+#   --payload-ref  fetched payload ref for a branch-owned provider
 #   --artifacts-dir  sanitized evidence (default <result-file>.artifacts)
 #   --wizard-timeout  total PTY timeout in seconds (default 1200)
 #
@@ -35,7 +38,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REF=HEAD REPO="" KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
 NAME="" BASE="" SNAPSHOT="" RM=0 CPU=4 MEMORY=8GB DISK=40GB
 RESULT_FILE="" INTERACTIVE=0 ARTIFACTS_DIR="" WIZARD_TIMEOUT=1200
-PROVIDER="" AUTH_METHOD="" PAYLOAD_REF=""
+PROVIDER="" AUTH_METHOD="" PAYLOAD_REF="" OPENCODE_MODEL="" OPENCODE_BASE_URL="" OPENCODE_PROVIDER=""
+MODEL_ARGS=()
+KEY_SELECTED=0
 WIZARD_DIR="$HERE/../../e2e-wizard"
 RUN_ID=""
 AUTH_SOURCE_COMMIT=""
@@ -44,14 +49,14 @@ DEV_TOOLS_COMMIT="" HARNESS_SHA256="" REMOVAL_REQUESTED=0
 fail() { echo "[exe-run] $1" >&2; exit "${2:-64}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name|--ref|--repo|--key-file|--credential-file|--base|--snapshot|--cpu|--memory|--disk|--result-file|--artifacts-dir|--wizard-timeout|--provider|--auth-method|--payload-ref)
+    --name|--ref|--repo|--key-file|--credential-file|--base|--snapshot|--cpu|--memory|--disk|--result-file|--artifacts-dir|--wizard-timeout|--provider|--auth-method|--payload-ref|--opencode-model|--opencode-base-url|--opencode-provider)
       [ $# -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] || fail "$1 requires a value" ;;
   esac
   case "$1" in
     --name) NAME="$2"; shift 2 ;;
     --ref) REF="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
-    --key-file|--credential-file) KEY_FILE="$2"; shift 2 ;;
+    --key-file|--credential-file) KEY_FILE="$2"; KEY_SELECTED=1; shift 2 ;;
     --base) BASE="$2"; shift 2 ;;
     --snapshot) SNAPSHOT="$2"; shift 2 ;;
     --rm) RM=1; shift ;;
@@ -63,9 +68,12 @@ while [ $# -gt 0 ]; do
     --provider) PROVIDER="$2"; shift 2 ;;
     --auth-method) AUTH_METHOD="$2"; shift 2 ;;
     --payload-ref) PAYLOAD_REF="$2"; shift 2 ;;
+    --opencode-model) OPENCODE_MODEL="$2"; shift 2 ;;
+    --opencode-base-url) OPENCODE_BASE_URL="$2"; shift 2 ;;
+    --opencode-provider) OPENCODE_PROVIDER="$2"; shift 2 ;;
     --artifacts-dir) ARTIFACTS_DIR="$2"; shift 2 ;;
     --wizard-timeout) WIZARD_TIMEOUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) fail "unknown flag: $1" ;;
   esac
 done
@@ -154,6 +162,9 @@ fi
   || fail "--provider and --auth-method are required"
 [[ "$PROVIDER" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid provider value"
 [[ "$AUTH_METHOD" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid auth method value"
+if [ "$PROVIDER" = opencode ] && [[ "$AUTH_METHOD" =~ ^(custom|local)$ ]]; then
+  [ "$KEY_SELECTED" = 1 ] || fail "custom/local OpenCode requires explicit --credential-file" 66
+fi
 if [ "$INTERACTIVE" -eq 1 ]; then
   [ -n "$RESULT_FILE" ] || fail "--interactive requires --result-file"
   [ -z "$PAYLOAD_REF" ] || [[ "$PAYLOAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "invalid payload ref"
@@ -177,6 +188,19 @@ COMMIT="$(git rev-parse --verify --end-of-options "$REF^{commit}")" \
   || fail "cannot resolve local ref: $REF" 65
 [ -n "$REPO" ] || REPO="$(git remote get-url origin)"
 if [ "$INTERACTIVE" -eq 1 ]; then
+  python3 - "$WIZARD_DIR/scripts/provider-options.py" "$PROVIDER" "$AUTH_METHOD" "$OPENCODE_MODEL" "$OPENCODE_BASE_URL" "$OPENCODE_PROVIDER" <<'PYMODEL' || fail "invalid OpenCode model selection" 64
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('provider_options', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.validate_model(*sys.argv[2:])
+except module.DiscoveryError as error:
+    sys.exit(str(error))
+PYMODEL
+  [ -z "$OPENCODE_MODEL" ] || MODEL_ARGS=(--opencode-model "$OPENCODE_MODEL")
+  [ -z "$OPENCODE_BASE_URL" ] || MODEL_ARGS+=(--opencode-base-url "$OPENCODE_BASE_URL")
+  [ -z "$OPENCODE_PROVIDER" ] || MODEL_ARGS+=(--opencode-provider "$OPENCODE_PROVIDER")
   DISCOVERY=(python3 "$WIZARD_DIR/scripts/provider-options.py" --root "$PWD" --revision "$COMMIT" --provider "$PROVIDER")
   [ -z "$PAYLOAD_REF" ] || DISCOVERY+=(--payload-ref "$PAYLOAD_REF")
   PROVIDER_JSON="$("${DISCOVERY[@]}")" || fail "could not discover provider/auth choices from the exact revision" 65
@@ -192,6 +216,7 @@ if matches[0]["automation"] != "credential-file":
 print(selected["auth_source_commit"])
 ' "$PROVIDER" "$AUTH_METHOD")" || fail "provider/auth selection is unavailable to the unattended wizard" 64
 else
+  [ -z "$OPENCODE_MODEL$OPENCODE_BASE_URL$OPENCODE_PROVIDER" ] || fail "OpenCode options require --interactive"
   AUTH_SOURCE_COMMIT="$COMMIT"
 fi
 if DEV_TOOLS_ROOT="$(git -C "$HERE/../../.." rev-parse --show-toplevel 2>/dev/null)"; then
@@ -358,6 +383,8 @@ PHASE=checkout
 INSTALL_COMMAND="NANOCLAW_E2E_ROOT=\$HOME/nanoclaw NANOCLAW_E2E_KEY_FILE=\$HOME/.nanoclaw-e2e/credential NANOCLAW_E2E_PROVIDER='$PROVIDER' NANOCLAW_E2E_AUTH_METHOD='$AUTH_METHOD' NANOCLAW_E2E_AUTH_SOURCE_COMMIT='$AUTH_SOURCE_COMMIT' bash ~/e2e-install.sh"
 if [ "$INTERACTIVE" -eq 1 ]; then
   INSTALL_COMMAND="bash ~/.nanoclaw-e2e/wizard/scripts/wizard-install.sh --run-id '$RUN_ID' --timeout '$WIZARD_TIMEOUT' --provider '$PROVIDER' --auth-method '$AUTH_METHOD' --credential-file \$HOME/.nanoclaw-e2e/credential"
+  MODEL_QUOTED="$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"})"
+  INSTALL_COMMAND="$INSTALL_COMMAND $MODEL_QUOTED"
   INSTALL_COMMAND="$INSTALL_COMMAND --expected-auth-source-commit '$AUTH_SOURCE_COMMIT'"
   if [ -n "$PAYLOAD_REF" ]; then
     INSTALL_COMMAND="$INSTALL_COMMAND --payload-ref '$PAYLOAD_REF'"
@@ -396,7 +423,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
       --artifacts-dir "$ARTIFACTS_DIR" --result-file "$RESULT_FILE" \
       --commit "$COMMIT" --run-id "$RUN_ID" --exit-code "$RC" --key-file "$KEY_FILE" \
       --provider "$PROVIDER" --auth-method "$AUTH_METHOD" \
-      --auth-source-commit "$AUTH_SOURCE_COMMIT"; then
+      --auth-source-commit "$AUTH_SOURCE_COMMIT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}; then
     RESULT_EXPORTED=1
   else
     echo "[exe-run] could not export sanitized wizard evidence; keeping $NAME" >&2
