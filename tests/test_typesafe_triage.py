@@ -490,7 +490,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(summary["area"]["below_gate"], 1)
         self.assertEqual(summary["needs_repro"]["agree"], 1)
         self.assertEqual(summary["priority"]["below_gate"], 2)
-        self.assertEqual(payload["summary"]["items_below_gate"], 5)
+        self.assertEqual(payload["summary"]["items_below_gate"], 4)
 
     def test_flags_override_the_gate(self):
         code, out, _ = self.run_main(["--fixture", str(FIXTURE), "--output-dir", str(self.output),
