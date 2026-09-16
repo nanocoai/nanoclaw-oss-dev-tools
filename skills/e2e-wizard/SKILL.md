@@ -55,9 +55,11 @@ python3 "$E2E_WIZARD_DIR/scripts/provider-options.py" \
 
 Show the offered provider list and ask the operator which provider to test.
 Then show that provider's exact `auth_prompt` and `auth_methods` and ask for the
-auth method. For an installable provider, inspect its offered skill, fetch its
-single `nc:copy from-branch:` payload from the owning remote, and pass that
-fetched ref as `--payload-ref` to discovery and the lifecycle driver. Record
+auth method. Reuse provider/backend choices already supplied by the operator.
+For an installable provider, inspect `payload_kind`: `bundled` uses the exact
+NanoClaw commit and needs no `--payload-ref`; `branch` needs its single
+`nc:copy from-branch:` payload fetched from the owning remote, with that fetched
+ref passed as `--payload-ref` to discovery and the lifecycle driver. Record
 both `nanoclaw_commit` and `auth_source_commit`; never guess the remote or use
 the working tree as provider evidence. Only methods marked `credential-file`
 are unattended. The Proxmox and direct wizard entry points support the discovered
@@ -100,6 +102,106 @@ artifact export. It also requires a matching run-ownership marker, an inactive
 harness, verified absence from the exe.dev JSON inventory, and a local teardown
 receipt. The initial fresh scenario rejects `--base` because a cached
 installation can skip the setup and authentication being tested.
+
+## OpenCode
+
+OpenCode's backend picker and auth helper are bundled in NanoClaw main. Discover
+with `--provider opencode`; `auth_source_commit` must equal `nanoclaw_commit`
+for this payload. Automated API-key backends are `openrouter`, `deepseek`,
+`custom` and `local`, using an existing private key file and an explicitly
+chosen full provider/model ID.
+Ask for the model if the operator has not selected one; do not guess account
+access from catalog membership. `--auth-method` names the backend in this flow.
+
+For example, from the NanoClaw checkout under test, with `$COMMIT` resolved and
+`$E2E_SKILL_DIR` pointing to the companion e2e-exe-dev skill:
+
+```bash
+bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --interactive --ref "$COMMIT" \
+  --provider opencode --auth-method openrouter \
+  --opencode-model "openrouter/<vendor>/<model>" \
+  --credential-file /absolute/path/to/private/openrouter-key \
+  --result-file /absolute/path/to/results/opencode.json
+```
+
+Replace the model placeholder with an account-accessible model that supports
+tools, and quote the full value. The same OpenCode connection flags work
+with `proxmox-wizard.py`, `wizard-run.py` and `windows-run.py`. No payload branch
+is fetched for bundled OpenCode. The runner uses the public backend, model and
+password prompts; it records the selected model, verifies all installed payload
+files before auth and at completion, and requires the saved defaults and the
+retained session's effective provider to match. The existing computed reply and
+service checks still apply. Raw credentials stay out of exported evidence.
+
+### Custom endpoint and API key
+
+For an OpenAI-compatible endpoint, choose `custom`, supply its API base URL
+(including `/v1` if required), and use `openai/<model-id>`:
+
+```bash
+bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --interactive --ref "$COMMIT" \
+  --provider opencode --auth-method custom \
+  --opencode-base-url "https://models.example.test/v1" \
+  --opencode-model "openai/my-model" \
+  --credential-file /absolute/path/to/private/endpoint-key \
+  --result-file /absolute/path/to/results/opencode-custom.json
+```
+
+`--opencode-provider` defaults to `openai` for `custom`. Set it to `anthropic`,
+`google`, `openrouter` or `deepseek` when the endpoint speaks that provider's API;
+the model prefix must match. NanoClaw owns the matching key injection format.
+`--auth-method local` selects the public Local or self-hosted flow and always
+uses the `openai` provider. Both flows require `--opencode-base-url` and explicit `--credential-file`
+(`--key-file` is an alias); the legacy default key file is not selected.
+
+The endpoint must be reachable from the test guest and its agent container.
+For example, `localhost` addresses the machine/container making the request,
+not the operator's workstation. HTTP and HTTPS, private addresses, IPv6 and
+custom ports are accepted. Keep credentials out of the URL: userinfo, query
+strings and fragments are rejected. The key file must be private (`0600`) and
+contain one token of 8–1024 printable characters without internal whitespace.
+Symbols such as `+`, `/` and `=` are preserved.
+
+For OpenAI-compatible endpoints, the wizard answers **No** to keyless access
+and enters the API key before model discovery. Other supported API formats ask
+for the model first. Manual model entry remains available when a catalog cannot
+be listed. Acceptance binds the requested URL and API provider to both saved
+settings and sanitized evidence, alongside the real reply and service checks.
+
+ChatGPT subscription and keyless endpoint authentication are not automated. OpenCode uses public wizard mode; the headless setup-step driver
+remains Claude-only. Offline regressions cover the automated backends; the
+custom OpenAI-compatible flow has a fresh exe.dev pass described below.
+
+On **2026-09-15**, a fresh exe.dev VM at NanoClaw
+[`1100f83f57e0b61b60efabea3ec4f8360535b7b4`](https://github.com/nanocoai/nanoclaw/commit/1100f83f57e0b61b60efabea3ec4f8360535b7b4)
+completed the public wizard with `openai/qwen3.8-flash` through NaN's custom
+OpenAI-compatible endpoint. All 37 installed provider files matched the source;
+the retained agent answered `11438 * 71` with `812098`, and final product
+verification succeeded. The original E2E result remains **failed** because
+its provider verifier could not find `pnpm`: bootstrap installed Node and pnpm
+under `~/.local/bin` inside the wizard's child shell.
+
+The verifier now restores that tool search path, including npm's global-prefix
+fallback, for its own CLI checks. A separate read-only recheck passed against
+the retained installation: unchanged payload, selected endpoint/model, effective
+OpenCode provider, live nohup process and connected CLI socket. No NanoClaw
+repair or original-result rewrite was performed.
+
+A **second fresh exe.dev VM passed the complete corrected harness** at that
+same NanoClaw commit on 2026-09-15. Public wizard completion, OneCLI API-key
+authentication, all 37 payload files, saved endpoint/model, the retained agent's
+effective OpenCode provider, final product verification, the exact nohup process
+and CLI socket all passed. The retained agent answered `15832 * 47` with
+`744104`. The wizard took about 5 minutes 57 seconds; 20 sanitized artifacts
+passed checksum, run-identity and credential checks. Both attempts were retained.
+This qualifies custom OpenAI-compatible OpenCode on exe.dev; other OpenCode
+backends and the Proxmox/Windows launchers still have offline-only coverage.
+
+Source contract checked at NanoClaw
+[`1100f83f57e0b61b60efabea3ec4f8360535b7b4`](https://github.com/nanocoai/nanoclaw/commit/1100f83f57e0b61b60efabea3ec4f8360535b7b4):
+`.claude/skills/add-opencode/SKILL.md` and its payload's
+`setup/providers/opencode.ts`, `scripts/opencode-auth.ts` and
+`scripts/opencode-model-config.ts`.
 
 ## Proxmox LXC
 
@@ -294,9 +396,9 @@ handling for channel skills; that separate path was not part of the live run.
 
 The offline suite runs on Linux and macOS. Those checks qualify
 terminal behavior, acceptance rules and simulated lifecycle boundaries. The
-distributed interactive exe.dev path without a task-only adapter and a native
-macOS wizard install have not been live qualified. Headless installation evidence
-remains with its own skills.
+distributed interactive exe.dev path has the OpenCode custom-endpoint pass
+above. A native macOS wizard install remains unqualified. Headless installation
+evidence remains with its own skills.
 
 ## Source contracts
 

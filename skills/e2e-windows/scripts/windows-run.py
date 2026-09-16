@@ -154,7 +154,8 @@ def require_fresh(root):
 
 
 def validate_export(source, artifacts, result_file, commit, run_id, code, key_file,
-                    provider=None, auth_method=None, auth_source_commit=None):
+                    provider=None, auth_method=None, auth_source_commit=None, opencode_model=None,
+                    opencode_base_url=None, opencode_provider=None):
     # Reuse the wizard's archive, identity, acceptance and credential checks.
     spec = importlib.util.spec_from_file_location('windows_wizard_collector', WIZARD / 'collect-wizard.py')
     module = importlib.util.module_from_spec(spec)
@@ -175,7 +176,8 @@ def validate_export(source, artifacts, result_file, commit, run_id, code, key_fi
         raise Failure('Wizard archive exceeds size limit')
     data.seek(0)
     module.collect(data, artifacts, result_file, commit, run_id, code, key_file,
-                   provider, auth_method, auth_source_commit)
+                   provider, auth_method, auth_source_commit, opencode_model=opencode_model,
+                   opencode_base_url=opencode_base_url, opencode_provider=opencode_provider)
 
 
 def run_wizard(command, root):
@@ -213,12 +215,16 @@ def main(argv=None):
                         default=Path.home() / '.nanoclaw-e2e/anthropic_key')
     parser.add_argument('--provider', help='provider value discovered from this exact checkout')
     parser.add_argument('--auth-method', help='provider-owned authentication method value')
+    parser.add_argument('--opencode-model', help='full OpenCode backend/model ID')
+    parser.add_argument('--opencode-base-url', help='custom HTTP(S) API endpoint')
+    parser.add_argument('--opencode-provider', help='custom endpoint API scheme (default: openai)')
     parser.add_argument('--payload-ref', help='already-fetched provider payload ref')
     parser.add_argument('--result-file', required=True, type=Path)
     parser.add_argument('--artifacts-dir', type=Path)
     parser.add_argument('--wizard-timeout', type=int, default=1200)
     parser.add_argument('--preflight-only', action='store_true', help='Test WSL/Docker only; no credentials or NanoClaw setup')
-    args = parser.parse_args(argv)
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(arguments)
     root = args.root.resolve()
     result_file = args.result_file.absolute()
     artifacts = (args.artifacts_dir or Path(str(result_file) + '.artifacts')).absolute()
@@ -245,6 +251,9 @@ def main(argv=None):
     write_json(result_file, report)  # Invalidate a previous pass before any checks.
     code = 1
     try:
+        if (not args.preflight_only and args.provider == 'opencode' and args.auth_method in ('custom', 'local')
+                and not any(arg.split('=', 1)[0] in ('--credential-file', '--key-file') for arg in arguments)):
+            raise Failure('custom/local OpenCode requires explicit --credential-file')
         report['commit'] = source_identity(root, args.ref)
         if not args.preflight_only:
             require_fresh(root)
@@ -261,6 +270,8 @@ def main(argv=None):
                 selected = provider_options.discover(
                     root, args.provider, args.payload_ref, report['commit'],
                 )['selected']
+                provider_options.validate_model(args.provider, args.auth_method, args.opencode_model,
+                                                args.opencode_base_url, args.opencode_provider)
             except provider_options.DiscoveryError as error:
                 raise Failure('Could not discover provider/auth choices: ' + str(error))
             methods = [item for item in selected['auth_methods']
@@ -290,14 +301,17 @@ def main(argv=None):
                        '--expected-auth-source-commit', report['auth_source_commit'],
                        '--artifacts-dir', str(source), '--run-id', run_id,
                        '--timeout', str(args.wizard_timeout)]
-                       + (['--payload-ref', args.payload_ref] if args.payload_ref else []), root)
+                       + (['--payload-ref', args.payload_ref] if args.payload_ref else [])
+                       + (['--opencode-model', args.opencode_model] if args.opencode_model else [])
+                       + (['--opencode-base-url', args.opencode_base_url] if args.opencode_base_url else [])
+                       + (['--opencode-provider', args.opencode_provider] if args.opencode_provider else []), root)
             code = returncode if returncode >= 0 else 128 - returncode
             report['phase'] = 'export'
             write_json(result_file, report)
             validated = work / 'validated.json'
             validate_export(source, artifacts, validated, report['commit'], run_id, code,
                             args.key_file, args.provider, args.auth_method,
-                            report['auth_source_commit'])
+                            report['auth_source_commit'], args.opencode_model, args.opencode_base_url, args.opencode_provider)
             report['wizard'] = json.loads(validated.read_text())
             report.update(status='pass' if code == 0 else 'failed', phase='complete' if code == 0 else 'wizard', exit_code=code)
     except KeyboardInterrupt:

@@ -113,7 +113,8 @@ Then inspect that provider and show its exact `auth_prompt` and `auth_methods`:
 python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
 ```
 
-For an installable provider, first fetch the one `nc:copy from-branch:` payload
+For a bundled provider (`payload_kind: bundled`), use the NanoClaw SHA directly
+without `--payload-ref`. For a branch-owned provider, first fetch the one `nc:copy from-branch:` payload
 named by its offered skill from the owning remote, then pass that fetched ref as
 `--payload-ref`. Record both `nanoclaw_commit` and `auth_source_commit`. Never
 guess a payload remote or silently choose a provider or auth method.
@@ -122,7 +123,10 @@ The unattended headless installer currently supports Claude `api` and `oauth`.
 Its `existing` mode is only for an explicitly selected reused gateway whose
 vault already has a usable Anthropic credential; it is not a public-picker
 choice. The public wizard can also automate credential-file methods exposed by
-other offered providers. Browser, subscription, or device methods require a
+other offered providers. OpenCode runs require `--interactive` and
+`--opencode-model`; custom/self-hosted endpoints also use `--opencode-base-url`
+and an API-key file. Follow [OpenCode wizard coverage](../e2e-wizard/SKILL.md#opencode).
+Browser, subscription, or device methods require a
 separately authorized live human handoff; these drivers stop before allocation
 because they cannot complete that handoff unattended. `skip` cannot produce an
 E2E pass. Read a credential only after the operator chooses its matching method.

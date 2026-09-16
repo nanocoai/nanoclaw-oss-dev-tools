@@ -130,14 +130,17 @@ def credential_for(path, kind):
         raise Failure('preflight', 'Credential file is unreadable', 66)
     if path.is_symlink() or not stat.S_ISREG(mode) or mode & 0o077:
         raise Failure('preflight', 'Credential file must be a private regular file (0600)', 66)
-    value = re.sub(r'\s+', '', read_limited(path))
+    raw = read_limited(path)
+    value = raw.strip() if kind == 'opencode-api-key' else re.sub(r'\s+', '', raw)
     shapes = {
         'anthropic-oauth': r'sk-ant-oat[A-Za-z0-9_-]+',
         'anthropic-api-key': r'sk-ant-api[A-Za-z0-9_-]+',
         'openai-api-key': r'sk-[A-Za-z0-9_-]+',
+        'opencode-api-key': r'[\x21-\x7e]+',
     }
     pattern = shapes.get(kind)
-    if not pattern or not 16 <= len(value) <= 1024 or not re.fullmatch(pattern, value):
+    minimum = 8 if kind == 'opencode-api-key' else 16
+    if not pattern or not minimum <= len(value) <= 1024 or not re.fullmatch(pattern, value):
         raise Failure('preflight', 'Credential does not match the selected provider authentication method', 66)
     return value
 
@@ -194,29 +197,77 @@ def cleanup_handoff(run_dir, request_path, response_path, run_id, nonce=None):
 
 
 def verify_provider_payload(root, selected):
-    skill = read_limited(root / selected['source'])
-    match = re.search(r'```nc:copy from-branch:providers\n(.*?)\n```', skill, re.S)
-    if not match:
-        raise Failure('payload', 'Provider skill has no readable providers copy directive', 65)
-    paths = [line.strip().split(' -> ')[-1] for line in match.group(1).splitlines() if line.strip()]
-    if not paths:
-        raise Failure('payload', 'Provider copy directive has no payload files', 65)
+    module = provider_discovery()
+    try:
+        skill = module.tree_read(root, selected['auth_source_commit']
+                                 if selected.get('payload_kind') == 'bundled' else 'HEAD', selected['source'])
+        entries = module.copy_entries(skill, selected['source'])
+    except module.DiscoveryError as error:
+        raise Failure('payload', str(error), 65)
     receipt = {'commit': selected['auth_source_commit'], 'paths': {}}
-    for relative in paths:
+    for entry in entries:
+        relative = entry['destination']
         installed = root / relative
         if installed.is_symlink() or not installed.is_file():
             raise Failure('payload', 'Installed provider payload is incomplete: ' + relative, 65)
         expected = subprocess.run(
-            ['git', 'show', selected['auth_source_commit'] + ':' + relative], cwd=root,
+            ['git', 'show', selected['auth_source_commit'] + ':' + entry['source']], cwd=root,
             capture_output=True, timeout=30,
         )
         if expected.returncode or installed.read_bytes() != expected.stdout:
             raise Failure('payload', 'Installed provider payload does not match selected commit: ' + relative, 65)
         receipt['paths'][relative] = hashlib.sha256(expected.stdout).hexdigest()
-    receipt['file_count'] = len(paths)
+    receipt['file_count'] = len(entries)
     canonical = json.dumps(receipt['paths'], sort_keys=True, separators=(',', ':')).encode()
     receipt['combined_sha256'] = hashlib.sha256(canonical).hexdigest()
     return receipt
+
+
+def configure_opencode_scenario(scenario, values, backend, model, base_url=None, model_provider=None):
+    runtime_provider = provider_discovery().validate_model('opencode', backend, model, base_url, model_provider)
+    values.update(credential_prompt='API key', opencode_model=model,
+                  opencode_base_url=base_url, opencode_provider=runtime_provider)
+    index = next(i for i, item in enumerate(scenario['prompts']) if item['id'] == 'credential')
+    credential = scenario['prompts'][index]
+    model_prompts = [
+        {'id': 'opencode-model-choice', 'prompt': 'Which default model should OpenCode use?',
+         'select': 'Enter a model id manually', 'required': True},
+        {'id': 'opencode-model', 'prompt': 'Model id in provider/model form',
+         'text_from': 'opencode_model', 'required': True},
+    ]
+    connection_prompts = []
+    if backend == 'custom':
+        connection_prompts.append({'id': 'opencode-provider', 'prompt': 'OpenCode provider id',
+                                   'text_from': 'opencode_provider', 'required': True})
+    if base_url:
+        connection_prompts.append({
+            'id': 'opencode-endpoint', 'prompt': ('OpenAI-compatible base URL (include /v1)' if backend == 'local'
+                else 'Custom API base URL (leave blank for OpenCode native configuration)'),
+            'text_from': 'opencode_base_url', 'required': True,
+        })
+    if runtime_provider == 'openai' and base_url:
+        connection_prompts.append({'id': 'opencode-key-required', 'prompt': 'Does this endpoint work without an API key?',
+                                   'select': 'No', 'required': True})
+        # The product needs the key before it can query a guarded /models catalog.
+        scenario['prompts'][index:index + 1] = connection_prompts + [credential] + model_prompts
+    else:
+        scenario['prompts'][index:index + 1] = connection_prompts + model_prompts + [credential]
+
+
+def verify_opencode_target(root, backend, model, base_url=None, model_provider=None):
+    # Read only provider-owned non-secret defaults; never export the .env file.
+    runtime_provider = provider_discovery().validate_model('opencode', backend, model, base_url, model_provider)
+    expected = {'OPENCODE_PROVIDER': runtime_provider, 'OPENCODE_MODEL': model,
+                'OPENCODE_SMALL_MODEL': model, 'OPENCODE_BASE_URL': base_url or 'native'}
+    actual = {}
+    for line in read_limited(root / '.env').splitlines():
+        key, separator, value = line.partition('=')
+        if separator and key in {*expected, 'OPENCODE_AUTH_MODE'}:
+            actual[key] = value.strip().strip('"\'')
+    if any(actual.get(key) != value for key, value in expected.items()) or actual.get('OPENCODE_AUTH_MODE'):
+        raise Failure('verify', 'OpenCode backend/model defaults do not match the selected run', 1)
+    return {'backend': backend, 'model': model, 'model_provider': runtime_provider, 'base_url': base_url or 'native',
+            'retained_agent': verify_retained_provider_group(root, 'opencode')}
 
 
 def verify_codex_target(root, terminal, method, require_fallback=False):
@@ -672,6 +723,14 @@ class WizardTerminal:
             targets = [i for i, (_, label) in enumerate(options)
                        if label == desired or label.startswith(desired + ' (')]
             selected = [i for i, (marker, _) in enumerate(options) if marker == '●']
+            if prompt_id == 'opencode-model-choice' and not targets and len(selected) == 1:
+                # Catalogs scroll beyond the viewport. Traverse this known menu
+                # to the final manual entry, bounded by the catalog and timeout.
+                self.model_scrolls = getattr(self, 'model_scrolls', 0) + 1
+                if self.model_scrolls > 1000:
+                    raise Failure('prompt', 'OpenCode manual model choice was not found')
+                os.write(fd, b'\x1b[B')
+                return False
             if len(targets) != 1 or len(selected) != 1:
                 raise Failure('prompt', 'Missing or ambiguous choice in ' + prompt_id)
             if targets[0] != selected[0]:
@@ -950,6 +1009,10 @@ def export_evidence(root, destination, terminal, result, credential, container_s
         files['codex-target-receipt.json'] = redactor.clean(
             json.dumps(result['codex_target_receipt'], indent=2) + '\n'
         )
+    if result.get('opencode_target_receipt'):
+        files['opencode-target-receipt.json'] = redactor.clean(
+            json.dumps(result['opencode_target_receipt'], indent=2) + '\n'
+        )
     if result.get('claude_target_receipt'):
         files['claude-target-receipt.json'] = redactor.clean(
             json.dumps(result['claude_target_receipt'], indent=2) + '\n'
@@ -999,6 +1062,9 @@ def main(argv=None):
     parser.add_argument('--provider', required=True, help='provider value discovered from this exact checkout')
     parser.add_argument('--auth-method', required=True, help='provider-owned authentication method value')
     parser.add_argument('--payload-ref', help='already-fetched provider payload ref, when the provider is installable')
+    parser.add_argument('--opencode-model', help='full OpenCode backend/model ID (required for OpenCode)')
+    parser.add_argument('--opencode-base-url', help='custom HTTP(S) API endpoint, including its API path')
+    parser.add_argument('--opencode-provider', help='custom endpoint API scheme (default: openai)')
     parser.add_argument('--expected-auth-source-commit',
                         help='bind the run to the provider auth source inspected before provisioning')
     parser.add_argument('--supervised-human-auth', action='store_true',
@@ -1057,6 +1123,12 @@ def main(argv=None):
             if shutil.which('codex') is not None:
                 raise Failure('preflight', 'Codex CLI is globally available; fallback path would not run', 65)
         host_claude_absent_before = shutil.which('claude') is None
+        discovery = provider_discovery()
+        try:
+            model_provider = discovery.validate_model(args.provider, args.auth_method, args.opencode_model,
+                                                      args.opencode_base_url, args.opencode_provider)
+        except discovery.DiscoveryError as error:
+            raise Failure('preflight', str(error), 64)
         result['commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
         selected, method = selected_auth(
             root, args.provider, args.auth_method, args.payload_ref,
@@ -1071,6 +1143,10 @@ def main(argv=None):
         result.update(provider_label=selected['label'], auth_method_label=method['label'],
                       auth_source=selected['auth_source'], auth_source_ref=selected['auth_source_ref'],
                       auth_source_commit=selected['auth_source_commit'])
+        if args.provider == 'opencode':
+            result['opencode_model'] = args.opencode_model
+            result['opencode_provider'] = model_provider
+            result['opencode_base_url'] = args.opencode_base_url or 'native'
         left, right = 10000 + secrets.randbelow(80000), 11 + secrets.randbelow(88)
         values = {'credential': credential, 'display_name': 'Wizard Tester',
                   'provider_label': selected['label'], 'auth_option': method['label'],
@@ -1080,12 +1156,16 @@ def main(argv=None):
                       'anthropic-oauth': 'Paste your OAuth token',
                       'anthropic-api-key': 'Paste your API key',
                       'openai-api-key': 'Paste your OpenAI API key (sk-…)',
+                      'opencode-api-key': 'API key',
                   }[method['credential_kind']]
         values.update(
             challenge=f'Reply with only the decimal value of {left} * {right}.',
             answer=str(left * right),
         )
         scenario = json.loads((Path(__file__).resolve().parent.parent / 'scenarios/fresh-cli.json').read_text())
+        if args.provider == 'opencode':
+            configure_opencode_scenario(scenario, values, args.auth_method, args.opencode_model,
+                                        args.opencode_base_url, args.opencode_provider)
         if method['automation'] == 'human-handoff':
             scenario['prompts'] = [prompt for prompt in scenario['prompts'] if prompt['id'] != 'credential']
         if (args.provider, args.auth_method) == ('claude', 'subscription'):
@@ -1126,6 +1206,9 @@ def main(argv=None):
             result['claude_target_receipt'] = verify_claude_target(terminal, host_claude_absent_before)
         verify, service = check_progress(root, scenario)
         live = verify_live_service(root, service)
+        if args.provider == 'opencode':
+            result['opencode_target_receipt'] = verify_opencode_target(root, args.auth_method, args.opencode_model,
+                                                                      args.opencode_base_url, args.opencode_provider)
         if (args.provider, args.auth_method) == ('codex', 'device'):
             result['codex_target_receipt']['retained_agent'] = verify_retained_provider_group(root, 'codex')
         if (args.provider, args.auth_method) == ('claude', 'subscription'):
