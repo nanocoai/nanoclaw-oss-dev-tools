@@ -1,0 +1,472 @@
+{
+  "schema_version": 1,
+  "repo": "nanocoai/nanoclaw",
+  "recorded_at": "2026-09-16T20:45:00Z",
+  "note": "Items are real open nanocoai/nanoclaw issues/PRs fetched read-only on 2026-09-16 (bodies truncated). Responses are hand-written in the documented TypeSafe answer shapes, not recorded from the API.",
+  "items": [
+    {
+      "type": "issue",
+      "number": 3839,
+      "title": "[bug] registry-skills: add-opencode reapply pass hangs in bun test until the 6-hour cancel",
+      "body": "### Affected NanoClaw version or commit\n\nCore `19e2ed30` (#3817 head) with the `providers` registry branch at the SHA `registry-skills.yml` pinned for that run. The reapply pass that hung is unchanged on current `main`.\n\n### Host platform\n\nLinux (GitHub `ubuntu-latest` runner, Bun 1.4.0, Node 22)\n\n### What happened?\n\nIn `registry-skills.yml`, the `test (add-opencode, true, true)` matrix job hung and was cancelled by GitHub at the 6-hour default. `provider-promotion` and `registry gate` then failed closed for the whole run.\n\n`scripts/test-registry-skills.ts` runs the provider round trip: apply \u2192 remove \u2192 verify contracts \u2192 apply again. The `add-opencode` SKILL.md test step is:\n\n```\ncd container/agent-runner && bun test --isolate src/providers/opencode*.test.ts src/providers/mcp-to-opencode.test.ts\n```\n\nThe first apply pass ran that command and finished in 13 s. The second apply pass (the reapply, `scripts/test-registry-skills.ts:368`) ran the same command in the same checkout and never returned. No test output after the hang survives; the job log was lost with the cancellation.\n\n### What did you expect?\n\nThe reapply pass finishes in about the same time as the first pass, and the job completes in around 3 minutes like every other run of it.\n\n### How can we reproduce it?\n\nNot reproduced on demand. Evidence so far:\n\n- #3818, which carries 3817's commit, ran the same job twice and passed both times at about 3 min.\n- Three local passes of `pnpm exec tsx scripts/test-registry-skills.ts add-opencode` are green.\n- #3836 puts a 20-minute `timeout-minutes` on the job so a recurrence fails fast instead of taking 6 h. That bounds the symptom; this issue tracks the cause.\n\nThe shape (first pass fine, second run of the same `bun test --isolate` set in the same tree blocks exit) points at a handle, listener, or child process left open by one of the ten opencode test files on the `providers` branch:\n\n```\ncontainer/agent-runner/src/providers/mcp-to-opencode.test.ts\ncontainer/agent-runner/src/providers/opencode-registration.test.ts\ncontainer/agent-runner/src/providers/opencode.attachments.test.ts\ncontainer/agent-runner/src/providers/opencode.compaction.test.ts\ncontainer/agent-runner/src/providers/opencode.config.test.ts\ncontainer/agent-runner/src/providers/opencode.empty-resume.test.ts\ncontainer/agent-runner/src/providers/opencode.factory.test.ts\ncontainer/agent-runner/src/providers/opencode.memory.test.ts\ncontainer/agent-runner/src/providers/opencode.question.test.ts\n```\n\nSuggested first steps:\n\n1. Loop the reapply pass on a runner-sized Linux box with `bun test --isolate --timeout 30000` to turn a hang into a named failing test.\n2. Check each file for a spawned `opencode` process, HTTP server, or timer that is not closed in `afterAll`.\n3. Once the culprit is known, add a per-test timeout to the SKILL.md test step so a future leak fails the job with a test name instead of a silent stall.\n\n### OS version and CPU architecture\n\nGitHub-hosted `ubuntu-latest`, x86_64.\n\n### Install or update path\n\nCI only: `scripts/test-registry-skills.ts` in a temporary shared clone. No install involved.\n\n### Docker version\n\nNot applicable; the job does not start containers.\n\n### Channel or interface\n\nNone.\n\n### Agent provider\n\nOpenCode (test suite only, no live provider).\n\n### Agent model\n\nNot applicable.\n\n### Relevant redacted logs\n\nThe hung job's log did not survive the 6-hour cancellation. The one retained fact is the first-pass duration of 13 s for the same command.\n\n### Last version that worked\n\nUnknown. The same job at the same commit passed on #3818, so this is intermittent rather than a regression at a known commit.\n",
+      "author_association": "MEMBER",
+      "labels": [
+        "area/providers",
+        "area/repository-maintenance",
+        "kind/bug",
+        "triage/needs-repro",
+        "triage/unresolved"
+      ],
+      "url": "https://github.com/nanocoai/nanoclaw/issues/3839",
+      "updated_at": "2026-09-16T09:54:37Z"
+    },
+    {
+      "type": "issue",
+      "number": 3811,
+      "title": "Central DB has no busy_timeout, so lock contention throws as if it were corruption",
+      "body": "## Summary\n\nThe central DB (`src/db/compose.ts`) \u2014 task/schedule state, `container_configs`, `agent_groups` \u2014 is opened in WAL mode with no `busy_timeout` set. Any momentary lock contention (two processes touching it at once) throws immediately instead of waiting briefly and retrying, which is indistinguishable from real corruption to a caller seeing `ncl tasks list` / `ncl tasks run` fail.\n\nThe session DBs (`inbound.db`/`outbound.db`) already carry this protection \u2014 see `container/agent-runner/src/cli/ncl.ts`'s `busy_timeout=5000` on both connections. The central DB never did.\n\n## Fix\n\n```ts\n// src/db/compose.ts\nif (!options.readonly) raw.pragma('busy_timeout = 5000');\n```\n\nSame value already used for the session DBs, so behavior stays consistent across all three.\n\n## Scope note\n\nThis does not fix an ungraceful-shutdown-mid-write scenario (the other candidate cause of intermittent task-DB failures on a real install) \u2014 only the contention half. Not the same issue as #3708 (closed, unmerged) or #2640/#2750/#2196/#2188, which are all about `outbound.db`'s readonly/journal handling \u2014 this is the central DB specifically, a different file with no existing coverage.\n\nPR follows.",
+      "author_association": "NONE",
+      "labels": [],
+      "url": "https://github.com/nanocoai/nanoclaw/issues/3811",
+      "updated_at": "2026-09-14T19:54:04Z"
+    },
+    {
+      "type": "issue",
+      "number": 3814,
+      "title": "Raw process/turn-error text can be delivered to a public channel, not just the owner",
+      "body": "## Summary\n\n`deliverErrorResult` (`container/agent-runner/src/poll-loop.ts`) posts the SDK's raw error text verbatim back to whatever channel triggered the current turn \u2014 with no check for whether that destination is public. If a container's `claude` subprocess dies mid-turn while answering a real message in a public Discord/Slack channel (not a task run, not a DM), the community sees the raw internal error text.\n\n## Confirmed live\n\nObserved in practice: `Error: Claude Code process exited with code 137` (SIGKILL \u2014 the SDK's own `ProcessTransport.getProcessExitError`, confirmed by reading the published `@anthropic-ai/claude-agent-sdk` package source) posted to an owner DM. The code path that delivered it has no destination check at all, so the only reason it landed in a DM this time is that a DM happened to be the context of that particular turn \u2014 the same path would post identically to a public channel if that's what the turn was answering.\n\n## Confirmed via source\n\n`poll-loop.ts` ~line 661:\n```ts\nif (resultBlocks === 0 && event.isError === true && !routing.taskRun) {\n  await deliverErrorResult(event.text, routing);\n  ...\n}\n```\n`routing = extractRouting(messages)` (`formatter.ts`) is derived purely from whichever inbound message started the turn \u2014 it carries no public/private distinction. The one existing safeguard is `!routing.taskRun`: a scheduled task's error goes to its run log instead, never to any channel. A live conversational turn has no equivalent protection.\n\nThe host already has what's needed to add one: `messaging_groups.is_group` is used elsewhere (`src/channels/channel-defaults.ts`) to distinguish a DM from a group/public channel. That data isn't threaded down to where `deliverErrorResult` runs, but the distinction the fix needs already exists in the data model.\n\n## Ask\n\nTwo related but separable things, either src/messaging_groups.is_group is not currently available at delivery time:\n1. **Never deliver raw process/turn-level error text to a non-owner or public destination.** For those, substitute a short generic line (\"something went wrong, retrying\" or similar) instead of the SDK/provider's internal message.\n2. Full detail (the real error text) still reaches the owner \u2014 either because the turn actually was in the owner's DM, or via a separate host-side notice to the owner's own channel when it wasn't.\n\n## Related, but distinct\n\n`#3576` (rate-limited turns flood the channel with duplicate error notices) shares this same call site and root cause class (unconditional host-side delivery, no policy gate) but is about *repetition* of a notice already reaching its destination. This issue is about the notice reaching the *wrong* destination in the first place, even a single time. Worth fixing together since they're adjacent, but independently valid and separately fixable.",
+      "author_association": "NONE",
+      "labels": [],
+      "url": "https://github.com/nanocoai/nanoclaw/issues/3814",
+      "updated_at": "2026-09-14T20:49:32Z"
+    },
+    {
+      "type": "pr",
+      "number": 3844,
+      "title": "fix(setup): replace broken sudo retry with user-owned npm prefix fallback",
+      "body": "## Problem\n\n`setup.sh`'s pnpm-install fallback fails permanently on Linux when Node is installed from a distro package (e.g. Fedora's `dnf install nodejs`, Debian/Ubuntu's `apt install nodejs`) instead of nvm or Homebrew.\n\nRepro on Fedora 43 (`nodejs-22.22.2` RPM):\n\n```\nnpm error code EACCES\nnpm error syscall mkdir\nnpm error path /usr/local/lib/node_modules\nnpm error Error: EACCES: permission denied, mkdir '/usr/local/lib/node_modules'\n...\nsudo: timed out reading password\nsudo: a password is required\n[bootstrap] pnpm not on PATH after corepack + npm fallback\nSTATUS: deps_failed\n```\n\n## Root cause\n\n- Distro-packaged Node sets npm's global prefix to `/usr/local`, which is root-owned. `npm install -g pnpm` fails with `EACCES`.\n- The existing fallback retries with `sudo npm install -g pnpm`. This can't work: `setup.sh` redirects the whole `install_deps` flow's stdout/stderr to a log file (`>> \"$LOG_FILE\" 2>&1`), so `sudo` has no TTY to show its password prompt on. It just blocks until `sudo: timed out reading password`, then the failure is swallowed by `|| true`.\n- Bootstrap reports `deps_failed` with no actionable message \u2014 the user has no indication a password was ever needed, or what to do about it.\n\nThis doesn't happen on macOS (Homebrew's prefix is user-writable) or with nvm-installed Node, which is presumably why it went unnoticed.\n\n## Fix\n\nReplace the dead sudo retry with a retry against a user-owned npm prefix (`~/.npm-global`), the same pattern documented in npm's own docs for avoiding sudo entirely:\n\n```bash\nnpm install -g \"pnpm@${pinned}\" --prefix \"$HOME/.npm-global\"\n```\n\nNo root needed. On success, `$HOME/.npm-global/bin` is prepended to `PATH` for the rest of the script, and the outcome (success or failure) is always logged \u2014 no more silent swallow.\n\n## Testing\n\nReproduced the original failure on a Fedora 43 box (RPM-packaged Node, root-owned `/usr/local/lib/node_modules`, no `corepack`, no `pnpm`) and confirmed:\n\n- **Before**: `npm install -g pnpm` \u2192 `EACCES` \u2192 `sudo` retry times out \u2192 `STATUS: deps_failed`.\n- **After**: `npm install -g pnpm` \u2192 `EACCES` \u2192 retries with `--prefix ~/.npm-global` \u2192 succeeds \u2192 `pnpm install --frozen-lockfile` and the `better-sqlite3` native-module check both pass \u2192 `STATUS: success`.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+      "author_association": "FIRST_TIME_CONTRIBUTOR",
+      "labels": [
+        "area/setup-installation"
+      ],
+      "url": "https://github.com/nanocoai/nanoclaw/pull/3844",
+      "updated_at": "2026-09-16T15:31:52Z",
+      "draft": false,
+      "files": [
+        "setup.sh"
+      ],
+      "file_count": 1,
+      "template": {
+        "marker": false,
+        "headings": [
+          "Problem",
+          "Root cause",
+          "Fix",
+          "Testing"
+        ],
+        "sections": {
+          "Summary": "missing",
+          "Related work": "missing",
+          "Change kind": "missing",
+          "Validation": "missing",
+          "User and release impact": "missing",
+          "Security and trust boundaries": "missing",
+          "Skill delivery": "missing",
+          "AI assistance": "missing"
+        },
+        "filled": 0,
+        "total": 8
+      }
+    },
+    {
+      "type": "pr",
+      "number": 3841,
+      "title": "fix(opencode): run the memory hook with async spawn so bun test cannot wedge",
+      "body": "<!-- nanoclaw-pr-template:v2 -->\n\n## Summary\n\nStops the add-opencode `bun test --isolate` run from wedging for six hours in CI.\n- **Problem**: Bun 1.4.0's `spawnSync` can lose the child's exit and spin forever at 100% CPU (oven-sh/bun#34069). A synchronous spin is immune to every `bun test` timeout, matching the hung job exactly: one `bun`, no children, silent until the 6-hour cancel.\n- **Trigger**: the OpenCode memory session hook ran `spawnSync` on every turn, ~33 real `sh -c` spawns per suite run next to sqlite, SSE sockets and timers, the churn the Bun bug needs. Incidence scales with spawn volume and distilled repros do not fire, which is why sibling runs and 30 local runs stayed green.\n- **Fix**: the hook runs through async `spawn` with the same 10 s deadline, stdin payload and exit-status semantics, and settles at the deadline even if a SIGTERM-ignoring hook or a background child keeps stdout open; `prepare` is awaited and an abort or pump failure during preparation is re-checked before the prompt is sent. No `spawnSync` remains in the OpenCode runtime path, which also removes the wedge from production containers where it would freeze the turn watchdog.\n- **Guard**: `scripts/test-registry-skills.ts` runs every skill step in its own process group, SIGKILLs the group after 15 min (the shell alone would orphan a wedged bun), relays Ctrl-C to it, and fails a step on any error or signal. Complements the job-level timeout from #3836.\n- **Not the cause**: the leaked servers and timers in the test files. `bun test` 1.4.0 exits with open handles (verified).\n- **Out of scope**: `container/agent-runner/src/upload-trace.ts` still uses `spawnSync('curl')` on a rare path.\n\n## Related work\n\nCloses #3839\n\n## Change kind\n\n- [x] `kind/bug`\n- [ ] `kind/feature`\n- [ ] `kind/documentation`\n- [ ] `kind/cleanup`\n- [ ] `kind/hardening`\n\n## Validation\n\n- `cd container/agent-runner && bun run typecheck` -> clean\n- `bun test --isolate src/providers/opencode*.test.ts src/providers/mcp-to-opencode.test.ts` x3 -> 125 pass, 0 fail, ~13 s each\n- `pnpm exec vitest run scripts/test-registry-skills` -> 7 pass; `prettier --check` on changed files -> clean; host `tsc --noEmit` -> clean\n- `pnpm exec tsx scripts/test-registry-skills.ts add-opencode` (install -> tests -> image build -> remove -> contract verify -> reapply -> tests) -> `PASS: add-opencode`, run after each commit\n- `opencode.memory.test.ts` exercises the async hook: payload on stdin, verbatim output, exit-code and missing-command failures, undeclared source skip, file rendering, and (new) the deadline path with a background child holding stdout.\n- The wedge itself is not reproducible on demand (Bun issue and 30 local `--smol` runs agree); the guard is the CI-observable regression check.\n- Codex adversarial review: 3 findings (hook waited on `close` past its deadline; timeout killed only the shell; status 0 + ETIMEDOUT read as success), all reproduced by experiment and fixed in the second commit.\n\n- [x] Tests cover the changed behavior (or Validation says why not)\n\n## User and release impact\n\n- [x] No user-visible behavior change\n- [ ] User-visible change \u2014 release note below\n- [ ] Breaking change \u2014 release note below covers detect, why, fix/migration, rollback\n\n```release-note\nSkip it and a maintainer will write one.\n```\n\n## Security and trust boundaries\n\nNone. Same hook command, same shell, same 10 s deadline, same stdin payload; stderr was already discarded. No new inputs, permissions or credentials.\n\n## Skill delivery\n\n- [ ] Not a skill\n- [x] Skill: apply/remove footprint and fresh-clone verification are described above\n\nPayload-only change inside `.claude/skills/add-opencode/payload/` (four files, all already in the `nc:copy` list). The full apply -> remove -> reapply round trip in Validation is the fresh-clone check.\n\n## AI assistance\n\n- [x] AI tools or agents helped produce this change\n\n- [ ] A human has reviewed this PR and stands behind every change\n",
+      "author_association": "MEMBER",
+      "labels": [
+        "PR: Fix",
+        "PR: Skill",
+        "area/providers",
+        "area/skills",
+        "core-team",
+        "delivery/skill",
+        "follows-guidelines",
+        "kind/bug"
+      ],
+      "url": "https://github.com/nanocoai/nanoclaw/pull/3841",
+      "updated_at": "2026-09-16T12:38:56Z",
+      "draft": false,
+      "files": [
+        ".claude/skills/add-opencode/payload/container/agent-runner/src/providers/opencode-memory.ts",
+        ".claude/skills/add-opencode/payload/container/agent-runner/src/providers/opencode-turn.ts",
+        ".claude/skills/add-opencode/payload/container/agent-runner/src/providers/opencode.memory.test.ts",
+        ".claude/skills/add-opencode/payload/container/agent-runner/src/providers/opencode.ts",
+        "scripts/test-registry-skills.ts"
+      ],
+      "file_count": 5,
+      "template": {
+        "marker": true,
+        "headings": [
+          "Summary",
+          "Related work",
+          "Change kind",
+          "Validation",
+          "User and release impact",
+          "Security and trust boundaries",
+          "Skill delivery",
+          "AI assistance"
+        ],
+        "sections": {
+          "Summary": "filled",
+          "Related work": "filled",
+          "Change kind": "filled",
+          "Validation": "filled",
+          "User and release impact": "filled",
+          "Security and trust boundaries": "filled",
+          "Skill delivery": "filled",
+          "AI assistance": "filled"
+        },
+        "filled": 8,
+        "total": 8
+      }
+    }
+  ],
+  "responses": {
+    "issue:3839": {
+      "model": "jev-latest",
+      "answers": {
+        "area": {
+          "type": "choice",
+          "choice": "area/providers",
+          "probabilities": {
+            "area/agent-memory": 0.0069,
+            "area/agent-runner": 0.0069,
+            "area/channels": 0.0069,
+            "area/configuration": 0.0069,
+            "area/containers": 0.0069,
+            "area/core": 0.0069,
+            "area/credentials": 0.0069,
+            "area/ncl-cli": 0.0069,
+            "area/providers": 0.5503,
+            "area/repository-maintenance": 0.28,
+            "area/scheduled-tasks": 0.0069,
+            "area/security": 0.0069,
+            "area/sessions": 0.0069,
+            "area/setup-installation": 0.0069,
+            "area/skills": 0.08,
+            "area/tools": 0.0069
+          },
+          "confidence": 0.62
+        },
+        "kind": {
+          "type": "choice",
+          "choice": "kind/bug",
+          "probabilities": {
+            "kind/bug": 0.94,
+            "kind/feature": 0.01,
+            "kind/documentation": 0.01,
+            "kind/question": 0.01,
+            "kind/security": 0.01,
+            "kind/hardening": 0.01,
+            "kind/cleanup": 0.01
+          },
+          "confidence": 0.93
+        },
+        "priority": {
+          "type": "score",
+          "score": 1.34,
+          "legend": {
+            "0": "Low: cosmetic, rare, or easily worked around; affects an optional path or one unusual setup; no data loss and no security impact.",
+            "1": "Medium: a real defect or gap on a supported configuration that has a workaround, or a well-scoped improvement most operators would notice; can wait for a normal release.",
+            "2": "High: breaks a core flow (install, message routing, container spawn, delivery, scheduled runs) for many users with no clean workaround, or a hardening gap that is actively being discussed.",
+            "3": "Critical: data loss, credential or secret exposure, an exploitable trust-boundary vulnerability, or the service cannot start or run for everyone; must be fixed before the next release."
+          },
+          "probabilities": {
+            "0": 0.12,
+            "1": 0.48,
+            "2": 0.34,
+            "3": 0.06
+          },
+          "confidence": 0.55
+        },
+        "needs_repro": {
+          "type": "noul",
+          "noul": 0.78
+        }
+      },
+      "usage": {
+        "input_tokens": 2140,
+        "output_tokens": 62
+      }
+    },
+    "issue:3811": {
+      "model": "jev-latest",
+      "answers": {
+        "area": {
+          "type": "choice",
+          "choice": "area/core",
+          "probabilities": {
+            "area/agent-memory": 0.0064,
+            "area/agent-runner": 0.0064,
+            "area/channels": 0.0064,
+            "area/configuration": 0.0064,
+            "area/containers": 0.0064,
+            "area/core": 0.8604,
+            "area/credentials": 0.0064,
+            "area/ncl-cli": 0.05,
+            "area/providers": 0.0064,
+            "area/repository-maintenance": 0.0064,
+            "area/scheduled-tasks": 0.0064,
+            "area/security": 0.0064,
+            "area/sessions": 0.0064,
+            "area/setup-installation": 0.0064,
+            "area/skills": 0.0064,
+            "area/tools": 0.0064
+          },
+          "confidence": 0.84
+        },
+        "kind": {
+          "type": "choice",
+          "choice": "kind/bug",
+          "probabilities": {
+            "kind/bug": 0.89,
+            "kind/feature": 0.01,
+            "kind/documentation": 0.01,
+            "kind/question": 0.01,
+            "kind/security": 0.01,
+            "kind/hardening": 0.06,
+            "kind/cleanup": 0.01
+          },
+          "confidence": 0.88
+        },
+        "priority": {
+          "type": "score",
+          "score": 1.15,
+          "legend": {
+            "0": "Low: cosmetic, rare, or easily worked around; affects an optional path or one unusual setup; no data loss and no security impact.",
+            "1": "Medium: a real defect or gap on a supported configuration that has a workaround, or a well-scoped improvement most operators would notice; can wait for a normal release.",
+            "2": "High: breaks a core flow (install, message routing, container spawn, delivery, scheduled runs) for many users with no clean workaround, or a hardening gap that is actively being discussed.",
+            "3": "Critical: data loss, credential or secret exposure, an exploitable trust-boundary vulnerability, or the service cannot start or run for everyone; must be fixed before the next release."
+          },
+          "probabilities": {
+            "0": 0.1,
+            "1": 0.68,
+            "2": 0.19,
+            "3": 0.03
+          },
+          "confidence": 0.83
+        },
+        "needs_repro": {
+          "type": "noul",
+          "noul": 0.55
+        }
+      },
+      "usage": {
+        "input_tokens": 1310,
+        "output_tokens": 62
+      }
+    },
+    "issue:3814": {
+      "model": "jev-latest",
+      "answers": {
+        "area": {
+          "type": "choice",
+          "choice": "area/core",
+          "probabilities": {
+            "area/agent-memory": 0.0062,
+            "area/agent-runner": 0.0062,
+            "area/channels": 0.09,
+            "area/configuration": 0.0062,
+            "area/containers": 0.0062,
+            "area/core": 0.4494,
+            "area/credentials": 0.0062,
+            "area/ncl-cli": 0.0062,
+            "area/providers": 0.0062,
+            "area/repository-maintenance": 0.0062,
+            "area/scheduled-tasks": 0.0062,
+            "area/security": 0.38,
+            "area/sessions": 0.0062,
+            "area/setup-installation": 0.0062,
+            "area/skills": 0.0062,
+            "area/tools": 0.0062
+          },
+          "confidence": 0.48
+        },
+        "kind": {
+          "type": "choice",
+          "choice": "kind/hardening",
+          "probabilities": {
+            "kind/bug": 0.1,
+            "kind/feature": 0.0075,
+            "kind/documentation": 0.0075,
+            "kind/question": 0.0075,
+            "kind/security": 0.21,
+            "kind/hardening": 0.66,
+            "kind/cleanup": 0.0075
+          },
+          "confidence": 0.66
+        },
+        "priority": {
+          "type": "score",
+          "score": 1.92,
+          "legend": {
+            "0": "Low: cosmetic, rare, or easily worked around; affects an optional path or one unusual setup; no data loss and no security impact.",
+            "1": "Medium: a real defect or gap on a supported configuration that has a workaround, or a well-scoped improvement most operators would notice; can wait for a normal release.",
+            "2": "High: breaks a core flow (install, message routing, container spawn, delivery, scheduled runs) for many users with no clean workaround, or a hardening gap that is actively being discussed.",
+            "3": "Critical: data loss, credential or secret exposure, an exploitable trust-boundary vulnerability, or the service cannot start or run for everyone; must be fixed before the next release."
+          },
+          "probabilities": {
+            "0": 0.03,
+            "1": 0.15,
+            "2": 0.69,
+            "3": 0.13
+          },
+          "confidence": 0.81
+        },
+        "needs_repro": {
+          "type": "noul",
+          "noul": 0.31
+        }
+      },
+      "usage": {
+        "input_tokens": 1980,
+        "output_tokens": 62
+      }
+    },
+    "pr:3844": {
+      "model": "jev-latest",
+      "answers": {
+        "area": {
+          "type": "choice",
+          "choice": "area/setup-installation",
+          "probabilities": {
+            "area/agent-memory": 0.002,
+            "area/agent-runner": 0.002,
+            "area/channels": 0.002,
+            "area/configuration": 0.002,
+            "area/containers": 0.002,
+            "area/core": 0.002,
+            "area/credentials": 0.002,
+            "area/ncl-cli": 0.002,
+            "area/providers": 0.002,
+            "area/repository-maintenance": 0.002,
+            "area/scheduled-tasks": 0.002,
+            "area/security": 0.002,
+            "area/sessions": 0.002,
+            "area/setup-installation": 0.97,
+            "area/skills": 0.002,
+            "area/tools": 0.002
+          },
+          "confidence": 0.97
+        },
+        "kind": {
+          "type": "choice",
+          "choice": "kind/bug",
+          "probabilities": {
+            "kind/bug": 0.91,
+            "kind/feature": 0.01,
+            "kind/documentation": 0.01,
+            "kind/question": 0.01,
+            "kind/security": 0.01,
+            "kind/hardening": 0.04,
+            "kind/cleanup": 0.01
+          },
+          "confidence": 0.9
+        },
+        "priority": {
+          "type": "score",
+          "score": 1.66,
+          "legend": {
+            "0": "Low: cosmetic, rare, or easily worked around; affects an optional path or one unusual setup; no data loss and no security impact.",
+            "1": "Medium: a real defect or gap on a supported configuration that has a workaround, or a well-scoped improvement most operators would notice; can wait for a normal release.",
+            "2": "High: breaks a core flow (install, message routing, container spawn, delivery, scheduled runs) for many users with no clean workaround, or a hardening gap that is actively being discussed.",
+            "3": "Critical: data loss, credential or secret exposure, an exploitable trust-boundary vulnerability, or the service cannot start or run for everyone; must be fixed before the next release."
+          },
+          "probabilities": {
+            "0": 0.05,
+            "1": 0.32,
+            "2": 0.55,
+            "3": 0.08
+          },
+          "confidence": 0.62
+        },
+        "pr_ready": {
+          "type": "noul",
+          "noul": 0.22
+        }
+      },
+      "usage": {
+        "input_tokens": 2410,
+        "output_tokens": 62
+      }
+    },
+    "pr:3841": {
+      "model": "jev-latest",
+      "answers": {
+        "area": {
+          "type": "choice",
+          "choice": "area/providers",
+          "probabilities": {
+            "area/agent-memory": 0.0038,
+            "area/agent-runner": 0.06,
+            "area/channels": 0.0038,
+            "area/configuration": 0.0038,
+            "area/containers": 0.0038,
+            "area/core": 0.0038,
+            "area/credentials": 0.0038,
+            "area/ncl-cli": 0.0038,
+            "area/providers": 0.7206,
+            "area/repository-maintenance": 0.0038,
+            "area/scheduled-tasks": 0.0038,
+            "area/security": 0.0038,
+            "area/sessions": 0.0038,
+            "area/setup-installation": 0.0038,
+            "area/skills": 0.17,
+            "area/tools": 0.0038
+          },
+          "confidence": 0.71
+        },
+        "kind": {
+          "type": "choice",
+          "choice": "kind/bug",
+          "probabilities": {
+            "kind/bug": 0.87,
+            "kind/feature": 0.012,
+            "kind/documentation": 0.012,
+            "kind/question": 0.012,
+            "kind/security": 0.012,
+            "kind/hardening": 0.012,
+            "kind/cleanup": 0.07
+          },
+          "confidence": 0.86
+        },
+        "priority": {
+          "type": "score",
+          "score": 1.5,
+          "legend": {
+            "0": "Low: cosmetic, rare, or easily worked around; affects an optional path or one unusual setup; no data loss and no security impact.",
+            "1": "Medium: a real defect or gap on a supported configuration that has a workaround, or a well-scoped improvement most operators would notice; can wait for a normal release.",
+            "2": "High: breaks a core flow (install, message routing, container spawn, delivery, scheduled runs) for many users with no clean workaround, or a hardening gap that is actively being discussed.",
+            "3": "Critical: data loss, credential or secret exposure, an exploitable trust-boundary vulnerability, or the service cannot start or run for everyone; must be fixed before the next release."
+          },
+          "probabilities": {
+            "0": 0.06,
+            "1": 0.45,
+            "2": 0.42,
+            "3": 0.07
+          },
+          "confidence": 0.58
+        },
+        "pr_ready": {
+          "type": "noul",
+          "noul": 0.9
+        }
+      },
+      "usage": {
+        "input_tokens": 3120,
+        "output_tokens": 62
+      }
+    }
+  }
+}
