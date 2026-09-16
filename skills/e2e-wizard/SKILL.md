@@ -110,8 +110,13 @@ with `--provider opencode`; `auth_source_commit` must equal `nanoclaw_commit`
 for this payload. Automated API-key backends are `openrouter`, `deepseek`,
 `custom` and `local`, using an existing private key file and an explicitly
 chosen full provider/model ID.
-Ask for the model if the operator has not selected one; do not guess account
-access from catalog membership. `--auth-method` names the backend in this flow.
+
+Show the discovered backends and ask the operator to choose one: a hosted
+provider from OpenCode's catalog (`openrouter`, `deepseek`) or their own
+OpenAI-compatible endpoint (`custom`, `local`). Then ask for the model they
+have access to; do not guess account access from catalog membership, and do
+not substitute a default endpoint or model. `--auth-method` names the backend
+in this flow.
 
 For example, from the NanoClaw checkout under test, with `$COMMIT` resolved and
 `$E2E_SKILL_DIR` pointing to the companion e2e-exe-dev skill:
@@ -174,8 +179,9 @@ custom OpenAI-compatible flow has a fresh exe.dev pass described below.
 
 On **2026-09-15**, a fresh exe.dev VM at NanoClaw
 [`1100f83f57e0b61b60efabea3ec4f8360535b7b4`](https://github.com/nanocoai/nanoclaw/commit/1100f83f57e0b61b60efabea3ec4f8360535b7b4)
-completed the public wizard with `openai/qwen3.8-flash` through NaN's custom
-OpenAI-compatible endpoint. All 37 installed provider files matched the source;
+completed the public wizard with an `openai/<model>` id served by a private,
+operator-supplied OpenAI-compatible endpoint. All 37 installed provider files
+matched the source;
 the retained agent answered `11438 * 71` with `812098`, and final product
 verification succeeded. The original E2E result remains **failed** because
 its provider verifier could not find `pnpm`: bootstrap installed Node and pnpm

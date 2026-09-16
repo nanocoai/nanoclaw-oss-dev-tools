@@ -80,11 +80,15 @@ python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
 
 Show the first result's offered providers and ask the operator which to test;
 then show that provider's exact auth prompt/options and ask for its auth method.
-For an installable provider, fetch its single `nc:copy from-branch:` payload
-from the owning remote and pass the fetched ref as `--payload-ref` during
-discovery. Record both source SHAs. The headless Proxmox driver currently accepts
-only Claude `api` or `oauth`; use the public-wizard adapter for a discovered
-credential-file method from another offered provider. For a chosen live sign-in,
+For an installable provider, inspect `payload_kind`: a `bundled` payload uses
+the same NanoClaw SHA and needs no `--payload-ref`; a `branch` payload needs its
+single `nc:copy from-branch:` payload fetched from the owning remote and passed
+as `--payload-ref` during discovery. Record both source SHAs. The headless
+Proxmox driver currently accepts only Claude `api` or `oauth`; use the
+public-wizard adapter for a discovered credential-file method from another
+offered provider, such as OpenCode `openrouter`, `deepseek` or `custom` with
+`--opencode-model` (see the [OpenCode workflow](../e2e-wizard/SKILL.md#opencode);
+live OpenCode on Proxmox is not yet qualified). For a chosen live sign-in,
 use the sibling wizard's supervised flow: Codex `device` or Claude
 `subscription`, with `--supervised-human-auth` and an operator ready to complete
 the handoff. Those methods remain unavailable to this headless driver.

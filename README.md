@@ -106,11 +106,16 @@ Before a live run, the agent resolves the requested NanoClaw commit, runs
 `e2e-wizard/scripts/provider-options.py --revision <sha>`, shows the offered
 providers, and asks which one to test. It then shows that provider's own auth
 prompt/options and asks which method to use. Installable-provider auth is read
-from the exact fetched provider payload and records its separate SHA. Unattended
+from its exact bundled payload or fetched branch, recording the auth-source SHA. Unattended
 drivers accept only credential-file flows they can prove. The Proxmox and direct
 wizard entry points also support supervised Codex device pairing and Claude
 subscription sign-in with a live human handoff; `skip` cannot pass. See the
 [provider-selection workflow](skills/e2e-wizard/SKILL.md#install-and-run).
+
+OpenCode supports OpenRouter, DeepSeek, and custom API-key endpoints. For an
+OpenAI-compatible endpoint, use `--provider opencode --auth-method custom`,
+`--opencode-base-url`, `--opencode-model "openai/<model>"`, and `--credential-file`.
+See the [OpenCode workflow and qualification limits](skills/e2e-wizard/SKILL.md#opencode).
 
 ### 3. Run a test
 

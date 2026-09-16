@@ -82,9 +82,12 @@ python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
 
 Show the offered providers to the operator and ask which to test, then show the
 selected provider's exact auth prompt/options and ask for the auth method. For
-an installable provider, fetch its one `nc:copy from-branch:` payload from the
-owning remote and pass that fetched ref as `--payload-ref`; record both source
-SHAs. The native headless driver currently supports Claude only. A new gateway
+an installable provider, inspect `payload_kind`: `bundled` uses the same NanoClaw
+SHA without `--payload-ref`; `branch` needs its one `nc:copy from-branch:`
+payload fetched from the owning remote and passed as `--payload-ref`. Record
+both source SHAs. The native headless driver currently supports Claude only;
+Codex and OpenCode have no macOS driver, and the public wizard is not qualified
+on native macOS. A new gateway
 uses discovered `api` or `oauth`; gateway reuse uses the explicit lifecycle
 value `existing` after the target proves a usable vault credential. Browser,
 subscription, and device methods require a separately authorized live human
