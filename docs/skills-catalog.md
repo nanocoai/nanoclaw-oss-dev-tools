@@ -48,8 +48,12 @@ and requires its clean checkout to already match the requested exact commit.
 
 The headless [e2e-install.sh](../skills/e2e-exe-dev/scripts/e2e-install.sh) drives
 NanoClaw's existing setup steps for bootstrap, Docker/OneCLI readiness, auth,
-agent image, service, CLI agent, model ping and final verification. The Mac path
-uses a dedicated LaunchAgent helper to preserve other installations. Wizard
+agent image, service, CLI agent, model ping and final verification. On refs
+with the credential-gateway seam it runs the `gateway`/`gateway-auth` steps
+instead and can select OneCLI (default) or Iron Proxy through `--gateway` on
+the exe.dev and Proxmox drivers; the result and sanitized evidence record which
+gateway ran. The Mac path uses a dedicated LaunchAgent helper to preserve other
+installations and remains OneCLI-only, as does the public-wizard driver. Wizard
 mode uses the public `bash nanoclaw.sh` entry point and adds no product setup
 actions or repairs behind its prompts.
 
@@ -85,6 +89,9 @@ operator machine; the shared installer on the target.
   credential file matching the selected provider/auth method. The guest is Debian/Ubuntu with sudo.
 - Supports an exact ref, a new VM, a cached base, an optional snapshot and a
   local result file. The driver confirms allocation/copy identity before use.
+- `--gateway onecli|iron-proxy` on gateway-seam refs; validated before any VM
+  work and bound into the result and evidence. Iron Proxy + Claude passed live
+  on exe.dev on 2026-09-16 (OAuth token; stack tip and a #3840 core).
 - Failed runs are retained. Removal after success is opt-in with the documented
   flag and requires a locally validated evidence bundle, matching run marker,
   inactive harness, verified JSON-inventory absence and teardown receipt.
@@ -116,6 +123,9 @@ installer from the sibling exe.dev skill.
 - Dry run resolves the ref and writes a plan without SSH or credential reads.
   A live run creates only a new guest, verifies its ownership marker and retains
   it on success or failure. Existing development guests are not test targets.
+- `--gateway onecli|iron-proxy` is sent to the guest explicitly and must match
+  the installer result before a pass is reported. Iron on Proxmox has offline
+  coverage only; no live Proxmox Iron run is recorded yet.
 - Cleanup is offered only after durable evidence. It requires a separately
   authorized exact CT, a fresh marker/controller recheck, absence verification
   and a local teardown receipt; it never includes the Proxmox host or other guests.

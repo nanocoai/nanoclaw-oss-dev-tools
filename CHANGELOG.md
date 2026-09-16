@@ -25,6 +25,24 @@ Development milestone (plugin 0.11.0); not yet released.
   the exact NanoClaw commit. Verify installed payload files, saved backend/model
   defaults and the retained agent's effective provider in sanitized evidence.
 
+- `--gateway onecli|iron-proxy` for the Proxmox driver, sent to the guest
+  explicitly and bound into the report; the exe.dev driver validates the value
+  before creating a VM and refuses it in wizard mode. `result.json`, the driver
+  reports and the sanitized evidence bundle now record the gateway kind
+  (`gateway`, verified against the `.env` stamp the seam's gateway step
+  writes) and whether that step ran (`gateway_seam`); export and collection
+  reject a result that names another gateway or a passing Iron result that
+  never ran the seam; `gateway` stays null until the installer proves the
+  installed kind, and a failure records what it found next to
+  `requested_gateway`. The installer drops an inherited
+  `NANOCLAW_GATEWAY_PROVIDER`, and stops when the `.env` stamp or the
+  systemd service environment selects another gateway, so the installed
+  gateway is the one the service uses. The Proxmox wizard adapter refuses
+  a gateway selection instead of ignoring it. Documented gaps: the
+  public-wizard driver and the macOS driver remain OneCLI-only, and OpenCode
+  through Iron (HTTPS-on-443 endpoint, `gateway-trust` CA mount) is not
+  automated.
+
 ### Changed
 
 - Headless installer follows NanoClaw's credential-gateway seam

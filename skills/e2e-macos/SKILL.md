@@ -109,6 +109,14 @@ travels through stdin and is temporarily stored in a private file in the new
 checkout. That file is removed after the installer exits; the OneCLI vault
 retains the credential. No force-replacement mode is supported here.
 
+Both modes are OneCLI-only. The Iron Proxy gateway that the headless Linux
+drivers can select (`--gateway iron-proxy` in
+[e2e-exe-dev](../e2e-exe-dev/SKILL.md#refs-on-the-gateway-seam) and
+[e2e-proxmox](../e2e-proxmox/SKILL.md#choose-the-credential-gateway)) has no
+macOS mode yet: the preservation checks compare OneCLI endpoint, config and
+vault state, and the installer's `NANOCLAW_E2E_GATEWAY` is not exposed by this
+driver. The installer still records `gateway: onecli` in its result.
+
 Creating a persistent checkout/service and making a provider request must be
 within the user's authorization for that Mac. A request to develop or review
 the skill alone does not authorize a live install on the operator's personal

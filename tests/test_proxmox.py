@@ -73,6 +73,9 @@ elif args[:2] == ["pct", "exec"]:
             "ping": "auth_error" if failed else "ok", "phase": "ping" if failed else "complete",
             "provider": "claude", "auth_method": "api",
             "auth_source_commit": os.environ["MOCK_COMMIT"],
+            "gateway": os.environ.get("MOCK_RESULT_GATEWAY", "onecli"),
+            "requested_gateway": os.environ.get("MOCK_REQUESTED_GATEWAY", os.environ.get("MOCK_RESULT_GATEWAY", "onecli")),
+            "gateway_seam": os.environ.get("MOCK_RESULT_SEAM", os.environ.get("MOCK_RESULT_GATEWAY", "onecli") == "iron-proxy" and "1") == "1",
         }))
 elif args[:2] not in (["test", "-r"], ["ip", "link"], ["pct", "start"]):
     sys.exit("unexpected command")
@@ -132,6 +135,56 @@ elif args[:2] not in (["test", "-r"], ["ip", "link"], ["pct", "start"]):
                                  env=self.env, text=True, capture_output=True, timeout=5)
         self.assertEqual(checked.returncode, 0, checked.stderr)
         self.assertEqual(json.loads(checked.stdout), [token, "Test ' operator"])
+
+    def test_gateway_choice_is_sent_explicitly_and_bound_to_the_result(self):
+        self.env["MOCK_RESULT_GATEWAY"] = "iron-proxy"
+        run = self.run_driver("--gateway", "iron-proxy")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        result = self.result()
+        self.assertEqual(result["requested_gateway"], "iron-proxy")
+        self.assertEqual(result["gateway"], "iron-proxy")
+        self.assertEqual(result["installer"]["gateway"], "iron-proxy")
+        settings = next(c["input"] for c in self.commands() if "export NANOCLAW_E2E_GATEWAY=" in c["input"])
+        self.assertIn("export NANOCLAW_E2E_GATEWAY=iron-proxy", settings)
+        # The default is OneCLI and an inherited environment value is the fallback.
+        del self.env["MOCK_RESULT_GATEWAY"]
+        run = self.run_driver()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["gateway"], "onecli")
+        self.env["NANOCLAW_E2E_GATEWAY"] = "iron-proxy"
+        run = self.run_driver("--dry-run")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["plan"]["gateway"], "iron-proxy")
+
+    def test_invalid_gateway_stops_before_host_contact(self):
+        for args, env in ((("--gateway", "vault-of-doom"), {}), ((), {"NANOCLAW_E2E_GATEWAY": "nope"})):
+            with self.subTest(args=args, env=env):
+                self.env.pop("NANOCLAW_E2E_GATEWAY", None)
+                self.env.update(env)
+                run = self.run_driver(*args)
+                self.assertEqual(run.returncode, 64, run.stderr)
+                self.assertEqual(self.commands(), [])
+                self.assertEqual(self.result()["status"], "failed")
+                self.assertIsNone(self.result()["gateway"])
+
+    def test_installer_gateway_mismatch_cannot_report_pass(self):
+        self.env["MOCK_RESULT_GATEWAY"] = "onecli"
+        run = self.run_driver("--gateway", "iron-proxy")
+        self.assertEqual(run.returncode, 74)
+        self.assertEqual(self.result()["status"], "failed")
+        self.assertIsNone(self.result()["commit"])
+        # A passing Iron result that never ran the seam's gateway step is impossible.
+        self.env.update(MOCK_RESULT_GATEWAY="iron-proxy", MOCK_RESULT_SEAM="0")
+        run = self.run_driver("--gateway", "iron-proxy")
+        self.assertEqual(run.returncode, 74)
+        self.assertEqual(self.result()["status"], "failed")
+        # A failed Iron request that found another gateway is reported as that failure.
+        self.env.update(MOCK_RESULT_GATEWAY="typo", MOCK_REQUESTED_GATEWAY="iron-proxy", MOCK_RESULT_SEAM="1")
+        run = self.run_driver("--gateway", "iron-proxy", mode="auth-failure")
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertEqual(self.result()["installer"]["gateway"], "typo")
+        self.assertEqual(self.result()["gateway"], "typo")
+        self.assertEqual(self.result()["requested_gateway"], "iron-proxy")
 
     def test_dry_run_never_connects_or_reads_missing_credentials(self):
         self.key.unlink()

@@ -122,6 +122,21 @@ parent directory must exist. Dry run resolves the commit and records `planned`;
 it performs no SSH calls and reads no credentials. Remove `--dry-run` to create
 the LXC and run the test within the user's authorized scope.
 
+### Choose the credential gateway
+
+`--gateway onecli` (the default) or `--gateway iron-proxy` selects the
+credential gateway the guest installs; `NANOCLAW_E2E_GATEWAY` is the fallback
+when the flag is absent. Iron Proxy exists only on refs with the gateway seam
+(`setup/gateways/`, [nanocoai/nanoclaw#3815](https://github.com/nanocoai/nanoclaw/pull/3815)
+onward); on an older ref the shared installer stops before any setup step, and
+the driver rejects an unknown kind before contacting the node. The driver sends
+its resolved choice to the guest explicitly, so an inherited
+`NANOCLAW_E2E_GATEWAY` in the operator's shell cannot differ from the report.
+See the installer's [gateway seam notes](../e2e-exe-dev/SKILL.md#refs-on-the-gateway-seam)
+for how each gateway receives the credential; Iron builds its proxy image from
+source on first install, so allow a few extra minutes on the default 2 CPUs.
+The dry-run plan shows the selected `gateway`.
+
 The driver asks Proxmox for the next available guest ID, or accepts an explicit
 unused `--ctid`. Proxmox still arbitrates allocation if another task races for
 that ID. Only a successful create operation plus the matching random run marker
@@ -138,15 +153,20 @@ Existing channels are not connected.
 
 Supported installer settings are `NANOCLAW_ONECLI_API_HOST`,
 `NANOCLAW_ONECLI_API_TOKEN`, `NANOCLAW_DISPLAY_NAME`, `NANOCLAW_E2E_TZ` and
-`NANOCLAW_E2E_FORCE_AUTH`. `--key-file` or `NANOCLAW_E2E_KEY_FILE` chooses the
-local credential file. This workflow retains its CLI agent for verification.
+`NANOCLAW_E2E_FORCE_AUTH`; the gateway kind travels with them as
+`NANOCLAW_E2E_GATEWAY`, always set from the driver's own choice. `--key-file` or
+`NANOCLAW_E2E_KEY_FILE` chooses the local credential file. This workflow retains
+its CLI agent for verification.
 
 ## Results and retained guests
 
 Read the local JSON report, including `status`, `phase`, `requested_commit`,
-`commit`, `guest.ctid` and the nested `installer` result. A pass requires the
-installer's exact commit, successful exit, `ping: ok`, and completed verification
-to match this run. `commit` stays null until a completed installer result proves
+`commit`, `requested_gateway`, `gateway` (copied from the installer result,
+null before it exists), `guest.ctid` and the nested `installer` result. A pass
+requires the installer's exact commit, successful exit, `ping: ok`, completed
+verification, and the same installed `gateway` (with `requested_gateway` and a
+`gateway_seam` boolean saying whether the seam's gateway step ran) to match
+this run. A failure may name the other gateway the installer found. `commit` stays null until a completed installer result proves
 which revision ran. The top-level exit code is the driver's exit; the nested
 installer retains its original fields and timings.
 
@@ -184,7 +204,8 @@ recorded guest rather than rerunning into an uncertain lifecycle state.
 | `running`, timeout, or lost SSH | Node task status, `pct status <CTID>`, then the ownership marker in `pct config <CTID>` | A still-running operation from a completed failure; never adopt the guest from its name alone. |
 | `bootstrap` with DNS or APT output | Resolver state, default route, and the bootstrap output in `/opt/nanoclaw/logs/e2e/` | Guest network/template readiness from a NanoClaw setup failure. |
 | Docker works in a shell but setup cannot use it | `id nanoclaw`, the user manager environment, and Docker access through `machinectl shell nanoclaw@` | Stale supplementary groups in a user manager started before Docker membership changed. |
-| `onecli`, `auth`, or `container` | The matching step log plus `docker ps -a`; inspect container logs only on the retained private guest | Gateway/image failure from a later agent or service failure. |
+| `onecli`, `auth`, `gateway`, `gateway-auth`, or `container` | The matching step log plus `docker ps -a`; inspect container logs only on the retained private guest. On the seam, `gateway` is the `/add-<gateway>` skill install (Iron also builds its proxy image and starts Iron Control) and `gateway-auth` the credential hand-over | Gateway/image failure from a later agent or service failure. |
+| A pass with the wrong `gateway` | The report's `gateway` and `installer.gateway` | The driver refuses to report a pass when the installer result names another gateway; rerun with the intended `--gateway`. |
 | `ping` or `verify` | `logs/nanoclaw.log`, `logs/nanoclaw.error.log`, `data/cli.sock`, and the exact installer result | A running process from a usable CLI/model path; a socket or process alone is not a pass. |
 | A retry reports a used CT ID | The previous report, node task history, and matching random run marker | A retained test guest from an unrelated or uncertain guest; choose a new ID unless ownership is proven. |
 
@@ -193,7 +214,8 @@ recorded guest rather than rerunning into an uncertain lifecycle state.
 The shared installer follows NanoClaw
 [`74224f62a6c08418acccc727114ab02f92e403bf`](https://github.com/nanocoai/nanoclaw/tree/74224f62a6c08418acccc727114ab02f92e403bf):
 `setup.sh`, `setup/install-docker.sh`, `setup/index.ts`, `setup/service.ts`,
-`setup/verify.ts`, `scripts/init-cli-agent.ts`, and `scripts/chat.ts`.
+`setup/verify.ts`, `scripts/init-cli-agent.ts`, and `scripts/chat.ts`, and on
+gateway-seam refs `setup/gateways/step.ts` and `setup/gateways/auth-step.ts`.
 Re-check these when NanoClaw's setup or reply classification changes. Proxmox's
 [pct command reference](https://pve.proxmox.com/pve-docs/pct.1.html) defines guest
 creation and execution; no community-script engine is required by this driver.
@@ -202,8 +224,10 @@ The offline suite exercises allocation and identity checks, failed bootstrap,
 exact commit selection, credential transport, copied skill paths and result
 validation through simulated SSH. These tests do not establish nested Docker
 or real inference compatibility. Record a live run's Proxmox and kernel version,
-template, tested NanoClaw SHA and installer result before claiming this driver
-works on a host. The driver checks initial setup and service health; it does not
+template, tested NanoClaw SHA, gateway and installer result before claiming this
+driver works on a host. Iron Proxy on Proxmox has offline coverage only; the
+live Iron evidence so far is the exe.dev run in the
+[shared installer's notes](../e2e-exe-dev/SKILL.md#refs-on-the-gateway-seam). The driver checks initial setup and service health; it does not
 yet test reboot recovery, cached clones or the transactional updater.
 
 ## Compatibility evidence

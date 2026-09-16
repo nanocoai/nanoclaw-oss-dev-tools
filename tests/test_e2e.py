@@ -105,8 +105,12 @@ class DriverTests(Sandbox):
             " 'status': 'failed' if rc else 'pass',\n"
             " 'provider': observed['env'].get('NANOCLAW_E2E_PROVIDER'),\n"
             " 'auth_method': observed['env'].get('NANOCLAW_E2E_AUTH_METHOD'),\n"
-            " 'auth_source_commit': observed['env'].get('NANOCLAW_E2E_AUTH_SOURCE_COMMIT')}\n"
+            " 'auth_source_commit': observed['env'].get('NANOCLAW_E2E_AUTH_SOURCE_COMMIT'),\n"
+            " 'gateway': observed['env'].get('NANOCLAW_E2E_GATEWAY'),\n"
+            " 'requested_gateway': observed['env'].get('NANOCLAW_E2E_GATEWAY'),\n"
+            " 'gateway_seam': observed['env'].get('NANOCLAW_E2E_GATEWAY') == 'iron-proxy'}\n"
             "if os.environ.get('MOCK_WRONG_COMMIT'): result['commit'] = 'wrong'\n"
+            "if os.environ.get('MOCK_WRONG_GATEWAY'): result['gateway'] = os.environ['MOCK_WRONG_GATEWAY']\n"
             "(logs/'result.json').write_text(json.dumps(result))\n"
             "(logs/'install.log').write_text('sanitized installer evidence\\n')\n"
             "PY\n"
@@ -516,6 +520,60 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.assertEqual(result["requested_commit"], self.commit)
         self.assert_retained()
 
+    def test_invalid_gateway_stops_before_vm_creation(self):
+        for args, env in ((("--gateway", "vault-of-doom"), {}), ((), {"NANOCLAW_E2E_GATEWAY": "nope"})):
+            with self.subTest(args=args, env=env):
+                self.env.pop("NANOCLAW_E2E_GATEWAY", None)
+                self.env.update(env)
+                run = self.run_driver(*args)
+                self.assertEqual(run.returncode, 64, run.stderr)
+                self.assertIn("invalid gateway", run.stderr)
+                self.assertEqual(self.calls(), [])
+
+    def test_driver_report_never_labels_the_request_as_installed(self):
+        self.key.chmod(0o644)
+        result_file = self.root / "early.json"
+        run = self.run_driver("--gateway", "iron-proxy", "--result-file", str(result_file))
+        self.assertEqual(run.returncode, 66, run.stderr)
+        result = json.loads(result_file.read_text())
+        self.assertIsNone(result["gateway"])
+        self.assertEqual(result["requested_gateway"], "iron-proxy")
+
+    def test_wizard_mode_refuses_a_gateway_selection(self):
+        for args, env in ((("--gateway", "onecli"), {}), ((), {"NANOCLAW_E2E_GATEWAY": "iron-proxy"})):
+            with self.subTest(args=args, env=env):
+                self.env.pop("NANOCLAW_E2E_GATEWAY", None)
+                self.env.update(env)
+                run = self.run_driver("--interactive", "--result-file", str(self.root / "wizard.json"), *args)
+                self.assertEqual(run.returncode, 64, run.stderr)
+                self.assertIn("does not select a gateway", run.stderr)
+                self.assertEqual(self.calls(), [])
+
+    def test_gateway_is_forwarded_and_bound_into_result_and_evidence(self):
+        result_file = self.root / "iron.json"
+        run = self.run_driver("--gateway", "iron-proxy", "--result-file", str(result_file))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        observed = json.loads((self.vm / "observed.json").read_text())["env"]
+        self.assertEqual(observed["NANOCLAW_E2E_GATEWAY"], "iron-proxy")
+        result = json.loads(result_file.read_text())
+        self.assertEqual(result["gateway"], "iron-proxy")
+        self.assertIs(result["gateway_seam"], True)
+        state = json.loads((Path(result["artifacts"]) / "runtime-state.json").read_text())
+        self.assertEqual(state["gateway"], "iron-proxy")
+        # Default runs record OneCLI without any flag.
+        default_file = self.root / "default.json"
+        run = self.run_driver("--result-file", str(default_file))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(default_file.read_text())["gateway"], "onecli")
+
+    def test_installer_gateway_mismatch_blocks_evidence_export(self):
+        self.env["MOCK_WRONG_GATEWAY"] = "onecli"
+        result_file = self.root / "mismatch.json"
+        run = self.run_driver("--gateway", "iron-proxy", "--result-file", str(result_file), "--rm")
+        self.assertEqual(run.returncode, 74, run.stderr)
+        self.assertEqual(json.loads(result_file.read_text())["status"], "failed")
+        self.assert_retained()
+
     def test_settings_arrive_without_secrets_in_ssh_arguments(self):
         settings = {
             "NANOCLAW_E2E_FORCE_AUTH": "1",
@@ -527,6 +585,7 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.env.update(settings)
         run = self.run_driver("--gateway", "iron-proxy")
         self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("gateway=iron-proxy", run.stdout)
         observed = json.loads((self.vm / "observed.json").read_text())["env"]
         for name, value in settings.items():
             self.assertEqual(observed[name], value)
@@ -552,13 +611,19 @@ args = sys.argv[1:]
 if os.environ.get("MOCK_STEP_CALLS"):
     with open(os.environ["MOCK_STEP_CALLS"], "a") as calls:
         calls.write(repr(args) + "\n")
-        present = sorted(k for k in os.environ if k in ("NANOCLAW_ANTHROPIC_API_KEY", "NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN"))
+        present = sorted(k for k in os.environ if k in ("NANOCLAW_ANTHROPIC_API_KEY", "NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN", "NANOCLAW_GATEWAY_PROVIDER"))
         calls.write("env:" + ",".join(present) + "\n")
 if os.environ.get("MOCK_PATH_FILE"):
     with open(os.environ["MOCK_PATH_FILE"], "w") as seen:
         seen.write(os.environ.get("PATH", ""))
 if "--step" in args:
     name = args[args.index("--step") + 1]
+    installed = None
+    if name == "gateway":
+        # installGateway stamps .env on every seam core, with or without a block.
+        installed = os.environ.get("MOCK_INSTALLED_GATEWAY", args[args.index("--step") + 2])
+        with open(".env", "a") as env_file:
+            env_file.write("NANOCLAW_GATEWAY_PROVIDER=" + installed + "\n")
     if os.environ.get("MOCK_NO_BLOCK") == name:
         print("step returned without a status")
         sys.exit(0)
@@ -573,6 +638,9 @@ if "--step" in args:
     print("STATUS: " + status)
     if name == "service":
         print("SERVICE_TYPE: systemd-user")
+        print("SERVICE_UNIT: nanoclaw-test.service")
+    if installed and not os.environ.get("MOCK_GATEWAY_BLOCK_UNNAMED"):
+        print("GATEWAY: " + installed)
     print("=== END ===")
     sys.exit(int(os.environ.get("MOCK_STEP_RC", "0")))
 if "chat" in args:
@@ -597,6 +665,9 @@ sys.exit(0)
         run = self.run_installer()
         self.assertEqual(run.returncode, 0, run.stderr)
         result = self.result()
+        self.assertEqual(result["gateway"], "onecli")
+        self.assertIs(result["gateway_seam"], False)
+        self.assertIn("GATEWAY: onecli", run.stdout)
         self.assertEqual(result["commit"], self.commit)
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["phase"], "complete")
@@ -850,6 +921,8 @@ sys.exit(0)
         self.assertIn("<redacted>", run.stdout)
         self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
         self.assertEqual(self.result()["status"], "pass")
+        self.assertEqual(self.result()["gateway"], "onecli")
+        self.assertIs(self.result()["gateway_seam"], True)
 
     def test_gateway_seam_keeps_an_existing_onecli_secret(self):
         calls, onecli_calls = self.gateway_seam(vault_has_secret=True)
@@ -877,6 +950,9 @@ sys.exit(0)
         self.assertIn("'--step', 'gateway-auth', 'claude']\nenv:NANOCLAW_ANTHROPIC_API_KEY,NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN", steps)
         self.assertNotIn("'secrets'", onecli_calls.read_text() if onecli_calls.exists() else "")
         self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr + steps)
+        self.assertEqual(self.result()["gateway"], "iron-proxy")
+        self.assertIs(self.result()["gateway_seam"], True)
+        self.assertIn("GATEWAY: iron-proxy", run.stdout)
 
     def test_gateway_seam_api_key_uses_only_the_api_key_variable(self):
         calls, _ = self.gateway_seam()
@@ -895,12 +971,102 @@ sys.exit(0)
         run = self.run_installer()
         self.assertNotEqual(run.returncode, 0)
 
+    def test_gateway_seam_records_the_installed_gateway_not_the_request(self):
+        calls, _ = self.gateway_seam()
+        self.env.update(NANOCLAW_E2E_GATEWAY="iron-proxy", MOCK_INSTALLED_GATEWAY="onecli")
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("installed 'onecli', not the requested 'iron-proxy'", run.stderr)
+        self.assertNotIn("'--step', 'gateway-auth'", calls.read_text())
+        self.assertEqual(self.result()["status"], "failed")
+        self.assertIs(self.result()["gateway_seam"], True)
+        # The failed result names what was installed and keeps the request separately.
+        self.assertEqual(self.result()["gateway"], "onecli")
+        self.assertEqual(self.result()["requested_gateway"], "iron-proxy")
+        # Pre-#3840 cores name nothing in the block; the .env stamp still decides.
+        self.env["MOCK_GATEWAY_BLOCK_UNNAMED"] = "1"
+        (self.checkout / ".env").unlink()
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("stamps NANOCLAW_GATEWAY_PROVIDER='onecli'", run.stderr)
+
+    def test_gateway_seam_drops_an_inherited_gateway_selector(self):
+        calls, _ = self.gateway_seam()
+        self.env.update(NANOCLAW_E2E_GATEWAY="iron-proxy", NANOCLAW_GATEWAY_PROVIDER="onecli")
+        self.executable("env-probe", "#!/bin/sh\nexit 0\n")
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("'--step', 'gateway', 'iron-proxy'", calls.read_text())
+        # The mock records which credential variables reached gateway-auth; the
+        # selector must not be among the environment the steps inherit.
+        self.assertNotIn("NANOCLAW_GATEWAY_PROVIDER", calls.read_text())
+
+    def test_gateway_seam_refuses_a_service_environment_that_selects_another_gateway(self):
+        self.gateway_seam()
+        self.env["NANOCLAW_E2E_GATEWAY"] = "iron-proxy"
+        self.executable("systemctl", PYTHON + r'''
+import os, sys
+args = sys.argv[1:]
+if "show-environment" in args:
+    print("PATH=/usr/bin")
+    if os.environ.get("MOCK_MANAGER_GATEWAY"):
+        print("NANOCLAW_GATEWAY_PROVIDER=" + os.environ["MOCK_MANAGER_GATEWAY"])
+elif "MainPID" in args:
+    print("0")
+if os.environ.get("MOCK_SYSTEMCTL_BROKEN"):
+    sys.exit(1)
+elif "EnvironmentFiles" in args:
+    print("EnvironmentFiles=" + (os.environ["MOCK_UNIT_ENV_FILE"] + " (ignore_errors=no)" if os.environ.get("MOCK_UNIT_ENV_FILE") else ""))
+elif "show" in args:
+    print("Environment=" + ("NANOCLAW_GATEWAY_PROVIDER=" + os.environ["MOCK_UNIT_GATEWAY"] if os.environ.get("MOCK_UNIT_GATEWAY") else ""))
+sys.exit(0)
+''')
+        env_file = self.root / "nanoclaw-override.conf"
+        env_file.write_text("OTHER=1\n  NANOCLAW_GATEWAY_PROVIDER='onecli'\n")
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        # The product lowercases the kind, so an uppercase selector of the same gateway is fine.
+        self.env["MOCK_MANAGER_GATEWAY"] = "IRON-PROXY"
+        run = self.run_installer()
+        del self.env["MOCK_MANAGER_GATEWAY"]
+        self.assertEqual(run.returncode, 0, run.stderr)
+        # An inspection that cannot read the service environment is not a pass.
+        self.env["MOCK_SYSTEMCTL_BROKEN"] = "1"
+        run = self.run_installer()
+        del self.env["MOCK_SYSTEMCTL_BROKEN"]
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("could not inspect the service environment", run.stderr)
+        for variable, value in (("MOCK_MANAGER_GATEWAY", "onecli"), ("MOCK_UNIT_GATEWAY", "onecli"),
+                                ("MOCK_UNIT_ENV_FILE", str(env_file))):
+            with self.subTest(variable=variable):
+                self.env[variable] = value
+                run = self.run_installer()
+                del self.env[variable]
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn("service environment selects gateway 'onecli'", run.stderr)
+                self.assertEqual(self.result()["phase"], "service")
+                self.assertEqual(self.result()["gateway"], "onecli")
+                self.assertEqual(self.result()["requested_gateway"], "iron-proxy")
+                self.assertEqual(self.result()["status"], "failed")
+
+    def test_gateway_seam_failure_before_the_gateway_step_records_no_seam_run(self):
+        self.gateway_seam()
+        self.env["MOCK_BOOTSTRAP_RC"] = "1"
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIs(self.result()["gateway_seam"], False)
+        self.assertIsNone(self.result()["gateway"])
+        self.assertEqual(self.result()["requested_gateway"], "onecli")
+
     def test_iron_proxy_needs_the_gateway_seam(self):
         self.env["NANOCLAW_E2E_GATEWAY"] = "iron-proxy"
         run = self.run_installer()
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("needs the gateway seam", run.stderr)
         self.assertEqual(self.result()["status"], "failed")
+        self.assertIsNone(self.result()["gateway"])
+        self.assertEqual(self.result()["requested_gateway"], "iron-proxy")
+        self.assertIs(self.result()["gateway_seam"], False)
 
     def test_invalid_gateway_is_rejected_before_any_step(self):
         self.env["NANOCLAW_E2E_GATEWAY"] = "vault-of-doom"
