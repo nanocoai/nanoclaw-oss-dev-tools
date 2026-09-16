@@ -6,3 +6,7 @@ __pycache__/
 # Private live-run evidence and machine-specific terminal prototype.
 /evidence/
 /tools/shared-terminal/
+
+# typesafe-triage raw answers (may contain issue bodies) and this clone's worktrees.
+/skills/typesafe-triage/output/
+/.worktrees/
