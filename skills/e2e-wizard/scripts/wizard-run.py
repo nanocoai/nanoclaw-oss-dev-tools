@@ -236,7 +236,7 @@ def verify_codex_target(root, terminal, method, require_fallback=False):
         raise Failure('auth', 'Isolated Codex login left a personal auth file behind', 1)
     try:
         secrets_report = json.loads(subprocess.check_output(
-            ['onecli', 'secrets', 'list'], text=True, timeout=30,
+            ['onecli', 'secrets', 'list'], text=True, timeout=30, env=verification_environment(),
         ))
     except (OSError, subprocess.SubprocessError, ValueError):
         raise Failure('auth', 'Could not verify the OneCLI Codex vault entry', 1)
@@ -261,6 +261,32 @@ def verify_codex_target(root, terminal, method, require_fallback=False):
     }
 
 
+def verification_environment():
+    """Find tools installed by the wizard without changing its parent shell.
+
+    nanoclaw.sh restores ~/.local/bin and npm's global prefix after bootstrap.
+    Its child PATH cannot propagate back to this verifier, so replay those
+    read-only lookups for the post-wizard CLI checks as well.
+    """
+    environment = os.environ.copy()
+    paths = environment.get('PATH', os.defpath).split(os.pathsep)
+    local_bin = str(Path.home() / '.local/bin')
+    if local_bin not in paths:
+        paths.insert(0, local_bin)
+    environment['PATH'] = os.pathsep.join(paths)
+    npm = shutil.which('npm', path=environment['PATH'])
+    if not shutil.which('pnpm', path=environment['PATH']) and npm:
+        try:
+            prefix = subprocess.run([npm, 'config', 'get', 'prefix'], env=environment,
+                                    capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+            directory = Path(prefix) / 'bin'
+            if prefix and directory.is_absolute() and os.access(directory / 'pnpm', os.X_OK):
+                environment['PATH'] = str(directory) + os.pathsep + environment['PATH']
+        except (OSError, subprocess.SubprocessError):
+            pass  # The required CLI check below still fails if tools are missing.
+    return environment
+
+
 def resolve_installed_provider_names(root, pairs):
     """Resolve provider pairs through the exact NanoClaw build under test."""
     resolver = root / 'dist/providers/provider-name.js'
@@ -276,7 +302,7 @@ def resolve_installed_provider_names(root, pairs):
     try:
         resolved = json.loads(subprocess.check_output(
             ['node', '--input-type=module', '-e', program, str(resolver), json.dumps(pairs)],
-            cwd=root, text=True, timeout=30,
+            cwd=root, text=True, timeout=30, env=verification_environment(),
         ))
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         raise Failure('verify', 'Could not run the installed NanoClaw provider resolver', 1)
@@ -288,20 +314,21 @@ def resolve_installed_provider_names(root, pairs):
 
 def verify_retained_provider_group(root, provider):
     command = root / 'bin/ncl'
+    environment = verification_environment()
     try:
         listed = json.loads(subprocess.check_output(
-            [str(command), 'groups', 'list', '--json'], cwd=root, text=True, timeout=30,
+            [str(command), 'groups', 'list', '--json'], cwd=root, text=True, timeout=30, env=environment,
         ))
         groups = listed.get('data')
         if not isinstance(groups, list) or len(groups) != 1 or not groups[0].get('id'):
             raise ValueError()
         config_frame = json.loads(subprocess.check_output(
             [str(command), 'groups', 'config', 'get', '--id', str(groups[0]['id']), '--json'],
-            cwd=root, text=True, timeout=30,
+            cwd=root, text=True, timeout=30, env=environment,
         ))
         config = config_frame.get('data')
         sessions_frame = json.loads(subprocess.check_output(
-            [str(command), 'sessions', 'list', '--json'], cwd=root, text=True, timeout=30,
+            [str(command), 'sessions', 'list', '--json'], cwd=root, text=True, timeout=30, env=environment,
         ))
         sessions = sessions_frame.get('data')
     except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
@@ -338,7 +365,7 @@ def verify_claude_target(terminal, host_claude_absent_before):
         raise Failure('auth', 'Missing proof that Claude setup-token was parsed and vaulted', 1)
     try:
         report = json.loads(subprocess.check_output(
-            ['onecli', 'secrets', 'list'], text=True, timeout=30,
+            ['onecli', 'secrets', 'list'], text=True, timeout=30, env=verification_environment(),
         ))
     except (OSError, subprocess.SubprocessError, ValueError):
         raise Failure('auth', 'Could not verify the OneCLI Anthropic vault entry', 1)
