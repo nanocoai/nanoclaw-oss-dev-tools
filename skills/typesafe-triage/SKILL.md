@@ -62,7 +62,7 @@ replayed later with `--fixture`. Raw answers for every run land in
 included there; keep the directory private.
 
 Flags: `--repo`, `--issues`, `--prs`, `--area-threshold` (0.6),
-`--kind-threshold` (0.6), `--priority-threshold` (0.8), `--noul-threshold` (0.7),
+`--kind-threshold` (0.6), `--priority-threshold` (0.6), `--noul-threshold` (0.7),
 `--model`, `--timeout`, `--json`.
 
 ## Read the output
@@ -85,8 +85,10 @@ question, token usage and wall time.
 - The fixture's answers are hand-written in the documented response shapes to
   exercise the pipeline; they are not evidence of model accuracy. Evaluate
   accuracy with a live `--record` run and the agreement summary.
-- `priority/*` is maintainer-set; the default 0.8 gate keeps most priority
-  proposals as `triage/unresolved` on purpose.
+- `priority/*` is maintainer-set. The default 0.6 gate comes from the first live
+  run on nanoclaw (50 items): at 0.8 it withheld 34 of 48 priority proposals, at
+  0.6 it withheld 13 with every fired proposal agreeing with the existing label,
+  and at 0.5 disagreements appeared.
 - Existing labels are never sent to the model, so agreement is a fair comparison.
 - Requests are sequential; 50 items take roughly a minute. A request that fails
   after retries stops the run, but completed items are still saved and printed
