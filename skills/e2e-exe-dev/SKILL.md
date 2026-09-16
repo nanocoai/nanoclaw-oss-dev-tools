@@ -263,8 +263,10 @@ The target needs `git` and `python3` before starting the installer. The exe.dev
 driver installs these if missing; provision them yourself on other hosts.
 
 Env it honors: `NANOCLAW_E2E_ROOT`, `NANOCLAW_E2E_KEY_FILE`,
-`NANOCLAW_ONECLI_API_HOST` + `NANOCLAW_ONECLI_API_TOKEN` (remote gateway
-instead of a local install — the same vars `setup/auto.ts` reads),
+`NANOCLAW_E2E_GATEWAY` (`onecli`, the default, or `iron-proxy`; only refs on
+the gateway seam can select Iron — see below), `NANOCLAW_ONECLI_API_HOST` +
+`NANOCLAW_ONECLI_API_TOKEN` (remote gateway instead of a local install — the
+same vars `setup/auto.ts` reads),
 `NANOCLAW_DISPLAY_NAME`, `NANOCLAW_E2E_TZ` (default `UTC`),
 `NANOCLAW_E2E_KEEP_AGENT` (default `1`), `NANOCLAW_E2E_FORCE_AUTH` (`1`
 replaces an existing vault secret with the key file — token rotation on a
@@ -319,8 +321,8 @@ installer adds sequencing and assertions only.
 | 1 | `bash setup.sh` | The launcher's prompt-free bootstrap (`nanoclaw.sh` runs it under a spinner): Node 22 via `setup/install-node.sh`, pnpm via corepack/npm, `pnpm install --frozen-lockfile`, native-module check |
 | 2 | `bash setup/install-docker.sh`, then `sg docker` re-exec if the socket is group-gated | `setup/container.ts` does the same for its own step; done once up front because the `onecli` step (a docker-compose install) needs the daemon first |
 | 3 | `--step environment` | Informational (`setup/environment.ts` never fails on a missing Docker) — kept for the log |
-| 4 | `--step onecli` \| `--reuse` \| `--remote-url <host>` | `setup/onecli.ts`; mode chosen the way `setup/auto.ts` chooses it (`NANOCLAW_ONECLI_API_HOST` → remote; existing install → reuse; else fresh `curl onecli.sh/install \| sh` + CLI from GitHub releases, pinned by `versions.json`) |
-| 5 | `--step auth --check`, then `--create --value <key>` only when `STATUS: missing` | `setup/auth.ts`; mirrors `runAuthStep`'s `anthropicSecretExists()` short-circuit |
+| 4 | `--step onecli` \| `--reuse` \| `--remote-url <host>` — or, on the gateway seam, `--step gateway <kind>` (see below) | `setup/onecli.ts`; mode chosen the way `setup/auto.ts` chooses it (`NANOCLAW_ONECLI_API_HOST` → remote; existing install → reuse; else fresh `curl onecli.sh/install \| sh` + CLI from GitHub releases, pinned by `versions.json`) |
+| 5 | `--step auth --check`, then `--create --value <key>` only when `STATUS: missing` — or, on the gateway seam, a vault check + `--step gateway-auth claude` (see below) | `setup/auth.ts`; mirrors `runAuthStep`'s `anthropicSecretExists()` short-circuit |
 | 6 | `--step container` | `setup/container.ts`: local `docker build` (or pull when `.env` has `NANOCLAW_HARDENED_IMAGE=true`), then the in-container smoke test |
 | 7 | `--step mounts --empty` | The wizard's own args (`setup/auto.ts`); `skipped` on re-runs is fine |
 | 8 | `--step timezone --tz <zone>` | `setup/timezone.ts` validates with `isValidTimezone` and writes `TZ` to `.env` |
@@ -331,6 +333,42 @@ installer adds sequencing and assertions only.
 
 Step output is parsed from the `=== NANOCLAW SETUP: <STEP> === … STATUS: … === END ===`
 block every step prints (`setup/status.ts`).
+
+### Refs on the gateway seam
+
+From [nanocoai/nanoclaw#3815](https://github.com/nanocoai/nanoclaw/pull/3815)
+onward the credential gateway is a seam (`setup/gateways/`): the `onecli` and
+`auth` steps are gone, `--step gateway <kind>` installs or reuses the selected
+gateway through its own `/add-<gateway>` skill, and `--step gateway-auth
+<provider>` connects the model credential. The installer detects
+`setup/gateways/step.ts` and switches to those steps; `NANOCLAW_E2E_GATEWAY`
+(driver flag `--gateway`) picks `onecli` (default) or `iron-proxy`.
+
+- **OneCLI**: the skill's auth flow has no prompt-free key path, so the
+  installer seeds the vault the way that flow's `saveSecret()` does
+  (`onecli secrets create --type anthropic --host-pattern api.anthropic.com`),
+  after the same presence check the old `auth --check` made.
+  `NANOCLAW_E2E_REQUIRE_EXISTING_AUTH` and `NANOCLAW_E2E_FORCE_AUTH` keep their
+  meaning. `NANOCLAW_E2E_ONECLI_MODE` is not consulted: the skill reuses a
+  healthy install, installs when absent, or uses the remote-gateway vars.
+- **Iron Proxy**: the credential reaches `gateway-auth` through the
+  environment of that one step. `--auth-method oauth` sets
+  `NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN` (and, for cores without
+  [#3840](https://github.com/nanocoai/nanoclaw/pull/3840), also
+  `NANOCLAW_ANTHROPIC_API_KEY`, which the fixed flow recognises by prefix);
+  `api` sets only `NANOCLAW_ANTHROPIC_API_KEY`. Iron builds its proxy image
+  from source on first install (about 3 minutes on a 4-CPU VM) and starts Iron
+  Control on `127.0.0.1:10257`.
+- Cores before #3840 return from the gateway steps without a status block;
+  the installer accepts a zero exit there, prints a `note:` line, and still
+  requires a block from every other step.
+
+Verified on **2026-09-16** against the stack tip
+`7b5eb18544aabb7dcfa3c6a09a7c1c2dfe232af3`: OneCLI + Claude and Iron Proxy +
+Claude both passed on one fresh exe.dev VM with real replies and
+`verify: success`. The Iron pass used an OAuth token; on that pre-#3840 core it
+had to be stored as `CLAUDE_CODE_OAUTH_TOKEN` by hand, which is what the
+`--auth-method oauth` handling above now does.
 
 ## Gotchas (each one cost a wrong assumption)
 

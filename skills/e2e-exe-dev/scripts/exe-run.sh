@@ -21,6 +21,7 @@
 #   --interactive  drive the real public wizard (fresh VM, requires --result-file)
 #   --provider  provider value selected from provider-options.py
 #   --auth-method  provider-owned auth method value
+#   --gateway   onecli (default) or iron-proxy on gateway-seam refs (NANOCLAW_E2E_GATEWAY)
 #   --opencode-model  full backend/model ID for OpenCode wizard runs
 #   --opencode-base-url  custom HTTP(S) API endpoint
 #   --opencode-provider  API scheme for a custom endpoint (default: openai)
@@ -49,7 +50,7 @@ DEV_TOOLS_COMMIT="" HARNESS_SHA256="" REMOVAL_REQUESTED=0
 fail() { echo "[exe-run] $1" >&2; exit "${2:-64}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name|--ref|--repo|--key-file|--credential-file|--base|--snapshot|--cpu|--memory|--disk|--result-file|--artifacts-dir|--wizard-timeout|--provider|--auth-method|--payload-ref|--opencode-model|--opencode-base-url|--opencode-provider)
+    --name|--ref|--repo|--key-file|--credential-file|--base|--snapshot|--cpu|--memory|--disk|--result-file|--artifacts-dir|--wizard-timeout|--provider|--auth-method|--payload-ref|--opencode-model|--opencode-base-url|--opencode-provider|--gateway)
       [ $# -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] || fail "$1 requires a value" ;;
   esac
   case "$1" in
@@ -67,6 +68,7 @@ while [ $# -gt 0 ]; do
     --interactive) INTERACTIVE=1; shift ;;
     --provider) PROVIDER="$2"; shift 2 ;;
     --auth-method) AUTH_METHOD="$2"; shift 2 ;;
+    --gateway) export NANOCLAW_E2E_GATEWAY="$2"; shift 2 ;;
     --payload-ref) PAYLOAD_REF="$2"; shift 2 ;;
     --opencode-model) OPENCODE_MODEL="$2"; shift 2 ;;
     --opencode-base-url) OPENCODE_BASE_URL="$2"; shift 2 ;;
@@ -373,6 +375,7 @@ for name in (
     "NANOCLAW_ONECLI_API_HOST", "NANOCLAW_ONECLI_API_TOKEN",
     "NANOCLAW_DISPLAY_NAME", "NANOCLAW_E2E_TZ",
     "NANOCLAW_E2E_KEEP_AGENT", "NANOCLAW_E2E_FORCE_AUTH",
+    "NANOCLAW_E2E_GATEWAY",
 ):
     if name in os.environ:
         print("export " + name + "=" + shlex.quote(os.environ[name]))

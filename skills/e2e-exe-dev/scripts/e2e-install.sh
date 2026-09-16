@@ -26,6 +26,8 @@
 #                              a registered group; 0 deletes it after the ping
 #   NANOCLAW_E2E_FORCE_AUTH    1 replaces an existing vault secret with the key
 #                              file (token rotation on a --base VM)
+#   NANOCLAW_E2E_GATEWAY      gateway kind on the gateway seam (setup/gateways/):
+#                             onecli (default) or iron-proxy; ignored by older refs
 #   NANOCLAW_E2E_ONECLI_MODE   auto (default), reuse, or install; Mac drivers
 #                              require an explicit existing/new gateway choice
 #   NANOCLAW_E2E_REQUIRE_EXISTING_AUTH  1 forbids creating/replacing a vault secret
@@ -59,6 +61,10 @@ fi
 case "${NANOCLAW_E2E_ONECLI_MODE:-auto}" in
   auto|reuse|install) ;;
   *) echo '[e2e] FAIL: invalid NANOCLAW_E2E_ONECLI_MODE' >&2; exit 1 ;;
+esac
+case "${NANOCLAW_E2E_GATEWAY:-onecli}" in
+  onecli|iron-proxy) ;;
+  *) echo '[e2e] FAIL: invalid NANOCLAW_E2E_GATEWAY (onecli or iron-proxy)' >&2; exit 1 ;;
 esac
 KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
 PROVIDER="${NANOCLAW_E2E_PROVIDER:-claude}"
@@ -183,10 +189,21 @@ step() {
   # A zero exit without a successful status block is not a completed step.
   case "$name:$STATUS" in
     *:success|auth:missing|auth:skipped|mounts:skipped) ;;
+    # Gateway seam refs before nanocoai/nanoclaw#3840 return without a block.
+    gateway:|gateway-auth:) [ "$rc" -ne 0 ] || say "note: $name emitted no status block (pre-#3840 core); zero exit accepted" ;;
     *) [ "$rc" -ne 0 ] || rc=1 ;;
   esac
   echo "[e2e] $name -> exit=$rc status=${STATUS:-none}"
   return "$rc"
+}
+# OneCLI secret presence, parsed the way the OneCLI skill's auth flow parses it.
+onecli_has_anthropic_secret() {
+  onecli secrets list 2>/dev/null | python3 -c '
+import json, re, sys
+data = json.load(sys.stdin).get("data", []) or []
+ok = any(s.get("type") == "anthropic" or re.search("anthropic", s.get("name") or "", re.I) for s in data)
+sys.exit(0 if ok else 1)
+' 2>/dev/null
 }
 field() {
   printf '%s' "$LAST_BLOCK" | awk -v k="$1: " 'index($0, k)==1 {print substr($0, length(k)+1)}' | tail -n1
@@ -271,40 +288,93 @@ fi
 # ── 3. Wizard steps, in setup/auto.ts order ───────────────────────────────────
 step environment || die "environment step failed"
 
-if [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = reuse ]; then
-  step onecli --reuse || die "onecli (reuse) failed"
-elif [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = install ]; then
-  step onecli || die "onecli install failed"
-elif [ -n "${NANOCLAW_ONECLI_API_HOST:-}" ]; then
-  step onecli --remote-url "$NANOCLAW_ONECLI_API_HOST" || die "onecli (remote) failed"
-elif command -v onecli >/dev/null 2>&1 && [ -f .env ] && grep -q '^ONECLI_URL=' .env; then
-  step onecli --reuse || die "onecli (reuse) failed"
+GATEWAY="${NANOCLAW_E2E_GATEWAY:-onecli}"
+KEY_VALUE=""
+if [ -f setup/gateways/step.ts ]; then
+  # Gateway seam (nanocoai/nanoclaw#3815 onward): the wizard installs or reuses
+  # the selected gateway through its own skill (`--step gateway <kind>`) and
+  # connects the model credential through `--step gateway-auth <provider>`.
+  # The `onecli` and `auth` steps no longer exist on these refs.
+  say "gateway seam detected (setup/gateways/) — gateway: $GATEWAY"
+  step gateway "$GATEWAY" || die "gateway $GATEWAY install failed"
+  export PATH="$HOME/.local/bin:$PATH"; hash -r
+  case "$GATEWAY" in
+    onecli)
+      # The OneCLI skill's auth flow has no prompt-free key path; seed the vault
+      # the way its saveSecret() does, with the same check the old `auth` step
+      # made first, so a reused or shared vault is never overwritten by accident.
+      if onecli_has_anthropic_secret; then STATUS=success; else STATUS=missing; fi
+      if [ "${NANOCLAW_E2E_REQUIRE_EXISTING_AUTH:-0}" = 1 ]; then
+        [ "$STATUS" = success ] || die "the selected gateway has no usable existing Anthropic credential; it was not changed"
+        [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" != 1 ] || die "credential replacement is disabled for this shared gateway"
+      fi
+      if [ "$STATUS" = missing ] || [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ]; then
+        [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
+        say "onecli secrets create --name Anthropic --type anthropic --value <redacted> --host-pattern api.anthropic.com"
+        # The value rides argv into onecli for one process (visible to ps). Disposable VMs only.
+        onecli secrets create --name Anthropic --type anthropic --value "$(tr -d '\r\n' < "$KEY_FILE")" \
+          --host-pattern api.anthropic.com >/dev/null 2>"$LOGS/onecli-secrets.err" \
+          || die "onecli secrets create failed (see $LOGS/onecli-secrets.err)"
+        onecli_has_anthropic_secret || die "onecli secrets create reported success but no anthropic secret is listed"
+      fi
+      step gateway-auth claude || die "gateway-auth claude failed" ;;
+    iron-proxy)
+      # Iron's auth flow takes the credential from the environment for this one
+      # process. An OAuth token goes through its own variable on refs that have
+      # it (nanocoai/nanoclaw#3840) and through the API-key variable otherwise,
+      # where the fixed flow recognises the sk-ant-oat prefix.
+      if [ "${NANOCLAW_E2E_REQUIRE_EXISTING_AUTH:-0}" = 1 ]; then
+        [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" != 1 ] || die "credential replacement is disabled for this shared gateway"
+        step gateway-auth claude || die "the selected gateway has no usable existing Anthropic credential; it was not changed"
+      else
+        [ -r "$KEY_FILE" ] || die "$KEY_FILE is unreadable"
+        KEY_VALUE="$(tr -d '\r\n' < "$KEY_FILE")"
+        if [ "$AUTH_METHOD" = oauth ]; then
+          NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN="$KEY_VALUE" NANOCLAW_ANTHROPIC_API_KEY="$KEY_VALUE" step gateway-auth claude \
+            || die "gateway-auth claude failed"
+        else
+          NANOCLAW_ANTHROPIC_API_KEY="$KEY_VALUE" step gateway-auth claude || die "gateway-auth claude failed"
+        fi
+        KEY_VALUE=""
+      fi ;;
+  esac
 else
-  step onecli || die "onecli install failed"
-fi
-export PATH="$HOME/.local/bin:$PATH"; hash -r
+  [ "$GATEWAY" = onecli ] || die "NANOCLAW_E2E_GATEWAY=$GATEWAY needs the gateway seam (setup/gateways/); this ref only has OneCLI"
+  if [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = reuse ]; then
+    step onecli --reuse || die "onecli (reuse) failed"
+  elif [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = install ]; then
+    step onecli || die "onecli install failed"
+  elif [ -n "${NANOCLAW_ONECLI_API_HOST:-}" ]; then
+    step onecli --remote-url "$NANOCLAW_ONECLI_API_HOST" || die "onecli (remote) failed"
+  elif command -v onecli >/dev/null 2>&1 && [ -f .env ] && grep -q '^ONECLI_URL=' .env; then
+    step onecli --reuse || die "onecli (reuse) failed"
+  else
+    step onecli || die "onecli install failed"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"; hash -r
 
-# Auth: the wizard's runAuthStep short-circuits when the vault already holds an
-# anthropic secret; mirror that, otherwise seed it the way setup/auth.ts does.
-step auth --check || true
-if [ "${NANOCLAW_E2E_REQUIRE_EXISTING_AUTH:-0}" = 1 ]; then
-  [ "$STATUS" = success ] || die "the selected gateway has no usable existing Anthropic credential; it was not changed"
-  [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" != 1 ] || die "credential replacement is disabled for this shared gateway"
-fi
-# NANOCLAW_E2E_FORCE_AUTH=1 replaces an existing vault secret (e.g. after
-# rotating the token on a --base VM whose snapshot still holds the old one).
-if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ] && [ "$STATUS" = "success" ]; then
-  [ -r "$KEY_FILE" ] || die "NANOCLAW_E2E_FORCE_AUTH=1 but $KEY_FILE is unreadable"
-  step auth --create --force --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create --force failed"
-  [ "$STATUS" = "success" ] || die "auth --create --force reported $STATUS"
-elif [ "$STATUS" = "missing" ]; then
-  [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
-  # --value rides argv into the step (which then execFileSync's onecli) — it
-  # is visible to `ps` on this machine for the duration. Disposable VMs only.
-  step auth --create --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create failed"
-  [ "$STATUS" = "success" ] || die "auth --create reported $STATUS"
-elif [ "$STATUS" != "success" ]; then
-  die "auth --check reported ${STATUS:-nothing} (is the OneCLI gateway up?)"
+  # Auth: the wizard's runAuthStep short-circuits when the vault already holds an
+  # anthropic secret; mirror that, otherwise seed it the way setup/auth.ts does.
+  step auth --check || true
+  if [ "${NANOCLAW_E2E_REQUIRE_EXISTING_AUTH:-0}" = 1 ]; then
+    [ "$STATUS" = success ] || die "the selected gateway has no usable existing Anthropic credential; it was not changed"
+    [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" != 1 ] || die "credential replacement is disabled for this shared gateway"
+  fi
+  # NANOCLAW_E2E_FORCE_AUTH=1 replaces an existing vault secret (e.g. after
+  # rotating the token on a --base VM whose snapshot still holds the old one).
+  if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ] && [ "$STATUS" = "success" ]; then
+    [ -r "$KEY_FILE" ] || die "NANOCLAW_E2E_FORCE_AUTH=1 but $KEY_FILE is unreadable"
+    step auth --create --force --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create --force failed"
+    [ "$STATUS" = "success" ] || die "auth --create --force reported $STATUS"
+  elif [ "$STATUS" = "missing" ]; then
+    [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
+    # --value rides argv into the step (which then execFileSync's onecli) — it
+    # is visible to `ps` on this machine for the duration. Disposable VMs only.
+    step auth --create --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create failed"
+    [ "$STATUS" = "success" ] || die "auth --create reported $STATUS"
+  elif [ "$STATUS" != "success" ]; then
+    die "auth --check reported ${STATUS:-nothing} (is the OneCLI gateway up?)"
+  fi
 fi
 
 # Local image build unless .env sets NANOCLAW_HARDENED_IMAGE=true (pull path).

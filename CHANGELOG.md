@@ -25,6 +25,16 @@ Development milestone (plugin 0.11.0); not yet released.
   the exact NanoClaw commit. Verify installed payload files, saved backend/model
   defaults and the retained agent's effective provider in sanitized evidence.
 
+### Changed
+
+- Headless installer follows NanoClaw's credential-gateway seam
+  (nanocoai/nanoclaw#3815 onward): when the checkout has `setup/gateways/`,
+  it runs `--step gateway <kind>` and `--step gateway-auth claude` instead of
+  the removed `onecli` and `auth` steps, seeds the OneCLI vault the way the
+  OneCLI skill does, or hands an API key / OAuth token to Iron Proxy through
+  that step's environment. New `--gateway onecli|iron-proxy` driver flag and
+  `NANOCLAW_E2E_GATEWAY`. Older refs keep the previous behaviour.
+
 ### Fixed
 
 - Find Node, pnpm and OneCLI installed by the wizard in `~/.local/bin` (or pnpm
