@@ -1,15 +1,19 @@
 ---
 name: typesafe-triage
-description: Dry-run label triage for nanocoai/nanoclaw issues and pull requests using the TypeSafe System One decision API. Proposes area, kind, priority and triage labels with confidence, compares them with the existing labels, and writes nothing to GitHub. Use to preview or evaluate automated triage, or to replay the offline fixture without a key.
+description: Label triage for nanocoai/nanoclaw issues and pull requests using the TypeSafe System One decision API. Proposes area, kind, priority and triage labels with confidence, compares them with the existing labels, and by default writes nothing to GitHub; an --apply flag adds only the two label questions proven out at 100% agreement (kind, needs_repro). Use to preview or evaluate automated triage, apply the proven labels, or replay the offline fixture without a key.
 license: MIT
 ---
 
-# TypeSafe triage dry run
+# TypeSafe triage
 
 Fetch the most recently updated open issues and pull requests, ask TypeSafe one
 fan-out request per item, gate every answer on confidence, and print proposed
-labels next to the labels the item already carries. The script is read-only
-towards GitHub. Applying labels is a separate, human decision.
+labels next to the labels the item already carries. Dry run by default: the
+script is read-only towards GitHub. Pass `--apply` to add the `kind` and
+`needs_repro` proposals that measured 100% agreement on a live run — see
+[Applying labels](#applying-labels---apply) below. Every other question
+(`area`, `priority`, `pr_ready`) stays proposal-only; applying it is a separate,
+human decision.
 
 Entry point: [typesafe-triage.py](scripts/typesafe-triage.py) (Python 3.10+,
 standard library only). Offline fixture:
@@ -35,7 +39,8 @@ Re-check the rubrics when the label set or the labeler mapping changes.
 
 ## Prerequisites
 
-- `gh` authenticated with read access to the target repository (live mode only).
+- `gh` authenticated with read access to the target repository (live mode only);
+  `issues:write` and `pull-requests:write` as well if you pass `--apply`.
 - `TYPESAFE_API_KEY` exported in the shell (live mode only). The script reads it
   from the environment at request time, never from a file, and never prints it.
   Do not put the key in `.env`, a fixture, or any file inside a repository.
@@ -63,7 +68,39 @@ included there; keep the directory private.
 
 Flags: `--repo`, `--issues`, `--prs`, `--area-threshold` (0.6),
 `--kind-threshold` (0.6), `--priority-threshold` (0.6), `--noul-threshold` (0.7),
-`--model`, `--timeout`, `--json`.
+`--model`, `--timeout`, `--json`, `--apply`, `--since <ISO timestamp>`,
+`--only-unlabeled`.
+
+## Applying labels (`--apply`)
+
+`--apply` adds exactly two things, and only when the confidence gate already
+cleared them:
+
+- The ungated `kind/*` proposal, when the item has no existing `kind/*` label.
+- On issues, `triage/needs-repro`, when `needs_repro` resolved yes (p >= the
+  noul threshold) and the label is not already present.
+
+Nothing is ever removed. `area/*`, `priority/*` and `pr_ready` are never
+applied by this flag, and the script never comments. Labels go through
+`gh issue edit --add-label` / `gh pr edit --add-label`, the same `gh` CLI the
+read-only fetch uses, via a subprocess helper tests mock instead of calling.
+Immediately before writing, each eligible label is re-checked against the
+item's live labels (one extra read-only `gh api` call) so a label added by a
+human between fetch and write is respected, not overwritten with a second one.
+Rerunning with `--apply` is safe: the same eligibility checks (no existing
+`kind/*` label, no existing `triage/needs-repro`) make it a no-op on anything
+already labeled. `--apply` cannot be combined with `--fixture`, which replays
+a frozen hand-written snapshot rather than an item's real state.
+
+`--since <ISO timestamp>` (items created strictly after it) and
+`--only-unlabeled` (skip items with any existing `kind/*` label) narrow the
+item set independently of `--apply` — a scheduled unattended run typically
+passes `--only-unlabeled` and conditionally `--apply`; see
+[.github/workflows/typesafe-triage.yml](../../.github/workflows/typesafe-triage.yml)
+and [docs/typesafe-triage.md](../../docs/typesafe-triage.md#running-it-unattended-github-actions)
+for the scheduled setup, its two required secrets (`TYPESAFE_API_KEY`,
+`TRIAGE_GH_TOKEN`), the `TYPESAFE_TRIAGE_APPLY` repository variable that gates
+the schedule's `--apply`, and how to roll it back.
 
 ## Read the output
 
@@ -77,11 +114,15 @@ without the script guessing.
 
 The summary reports agreement per question over compared items only
 (agree / (agree + disagree)), the number of items with at least one gated
-question, token usage and wall time.
+question, the number of labels applied (0 unless `--apply` was passed), token
+usage and wall time. With `--apply`, the table also gets an `Applied` column
+and `--json` an `applied` list per item.
 
 ## Limits
 
-- Dry run only. There is no flag that writes labels, comments or anything else.
+- Dry run unless `--apply` is passed, and even then only `kind` and
+  `needs_repro` are ever written — never `area/*`, `priority/*`, `pr_ready`,
+  and never a comment or a label removal.
 - The fixture's answers are hand-written in the documented response shapes to
   exercise the pipeline; they are not evidence of model accuracy. Evaluate
   accuracy with a live `--record` run and the agreement summary.
@@ -93,3 +134,7 @@ question, token usage and wall time.
 - Requests are sequential; 50 items take roughly a minute. A request that fails
   after retries stops the run, but completed items are still saved and printed
   (exit status 1, `partial` names the failing item).
+- Exit codes: `0` success, `1` a real error or partial failure, `2` missing
+  `TYPESAFE_API_KEY` in live mode, `3` nothing matched after fetch/filters — a
+  distinct status from `1` so a caller can tell "nothing to do" from a
+  failure without matching text against stderr.

@@ -1,0 +1,145 @@
+name: TypeSafe triage
+
+# Runs the typesafe-triage skill's script against a target repo (default
+# nanocoai/nanoclaw). Manual runs (workflow_dispatch) can opt into --apply
+# explicitly; the scheduled run only applies labels when the TYPESAFE_TRIAGE_APPLY
+# repository variable is "true" (see skills/typesafe-triage/scripts/typesafe-triage.py
+# and docs/typesafe-triage.md for what --apply does: it adds only the ungated
+# kind/* label and, on issues, an ungated triage/needs-repro label; nothing is
+# ever removed and area/priority/pr_ready are never touched).
+#
+# Required secrets (create and store these; nothing here has a default):
+#   TYPESAFE_API_KEY   TypeSafe System One API key.
+#   TRIAGE_GH_TOKEN     A token scoped to the target repo with issues:write and
+#                       pull-requests:write (a fine-grained PAT restricted to
+#                       that one repo is recommended). The default GITHUB_TOKEN
+#                       is not used here because triage commonly targets a
+#                       different repo (nanocoai/nanoclaw) than the one this
+#                       workflow runs in.
+#
+# Optional repository variable:
+#   TYPESAFE_TRIAGE_APPLY  Set to "true" to let the scheduled run pass --apply.
+#                          Unset (or any other value) keeps the schedule a dry
+#                          run whose table is uploaded as a workflow artifact.
+#                          Rollback: unset this variable. Labels already applied
+#                          are additive and are not undone (see docs/typesafe-triage.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target owner/repo to triage"
+        required: false
+        default: "nanocoai/nanoclaw"
+        type: string
+      apply:
+        description: "Apply the ungated kind/* and triage/needs-repro labels"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # Every 6 hours, off the hour to avoid the top-of-hour scheduling crowd.
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: typesafe-triage
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Triage
+    runs-on: ubuntu-latest
+    # Results are only written after the whole batch finishes (no incremental save), and the
+    # scheduled run's wider --issues/--prs window (up to 160 items, sequential API calls plus
+    # any --apply gh writes) can take a while on a large backlog; a job killed by the timeout
+    # mid-run reports nothing, even for items already labeled. This is a generous heuristic
+    # ceiling, not a guarantee for an unbounded backlog — if it's ever hit in practice, lower
+    # --issues/--prs for this schedule instead of only raising the number further.
+    timeout-minutes: 120
+    env:
+      TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+      GH_TOKEN: ${{ secrets.TRIAGE_GH_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Run triage
+        id: triage
+        shell: bash
+        # Untrusted-looking inputs (repo, apply) travel through env vars rather than being
+        # interpolated directly into the script text, so they can never be read as shell code.
+        env:
+          TRIAGE_REPO_INPUT: ${{ github.event.inputs.repo }}
+          TRIAGE_APPLY_INPUT: ${{ github.event.inputs.apply }}
+          TRIAGE_EVENT_NAME: ${{ github.event_name }}
+          TRIAGE_APPLY_VAR: ${{ vars.TYPESAFE_TRIAGE_APPLY }}
+        run: |
+          set -uo pipefail
+          REPO="${TRIAGE_REPO_INPUT:-nanocoai/nanoclaw}"
+          ARGS=(--repo "$REPO")
+          if [ "$TRIAGE_EVENT_NAME" = "schedule" ]; then
+            # --only-unlabeled filters after the fetch, so a small fetch window can strand an
+            # unlabeled item stuck behind already-labeled, more-recently-updated ones. Widen it
+            # for the unattended run. This is a fixed top-N-most-recently-updated window every
+            # time, so raising the schedule's frequency alone does not help a stuck item — only
+            # a large enough --issues/--prs, or an occasional wider run without
+            # --only-unlabeled, does (see docs/typesafe-triage.md).
+            ARGS+=(--issues 100 --prs 60 --only-unlabeled)
+            if [ "$TRIAGE_APPLY_VAR" = "true" ]; then
+              ARGS+=(--apply)
+            fi
+          else
+            if [ "$TRIAGE_APPLY_INPUT" = "true" ]; then
+              ARGS+=(--apply)
+            fi
+          fi
+          echo "running: python3 skills/typesafe-triage/scripts/typesafe-triage.py ${ARGS[*]}"
+          # stdout (the table) and stderr (diagnostics) go to separate files via plain
+          # redirection — not a pipe or process substitution, so the shell can't move on before
+          # both are fully written — and are printed back out together inside the stop-commands
+          # guard below, since either stream can embed untrusted issue/PR title text.
+          set +e
+          python3 skills/typesafe-triage/scripts/typesafe-triage.py "${ARGS[@]}" \
+            >triage-table.txt 2>triage-log.txt
+          code=$?
+          set -e
+          # An issue/PR title is untrusted and could contain a GitHub Actions workflow command
+          # (e.g. "::error::" or "##[...]"); stop-commands disables parsing for the one place
+          # that content reaches this step's own output. Both files print to stdout, not one to
+          # stderr: stdout and stderr are separate, concurrently-read streams with no guaranteed
+          # ordering between them, so a stop-commands marker on stdout would not reliably guard
+          # content written to stderr at roughly the same time.
+          token="stopcommands-$(date +%s%N)-$RANDOM"
+          echo "::stop-commands::$token"
+          cat triage-table.txt
+          cat triage-log.txt
+          echo "::$token::"
+          # Exit code 3 means "ran cleanly, nothing matched" (a dedicated status, not text
+          # matched against stderr — an upstream error body is arbitrary content and could
+          # otherwise coincidentally contain the same diagnostic line the script itself prints).
+          if [ "$code" -eq 3 ]; then
+            echo "Nothing matched this run (no open items in scope) — not a failure."
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Upload triage table
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: typesafe-triage-${{ github.run_id }}
+          path: |
+            triage-table.txt
+            triage-log.txt
+          retention-days: 14
+          if-no-files-found: warn

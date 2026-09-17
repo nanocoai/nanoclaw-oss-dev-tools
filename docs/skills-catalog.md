@@ -1,13 +1,15 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
 Verified: **2026-09-16**. This checkout contains **8 skills**, with plugin
-manifest version **0.12.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
+manifest version **0.12.1** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
-provides a local terminal for human and agent handoffs. `typesafe-triage` previews
-confidence-gated issue and PR labels from the TypeSafe decision API without
-writing to GitHub.
+provides a local terminal for human and agent handoffs. `typesafe-triage` proposes
+confidence-gated issue and PR labels from the TypeSafe decision API, dry run by
+default; an `--apply` flag (also run on a schedule via
+`.github/workflows/typesafe-triage.yml`) writes only the `kind` and
+`needs_repro` labels that measured 100% agreement on a live run.
 
 Installed skill copies must be updated separately, and the manifest version
 does not imply a tagged GitHub release.
@@ -343,13 +345,19 @@ run from any directory; it needs no NanoClaw checkout.
   (`gh api`), sends one fan-out request per item (area, kind, priority, and
   `needs_repro` for issues or `pr_ready` for PRs), and prints proposed labels
   with confidence, the existing labels and an AGREE / DISAGREE / NEW verdict.
-- Gates on confidence (area and kind 0.6, priority 0.8, yes/no 0.7, all
+- Gates on confidence (area, kind and priority 0.6, yes/no 0.7, all
   overridable) and proposes `triage/unresolved` below the gate instead of guessing.
 - `--fixture` replays recorded items and responses offline; the shipped fixture
   holds five real items fetched on 2026-09-16 with hand-written answers.
   `--record` saves a live run in the same format. Raw answers go to a gitignored
   output directory.
-- Writes nothing to GitHub. Details: [typesafe-triage.md](typesafe-triage.md).
+- Dry run by default: writes nothing to GitHub. `--apply` writes only the
+  ungated `kind/*` proposal and, on issues, an ungated `triage/needs-repro` —
+  the two questions that measured 100% agreement on a live run — via
+  `gh issue edit` / `gh pr edit --add-label`, never removing a label or
+  touching `area/*`/`priority/*`/`pr_ready`. `--since` and `--only-unlabeled`
+  narrow which items are considered; `.github/workflows/typesafe-triage.yml`
+  runs it on a schedule. Details: [typesafe-triage.md](typesafe-triage.md).
 
 Validation is offline only: fixture replay through the full pipeline and the
 mocked-transport tests in `tests/test_typesafe_triage.py`. No live TypeSafe
