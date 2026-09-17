@@ -903,6 +903,19 @@ elif args[:2] == ["secrets", "create"]:
 sys.exit(0)
 ''')
         self.env.update(MOCK_ONECLI_CALLS=str(onecli_calls), MOCK_ONECLI_CREATED=str(created))
+        # A host with a real systemctl but no user manager (CI) must not turn
+        # the service-environment inspection into a failure of every seam test.
+        self.executable("systemctl", PYTHON + r'''
+import sys
+args = sys.argv[1:]
+if "MainPID" in args:
+    print("0")
+elif "show-environment" in args:
+    print("PATH=/usr/bin")
+elif "show" in args:
+    print("Environment=")
+sys.exit(0)
+''')
         key = self.root / "credential"
         key.write_text("FAKE_SECRET_DO_NOT_LOG")
         self.env["NANOCLAW_E2E_KEY_FILE"] = str(key)
