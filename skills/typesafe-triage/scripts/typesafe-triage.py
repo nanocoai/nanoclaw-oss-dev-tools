@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Dry-run issue and PR triage for nanocoai/nanoclaw using the TypeSafe decision API.
+"""Issue and PR triage for nanocoai/nanoclaw using the TypeSafe decision API.
 
 Fetches recently updated open issues and pull requests with ``gh``, sends one
 fan-out request per item to TypeSafe System One (area, kind, priority, and a
 yes/no question), applies a confidence gate, and prints the proposed labels
-next to the existing ones. Nothing is written to GitHub. Raw answers are saved
-as JSON under a gitignored output directory.
+next to the existing ones. Dry run by default: nothing is written to GitHub.
+Raw answers are saved as JSON under a gitignored output directory.
+
+``--apply`` adds the two labels that measured 100% agreement on a live run:
+the ungated ``kind/*`` proposal (when the item has no existing ``kind/*``
+label) and, on issues only, ``triage/needs-repro`` when ``needs_repro``
+resolved yes and the label is not already present. Nothing is ever removed,
+and area/priority/pr_ready are never applied or touched.
 
 ``--fixture <file>`` replays recorded items and API responses so the whole
 pipeline runs offline. ``TYPESAFE_API_KEY`` is read from the environment only
@@ -172,6 +178,14 @@ class PartialFailure(TriageError):
         self.usage = usage
 
 
+class ApplyFailure(TriageError):
+    """One label write failed after an earlier label for the same item already succeeded."""
+
+    def __init__(self, message, applied):
+        super().__init__(message)
+        self.applied = applied
+
+
 def utc_now():
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -261,6 +275,7 @@ def normalize_issue(raw):
         "labels": sorted(label["name"] for label in raw.get("labels") or []),
         "url": raw.get("html_url") or "",
         "updated_at": raw.get("updated_at") or "",
+        "created_at": raw.get("created_at") or "",
     }
 
 
@@ -293,6 +308,49 @@ def fetch_items(repo, issue_limit, pull_limit, run=subprocess.run):
             files = gh_pages("repos/%s/pulls/%d/files" % (repo, entry["number"]), run, max_pages=5)
             items.append(normalize_pull(entry, files))
     return items
+
+
+def parse_iso(value):
+    """Parse an ISO-8601 timestamp, accepting a trailing 'Z' (UTC).
+
+    A timestamp with no UTC offset at all (naive) is assumed to already be UTC,
+    so it compares cleanly against GitHub's always-offset-aware timestamps
+    instead of raising ``TypeError`` at filter time.
+    """
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def filter_since(items, since):
+    """Keep only items created strictly after ``since`` (an ISO-8601 timestamp).
+
+    Items with no recorded ``created_at`` are dropped rather than guessed at.
+    """
+    if not since:
+        return items
+    threshold = parse_iso(since)
+    kept = []
+    for item in items:
+        created = item.get("created_at")
+        if not created:
+            continue
+        try:
+            when = parse_iso(created)
+        except ValueError:
+            continue
+        if when > threshold:
+            kept.append(item)
+    return kept
+
+
+def filter_unlabeled(items):
+    """Keep only items that carry no existing ``kind/*`` label."""
+    return [item for item in items if not any(label_family(name) == "kind/" for name in item.get("labels") or [])]
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +492,7 @@ class HttpTransport:
             opener = self.opener or urllib.request.urlopen
             try:
                 with opener(request, timeout=self.timeout) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                    raw = response.read().decode("utf-8")
             except urllib.error.HTTPError as error:
                 detail = ""
                 try:
@@ -446,12 +504,40 @@ class HttpTransport:
                 last_error = "HTTP %s from TypeSafe: %s" % (error.code, self.redact(detail.strip() or str(error.reason)))
                 if error.code not in self.RETRY_STATUSES or attempt == self.attempts:
                     raise TriageError(last_error)
+                self.sleep(delay)
+                delay *= 2
+                continue
             except urllib.error.URLError as error:
                 last_error = "could not reach TypeSafe: %s" % self.redact(str(error.reason))
                 if attempt == self.attempts:
                     raise TriageError(last_error)
-            self.sleep(delay)
-            delay *= 2
+                self.sleep(delay)
+                delay *= 2
+                continue
+            except TimeoutError as error:
+                # A read (not connect) timeout raises this directly rather than URLError.
+                last_error = "TypeSafe request timed out: %s" % self.redact(str(error) or "timed out")
+                if attempt == self.attempts:
+                    raise TriageError(last_error)
+                self.sleep(delay)
+                delay *= 2
+                continue
+            except Exception as error:
+                # Anything else reading the response (a dropped connection mid-body, etc.) is a
+                # transient network condition too, not a TypeSafe API error to surface verbatim;
+                # retry it the same way, since the request itself has no side effects to worry
+                # about duplicating.
+                last_error = "TypeSafe request failed: %s" % self.redact(str(error) or type(error).__name__)
+                if attempt == self.attempts:
+                    raise TriageError(last_error)
+                self.sleep(delay)
+                delay *= 2
+                continue
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as error:
+                # A 200 with an unparseable body is not a transient condition retries would fix.
+                raise TriageError("TypeSafe returned a response that is not valid JSON: %s" % self.redact(str(error)))
         raise TriageError(last_error or "TypeSafe request failed")
 
     def redact(self, text):
@@ -589,6 +675,7 @@ def decide(item, answers, thresholds):
 def summarize(results):
     questions = {}
     below_gate_items = 0
+    labels_applied = 0
     for result in results:
         item_gated = False
         for proposal in result["proposals"]:
@@ -607,17 +694,130 @@ def summarize(results):
                 entry["skip"] += 1
         if item_gated:
             below_gate_items += 1
+        labels_applied += len(result.get("applied") or [])
     for entry in questions.values():
         compared = entry["agree"] + entry["disagree"]
         entry["agreement_rate"] = round(entry["agree"] / compared, 3) if compared else None
-    return {"questions": questions, "items_below_gate": below_gate_items, "items": len(results)}
+    return {"questions": questions, "items_below_gate": below_gate_items, "items": len(results), "labels_applied": labels_applied}
+
+
+# ---------------------------------------------------------------------------
+# Apply (--apply only): kind and needs_repro, additive only
+# ---------------------------------------------------------------------------
+
+def labels_to_apply(item, proposals):
+    """Kind and needs_repro proposals eligible for --apply.
+
+    Only two questions ever apply: ``kind`` (when ungated and the item has no
+    existing ``kind/*`` label) and ``needs_repro`` (when it resolved yes and the
+    issue has no existing ``triage/needs-repro`` label). area, priority and
+    pr_ready are never applied, and no label is ever removed.
+    """
+    existing = set(item.get("labels") or [])
+    to_apply = []
+    for proposal in proposals:
+        if proposal["question"] == "kind":
+            if proposal["gated"] or not proposal["label"] or proposal["label"] == UNRESOLVED:
+                continue
+            if any(label_family(name) == "kind/" for name in existing):
+                continue
+            to_apply.append(proposal["label"])
+        elif proposal["question"] == "needs_repro":
+            if item["type"] != "issue":
+                continue
+            if proposal["gated"] or proposal["label"] != NEEDS_REPRO:
+                continue
+            if NEEDS_REPRO in existing:
+                continue
+            # needs_repro's whole premise is "this is a confirmed bug/security report". decide()
+            # only checks the model's raw top kind choice for that (SKIP when it's a known other
+            # kind), not whether that choice actually cleared its own confidence gate — so an
+            # unresolved/gated kind (including no kind answer at all) must still withhold
+            # needs_repro here, even though decide() itself proposed a label for it.
+            kind_proposal = next((p for p in proposals if p["question"] == "kind"), None)
+            if kind_proposal is None or kind_proposal["gated"] or kind_proposal["label"] not in ("kind/bug", "kind/security"):
+                continue
+            to_apply.append(proposal["label"])
+    return to_apply
+
+
+def gh_add_label(repo, item_type, number, label, run=subprocess.run):
+    """Add one label via ``gh issue edit`` / ``gh pr edit --add-label``. Additive only."""
+    subcommand = "pr" if item_type == "pr" else "issue"
+    command = ["gh", subcommand, "edit", str(number), "-R", repo, "--add-label", label]
+    result = run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        # gh often prints the actual cause on one line and a generic "failed to update N
+        # issue(s)" summary after it; keep a tail long enough to carry both, not just the
+        # last line, which would keep only the generic summary and drop the real cause.
+        detail = (result.stderr or result.stdout or "").strip()
+        raise TriageError("gh %s edit --add-label failed for %s#%d: %s" % (
+            subcommand, repo, number, detail[-300:] if detail else "no output"))
+
+
+def current_labels(repo, number, run=subprocess.run):
+    """Read an item's labels right now, via the same read-only ``gh api`` fetch_items uses."""
+    raw = gh_json("repos/%s/issues/%d" % (repo, number), run=run)
+    return set(label["name"] for label in raw.get("labels") or [])
+
+
+def apply_item_labels(repo, item, proposals, run=subprocess.run):
+    """Apply the eligible kind/needs_repro labels for one item; returns what was added.
+
+    ``labels_to_apply`` decides eligibility from the labels as they stood when
+    the item was fetched; a live run can take a while, so immediately before
+    writing we re-read the item's labels once and skip anything a human (or a
+    concurrent run) added to that family in the meantime. This keeps the "no
+    existing kind/* label" / "no existing triage/needs-repro" promise true at
+    write time, not just at fetch time — and also withholds needs_repro if the
+    live kind/* label is no longer bug/security, since a human reclassifying
+    the item invalidates needs_repro's "this is a bug report" premise even
+    though the label itself wasn't present a moment ago.
+    """
+    candidates = labels_to_apply(item, proposals)
+    if not candidates:
+        return []
+    try:
+        live = current_labels(repo, item["number"], run=run)
+    except Exception as error:
+        # Not just TriageError: the subprocess call itself can raise (e.g. the gh binary is
+        # missing, or the OS refuses to spawn it) before there is any exit code to check.
+        raise ApplyFailure(str(error), [])
+    applied = []
+    for label in candidates:
+        if label_family(label) == "kind/":
+            if any(label_family(name) == "kind/" for name in live):
+                continue
+        elif label == NEEDS_REPRO:
+            if NEEDS_REPRO in live:
+                continue
+            # needs_repro's premise is "this is a bug report", decided from the fetch-time
+            # kind answer. If a human has since classified it under a live kind/* other than
+            # bug/security, that premise no longer holds even though the label wasn't yet
+            # present a moment ago — reuse the same live read, no extra gh call needed. Checked
+            # as "any conflicting kind/* present" (not "the" live kind) so this stays correct
+            # and deterministic even in the unusual case of more than one live kind/* label.
+            if any(label_family(name) == "kind/" and name not in ("kind/bug", "kind/security") for name in live):
+                continue
+        try:
+            gh_add_label(repo, item["type"], item["number"], label, run=run)
+        except Exception as error:
+            # Not just TriageError, same reasoning as the current_labels() call above. Either
+            # way: don't let a second label's failure erase the first one's success from the
+            # caller's view — it already happened on GitHub, so the result must say so.
+            raise ApplyFailure(str(error), applied)
+        applied.append(label)
+        live.add(label)
+    return applied
 
 
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def evaluate(repo, items, transport, thresholds, model=DEFAULT_MODEL, log=None):
+def evaluate(repo, items, transport, thresholds, model=DEFAULT_MODEL, log=None, apply=False, run=subprocess.run,
+             environ=None):
+    environ = os.environ if environ is None else environ
     results = []
     usage = {"input_tokens": 0, "output_tokens": 0}
     for index, item in enumerate(items, 1):
@@ -628,19 +828,44 @@ def evaluate(repo, items, transport, thresholds, model=DEFAULT_MODEL, log=None):
         except TriageError as error:
             raise PartialFailure(str(error), item_key(item), results, usage)
         elapsed = time.monotonic() - started
-        answers = response.get("answers") if isinstance(response, dict) else None
-        if not isinstance(answers, dict):
-            raise TriageError("TypeSafe response for %s has no 'answers' map" % item_key(item))
-        for name, value in (response.get("usage") or {}).items():
-            if name in usage and isinstance(value, (int, float)):
-                usage[name] += int(value)
-        results.append({
+        # Everything from here through the apply step is wrapped in one handler: a malformed
+        # nested shape anywhere in the response (not just a missing top-level "answers"), or any
+        # other unexpected failure while deciding or applying, must not erase earlier items'
+        # results — or, with --apply, the record of labels this item already wrote to GitHub
+        # before hitting the problem. `result` is filled in incrementally so whatever got built
+        # (including a partial `applied` list) survives into the PartialFailure.
+        result = {
             "key": item_key(item),
             "item": {k: item[k] for k in ("type", "number", "title", "url", "labels", "author_association") if k in item},
             "response": response,
-            "proposals": decide(item, answers, thresholds),
             "elapsed_seconds": round(elapsed, 3),
-        })
+        }
+        try:
+            answers = response.get("answers") if isinstance(response, dict) else None
+            if not isinstance(answers, dict):
+                raise TriageError("TypeSafe response for %s has no 'answers' map" % item_key(item))
+            for name, value in (response.get("usage") or {}).items():
+                if name in usage and isinstance(value, (int, float)):
+                    usage[name] += int(value)
+            result["proposals"] = decide(item, answers, thresholds)
+            result["applied"] = apply_item_labels(repo, item, result["proposals"], run=run) if apply else []
+        except ApplyFailure as error:
+            result["applied"] = error.applied
+            results.append(result)
+            raise PartialFailure(str(error), item_key(item), results, usage)
+        except TriageError as error:
+            raise PartialFailure(str(error), item_key(item), results, usage)
+        except Exception as error:  # never let an unexpected shape carry a traceback out of here
+            # redact_env: an untrusted/malformed response value could, in principle, echo the
+            # API key back verbatim into an exception's own message (e.g. a ValueError from
+            # float() embedding the exact string that failed to parse); nothing upstream can
+            # pre-redact an error this generic catch-all wasn't expecting, so redact here.
+            raise PartialFailure(
+                "unexpected %s processing %s: %s" % (
+                    type(error).__name__, item_key(item), redact_env(str(error), environ)),
+                item_key(item), results, usage,
+            )
+        results.append(result)
         if log:
             log("[%d/%d] %s (%.1fs)" % (index, len(items), item_key(item), elapsed))
     return results, usage
@@ -654,10 +879,11 @@ def truncate(text, width):
 
 
 def render_table(results):
-    columns = ("#", "Title", "Question", "Proposed", "Conf", "Existing", "Verdict")
+    columns = ("#", "Title", "Question", "Proposed", "Conf", "Existing", "Verdict", "Applied")
     rows = []
     for result in results:
         item = result["item"]
+        applied = set(result.get("applied") or [])
         first = True
         for proposal in result["proposals"]:
             label = proposal["label"] or "-"
@@ -668,6 +894,7 @@ def render_table(results):
             elif proposal["note"] and proposal["label"] is None:
                 label = "- (%s)" % proposal["note"]
             confidence = "-" if proposal["confidence"] is None else "%.2f" % proposal["confidence"]
+            was_applied = proposal["question"] in ("kind", "needs_repro") and proposal["label"] in applied
             rows.append((
                 ("%s%d" % ("PR " if item["type"] == "pr" else "#", item["number"])) if first else "",
                 truncate(item["title"], 44) if first else "",
@@ -676,6 +903,7 @@ def render_table(results):
                 confidence,
                 truncate(", ".join(proposal["existing"]) or "-", 34),
                 proposal["verdict"],
+                "applied" if was_applied else "-",
             ))
             first = False
     widths = [len(name) for name in columns]
@@ -697,6 +925,7 @@ def render_summary(summary, usage, wall_seconds, thresholds, output_path):
         rate = "n/a" if entry["agreement_rate"] is None else "%.0f%%" % (entry["agreement_rate"] * 100)
         lines.append("  %-11s agreement %s (agree %d, disagree %d, new %d, skip %d, below gate %d)" % (
             question, rate, entry["agree"], entry["disagree"], entry["new"], entry["skip"], entry["below_gate"]))
+    lines.append("  labels applied: %d" % summary["labels_applied"])
     lines.append("  tokens: input %d, output %d" % (usage["input_tokens"], usage["output_tokens"]))
     lines.append("  wall time: %.1fs" % wall_seconds)
     if output_path:
@@ -734,7 +963,10 @@ def write_record(path, repo, items, results):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="typesafe-triage.py",
-        description="Dry-run TypeSafe label triage for NanoClaw issues and PRs. Writes nothing to GitHub.",
+        description=(
+            "TypeSafe label triage for NanoClaw issues and PRs. Dry run by default (writes nothing to "
+            "GitHub); pass --apply to add the two labels that measured 100%% agreement on a live run."
+        ),
     )
     parser.add_argument("--repo", default=DEFAULT_REPO, help="owner/name (default %(default)s)")
     parser.add_argument("--issues", type=int, default=30, help="open issues to fetch, most recently updated first (default %(default)s)")
@@ -749,6 +981,12 @@ def parse_args(argv):
     parser.add_argument("--priority-threshold", type=float, default=0.6)
     parser.add_argument("--noul-threshold", type=float, default=0.7, help="yes/no probability needed to propose a triage label")
     parser.add_argument("--json", action="store_true", help="print the full result JSON to stdout instead of the table")
+    parser.add_argument("--apply", action="store_true", help=(
+        "add the ungated kind/* label and, on issues, an ungated triage/needs-repro label via gh. "
+        "Never removes a label, never touches area/priority/pr_ready, never comments. Default: dry run."
+    ))
+    parser.add_argument("--since", help="only consider items created strictly after this ISO-8601 timestamp (e.g. 2026-09-01T00:00:00Z)")
+    parser.add_argument("--only-unlabeled", action="store_true", help="skip items that already carry an existing kind/* label")
     args = parser.parse_args(argv)
     for name in ("area_threshold", "kind_threshold", "priority_threshold"):
         value = getattr(args, name)
@@ -756,13 +994,24 @@ def parse_args(argv):
             parser.error("--%s must be between 0 and 1" % name.replace("_", "-"))
     if not 0.5 <= args.noul_threshold <= 1:
         parser.error("--noul-threshold must be between 0.5 and 1")
+    if args.since:
+        try:
+            parse_iso(args.since)
+        except ValueError:
+            parser.error("--since must be an ISO-8601 timestamp, e.g. 2026-09-01T00:00:00Z")
+    if args.fixture and args.apply:
+        parser.error(
+            "--apply cannot be combined with --fixture: a fixture's hand-written answers and "
+            "labels are not the item's real current state, and --apply would write them for real"
+        )
     return args
 
 
-def main(argv=None, environ=None, stdout=None, stderr=None):
+def main(argv=None, environ=None, stdout=None, stderr=None, run=None):
     environ = os.environ if environ is None else environ
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
+    run = subprocess.run if run is None else run
     args = parse_args(argv)
     thresholds = {
         "area": args.area_threshold,
@@ -792,13 +1041,23 @@ def main(argv=None, environ=None, stdout=None, stderr=None):
             transport = HttpTransport(api_key, timeout=args.timeout)
             mode = "live"
             items = fetch_items(repo, args.issues, args.prs)
+        if args.since:
+            items = filter_since(items, args.since)
+        if args.only_unlabeled:
+            items = filter_unlabeled(items)
         if not items:
+            # A distinct exit status (not 1, used for real errors and partial failures): an
+            # automated caller (the scheduled workflow) can tell "nothing matched" apart from
+            # a failure by checking the exit code alone, with no text matching against stderr
+            # — which an adversarial or merely broken upstream error body could otherwise spoof
+            # by coincidentally containing this same line.
             print("no open items to triage", file=stderr)
-            return 1
+            return 3
         error_text = None
         try:
             results, usage = evaluate(repo, items, transport, thresholds, args.model,
-                                      log=lambda line: print(line, file=stderr) if mode == "live" else None)
+                                      log=lambda line: print(line, file=stderr) if mode == "live" else None,
+                                      apply=args.apply, run=run, environ=environ)
         except PartialFailure as partial:
             results, usage = partial.results, partial.usage
             error_text = "%s failed: %s" % (partial.failed_key, partial)
@@ -826,17 +1085,37 @@ def main(argv=None, environ=None, stdout=None, stderr=None):
         "summary": summary,
         "results": results,
     }
-    output_path = write_output(args.output_dir, payload)
+    # Evaluation (and any --apply writes to GitHub) already finished at this point, so a bad
+    # --output-dir/--record destination must degrade to a warning, never hide the console report
+    # of what actually happened (including real, already-written labels) behind a save failure.
+    try:
+        output_path = write_output(args.output_dir, payload)
+    except (OSError, TriageError) as error:
+        output_path = None
+        print("warning: could not save raw answers under %s: %s" % (args.output_dir, error), file=stderr)
+    record_failed = False
     if args.record and mode == "live":
-        write_record(args.record, repo, items, results)
+        try:
+            write_record(args.record, repo, items, results)
+        except OSError as error:
+            # Unlike --output-dir (a default-valued, best-effort location), --record was
+            # explicitly requested with no default; a caller relying on it for later --fixture
+            # replay must be able to tell it didn't happen from the exit code, not only a log
+            # line, so this affects the return value even though evaluation itself succeeded.
+            record_failed = True
+            print("warning: could not write --record file %s: %s" % (args.record, error), file=stderr)
     if args.json:
         print(json.dumps(payload, indent=2), file=stdout)
     else:
-        print("Dry run (%s mode) for %s: %d items. No labels were written." % (mode, repo, len(items)), file=stdout)
+        if args.apply:
+            print("Apply run (%s mode) for %s: %d items. %d label(s) applied." % (
+                mode, repo, len(items), summary["labels_applied"]), file=stdout)
+        else:
+            print("Dry run (%s mode) for %s: %d items. No labels were written." % (mode, repo, len(items)), file=stdout)
         print("", file=stdout)
         print(render_table(results), file=stdout)
         print(render_summary(summary, usage, wall, thresholds, output_path), file=stdout)
-    return 1 if error_text else 0
+    return 1 if (error_text or record_failed) else 0
 
 
 def redact_env(text, environ):
