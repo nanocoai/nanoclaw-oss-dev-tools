@@ -85,6 +85,16 @@ gateway,timestamps`), `--limit-facts`, `--top-k` (3), `--include-changelog`,
 `--staleness-threshold` (0.5, score confidence), `--concurrency` (4),
 `--model`, `--timeout`, `--json`.
 
+## Benchmark
+
+[drift-benchmark.py](scripts/drift-benchmark.py) compares TypeSafe with a
+prompt-and-parse LLM (`claude -p`, tools disabled) on the same recorded pairs:
+speed, tokens, cost, parse failures, stability, agreement, and precision/recall
+against [benchmark-gold.json](fixtures/benchmark-gold.json), whose labels were
+written by an LLM-assisted reviewer. With no flags it is offline and scores the
+recorded answers only. Method and results:
+[docs/typesafe-docs-drift.md](../../docs/typesafe-docs-drift.md#benchmark-typesafe-versus-a-prompt-and-parse-llm).
+
 ## Read the output
 
 One row per fact, ranked `DRIFT` (a section contradicts the fact, highest

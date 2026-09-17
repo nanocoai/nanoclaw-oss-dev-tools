@@ -57,6 +57,12 @@ milestone and is not yet released.
   time, raw answers under a gitignored directory, `--facts-only` and `--plan`
   for the key-free half, and `--fixture` / `--record` replay. Reads
   `TYPESAFE_API_KEY` from the environment only and writes to neither repository.
+- `drift-benchmark.py` for `typesafe-docs-drift`: runs TypeSafe (recorded and
+  live) and a prompt-and-parse LLM through headless `claude -p` (tools disabled,
+  10 pairs per call) on the same 60 recorded fact x section pairs and reports
+  wall time, per-pair latency with startup overhead separated, tokens, cost,
+  parse failures, run-to-run flips, agreement, and precision/recall on
+  `contradicts` against a 30-pair gold file labeled by an LLM-assisted reviewer.
 - OpenCode public-wizard E2E for OpenRouter, DeepSeek, and custom/self-hosted
   API-key endpoints across exe.dev, Proxmox and Windows WSL2. Select the model
   with `--opencode-model`, the endpoint with `--opencode-base-url`, and its API

@@ -158,6 +158,88 @@ resume` flags (0.71, staleness confidence below the gate). The raw payload is
 in the gitignored output directory of the machine that ran it; the numbers
 above are the only part recorded here.
 
+## Benchmark: TypeSafe versus a prompt-and-parse LLM
+
+`skills/typesafe-docs-drift/scripts/drift-benchmark.py` runs every contender
+on the same work and reports speed, cost, stability and accuracy.
+
+**Workload.** 60 fact x section pairs sampled from the recorded live run above
+(`fixtures/benchmark-workload.json`, seed 20260916): the 11 `DRIFT` pairs of
+the 7 `DRIFT` facts, the best pair of the 1 `MISSING` and the 11 `UNSURE`
+facts, and 37 seeded-random `OK` pairs. Every contender gets the same fact
+statement, evidence excerpt and doc section text, and the same three
+questions with the same criteria text.
+
+**Contenders.**
+
+- `typesafe-recorded`: the recorded answers; wall time is the sum of the
+  recorded per-request latencies (the recorded run used 4 workers).
+- `typesafe-live`: the same requests sent again one at a time.
+- `claude:haiku`, `claude:sonnet`: `claude -p --model <m> --output-format json
+  --tools "" --strict-mcp-config --no-session-persistence --system-prompt ...`,
+  10 pairs per call, strict JSON array out (`contradicts` and `covers` as
+  booleans, `staleness` 0 to 3). CLI defaults otherwise, so the model's default
+  thinking is on. `codex` (`codex exec --ephemeral -c 'sandbox_mode="read-only"'`)
+  is implemented as a fallback and was not needed.
+
+**Metrics.** Wall time for the first run; p50 seconds per pair (for the CLI
+contenders the call time divided by the batch size); `p50 adj` subtracts the
+measured startup overhead (one trivial `Reply with the single word OK.` call,
+which also contains one minimal API round trip, so the subtraction favors the
+LLM); tokens and cost from the TypeSafe `usage` block and the CLI's `usage` and
+`total_cost_usd`; parse failures (invalid JSON, a missing or mistyped field, or
+a failed call, counted per pair); flip rate (share of pairs whose `contradicts`
+verdict differs between two runs); pairwise agreement; precision and recall on
+`contradicts` against the gold file. TypeSafe probabilities are binarized at
+the skill's 0.7 gate. An unanswered gold pair counts as a predicted no.
+
+**Gold set.** `fixtures/benchmark-gold.json` holds 30 labels with a one-line
+justification each: all `DRIFT` and `MISSING` pairs plus 18 seeded-random
+others, 12 positive. **The labels were written by Claude, the LLM-assisted
+reviewer that built this tool**, by reading the NanoClaw source and the doc
+section without looking at any contender's answer. No human has verified them;
+three are marked `borderline`. Two biases to keep in mind: the sample was
+stratified by TypeSafe's own verdicts, so most positives are pairs TypeSafe
+already flagged, which favors its recall; and the labeler is a Claude model,
+which may favor the Claude contenders' reading of borderline cases.
+
+**Results.** One run on 2026-09-17 10:12 to 10:34 UTC from one macOS machine,
+60 pairs, two passes per live contender, `claude` CLI 2.1.273, `jev-latest`:
+
+| Contender | Pairs | Wall time | p50 per pair | p50 per pair, startup subtracted | Tokens in / out | Cost | Parse failures (run 1 / run 2) | Flip rate on `contradicts` | Precision | Recall |
+|---|---|---|---|---|---|---|---|---|---|---|
+| typesafe-recorded | 60 | 40.1 s (sum of recorded latencies) | 0.66 s | 0.66 s | 95,720 / 3,180 | not reported | 0 | n/a | 1.00 | 0.92 |
+| typesafe-live | 60 | 41.3 s | 0.68 s | 0.68 s | 94,880 / 3,180 | not reported | 0 / 0 | 3.3% (2/60) | 1.00 | 0.92 |
+| claude:haiku | 60 | 359.6 s | 5.57 s | 5.09 s | 81,994 / 32,776 | $0.33 | 0 / 0 | 6.7% (4/60) | 0.85 | 0.92 |
+| claude:sonnet | 60 | 284.8 s | 3.99 s | 3.66 s | 110,521 / 25,665 | $0.70 | 0 / 0 | 11.7% (7/60) | 0.83 | 0.83 |
+
+- Measured startup overhead per CLI call: haiku 4.8 s, sonnet 3.3 s. Batch times
+  ranged from 14.5 s to 114.2 s for 10 pairs.
+- Every pair parsed for every contender. Haiku wrapped its array in a code
+  fence or prose in all 6 calls of both runs and sonnet in 1 of 6; the parser
+  recovered them, as a real pipeline would.
+- Agreement on `contradicts` (run 1): TypeSafe recorded vs live 98.3%, TypeSafe
+  live vs sonnet 90.0%, vs haiku 85.0%, haiku vs sonnet 88.3%. On `covers`:
+  100%, 96.7%, 93.3%, 96.7%.
+- The CLI's token counts include its cached system prompt tokens; TypeSafe
+  does not report a price, so its cost column is empty rather than zero.
+- Read precision and recall with the two gold-set biases above in mind. With 12
+  positives, one pair moves recall by 8 points.
+
+Reproduce (the LLM contenders spend tokens on the operator's Claude plan, and
+`typesafe-live` needs `TYPESAFE_API_KEY`):
+
+```bash
+python3 skills/typesafe-docs-drift/scripts/drift-benchmark.py   # offline: recorded answers vs gold
+python3 skills/typesafe-docs-drift/scripts/drift-benchmark.py \
+  --contenders typesafe-recorded,typesafe-live,claude:haiku,claude:sonnet --runs 2
+```
+
+`--record <file> --results <drift-*.json> --write-workload <file>` rebuilds the
+sample from another recorded run; `--limit` and `--seed` change it;
+`--from-results` re-renders a saved `benchmark-*.json`. Tests:
+`tests/test_drift_benchmark.py` (mocked subprocess and transport).
+
 ## Tests
 
 `tests/test_typesafe_docs_drift.py` runs in the offline suite: every extractor
