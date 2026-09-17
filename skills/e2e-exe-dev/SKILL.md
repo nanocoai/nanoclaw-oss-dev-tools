@@ -145,7 +145,13 @@ E2E pass. Read a credential only after the operator chooses its matching method.
    bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --ref origin/main --name nc-main \
      --provider claude --auth-method oauth --credential-file /path/to/anthropic-oauth-token \
      --result-file /path/to/results/exe-main.json
+   bash "$E2E_SKILL_DIR/scripts/exe-run.sh" --ref feat/iron --gateway iron-proxy \
+     --provider claude --auth-method oauth --credential-file /path/to/anthropic-oauth-token \
+     --result-file /path/to/results/exe-iron.json
    ```
+
+   `--gateway onecli|iron-proxy` picks the gateway on a seam ref ([below](#refs-on-the-gateway-seam));
+   an unknown value stops before any VM work; `--interactive` rejects it.
 
    Keep `--result-file` on every live run so the report and sanitized evidence
    exist before the post-run retention choice. For an already authorized
@@ -185,14 +191,18 @@ E2E pass. Read a credential only after the operator chooses its matching method.
 
    After installer preflight, `logs/e2e/result.json` records pass/failure,
    exit code, tested commit, tracked changes present at start, phase, service
-   type, ping classification and timestamps. An in-progress run has status
+   type, ping classification, timestamps, the installed gateway (`gateway`),
+   the requested one (`requested_gateway`) and whether the seam's gateway
+   step ran (`gateway_seam`); the summary block prints a `GATEWAY:` line. An in-progress run has status
    `running`. It replaces a previous run's result and contains no credentials
    or reply text. With `--result-file`, after argument parsing and destination
    validation the driver replaces any old local report with `running` before
    checking the checkout, credentials or VM. It exports a matching completed
    installer result and a sanitized evidence directory before snapshot/removal.
    The evidence binds the run ID, NanoClaw SHA, provider, auth method, provider
-   auth-source SHA, dev-tools SHA when available, and exact harness digest. It
+   auth-source SHA, gateway kind, dev-tools SHA when available, and exact
+   harness digest; an installer result naming a different gateway fails the
+   export and keeps the VM. A driver-only failure report has a null `gateway`. It
    includes checksummed setup/runtime logs and a service/container/socket state
    snapshot. Otherwise the driver records the driver
    failure, exit code, phase and requested ref/commit; `commit` is null because
@@ -360,15 +370,35 @@ gateway through its own `/add-<gateway>` skill, and `--step gateway-auth
   from source on first install (about 3 minutes on a 4-CPU VM) and starts Iron
   Control on `127.0.0.1:10257`.
 - Cores before #3840 return from the gateway steps without a status block;
-  the installer accepts a zero exit there, prints a `note:` line, and still
-  requires a block from every other step.
+  a zero exit is accepted there with a `note:` line, other steps need one.
+- `gateway` is the kind this run proved installed (null until proven) and
+  `requested_gateway` the request: after the `gateway` step the installer
+  checks the block's `GATEWAY:` field when present and, on every seam core,
+  the `NANOCLAW_GATEWAY_PROVIDER` stamp `installGateway` writes to `.env`;
+  after the `service` step it reads the service process's environment (or
+  the unit's `Environment=`, `EnvironmentFile=` and manager environment)
+  for another gateway, case-insensitively; a failed inspection or any
+  mismatch stops the run, recording the found kind.
+  An inherited `NANOCLAW_GATEWAY_PROVIDER` is unset first, because
+  `gateway-auth`, the credential store and the runtime prefer it over the
+  stamp. `gateway_seam` is true only once the seam's `gateway` step starts.
 
 Verified on **2026-09-16** against the stack tip
 `7b5eb18544aabb7dcfa3c6a09a7c1c2dfe232af3`: OneCLI + Claude and Iron Proxy +
 Claude both passed on one fresh exe.dev VM with real replies and
 `verify: success`. The Iron pass used an OAuth token; on that pre-#3840 core it
 had to be stored as `CLAUDE_CODE_OAUTH_TOKEN` by hand, which is what the
-`--auth-method oauth` handling above now does.
+`--auth-method oauth` handling above now does. A second fresh VM
+(`nc-gw3840-iron-oauth`) then passed this driver end to end with
+`--gateway iron-proxy --auth-method oauth` against a core with #3840
+(`44bfc117884232a6d1092024bc0a9f6e59bcb728`): status blocks from both gateway
+steps, `PING: ok`, `verify: success`, exit 0, sanitized evidence retained.
+Those runs predate the `gateway` result field. Not covered by Iron yet, both
+OneCLI-only: [e2e-wizard](../e2e-wizard/SKILL.md#gateway-seam-limitation) and
+[e2e-macos](../e2e-macos/SKILL.md#choose-the-gateway-explicitly). OpenCode through Iron
+([nanocoai/nanoclaw#3825](https://github.com/nanocoai/nanoclaw/pull/3825))
+also needs an HTTPS-on-443 model endpoint and the read-only `gateway-trust` CA
+mount in the agent container; neither is automated here.
 
 ## Gotchas (each one cost a wrong assumption)
 
@@ -454,7 +484,9 @@ had to be stored as `CLAUDE_CODE_OAUTH_TOKEN` by hand, which is what the
 | `auth --check reported failed` | `onecli secrets list` on the VM | gateway not healthy on port 10254 |
 | `container step failed` | `logs/e2e/container.log` | Docker Hub pull blocked, or the smoke test failed inside the image |
 | exit `3` (no `data/cli.sock`) | `logs/nanoclaw.error.log` | host crashed at start — read the first ERROR; the upgrade tripwire is not it (`service` stamped the marker) |
-| exit `2` with an auth-error reply | the reply text in `logs/e2e/ping.out` | wrong or expired key in the vault; `onecli secrets` to fix, then re-run (auth step short-circuits, so delete the bad secret first) |
+| exit `2` with an auth-error reply | the reply text in `logs/e2e/ping.out` | wrong or expired key in the vault; `onecli secrets` to fix, then re-run (auth step short-circuits, so delete the bad secret first). With Iron, an OAuth token stored as an API key shows the same symptom; use `--auth-method oauth` |
+| `invalid gateway` / `does not select a gateway` (exit `64`) | the `--gateway` value or `NANOCLAW_E2E_GATEWAY` in your shell | only `onecli` and `iron-proxy` exist, and only headless runs take the choice; nothing was created |
+| `result-identity-mismatch` on export after a green install | `logs/e2e/result.json` `gateway` on the VM vs. the driver's `--gateway` | the installer ran another gateway than requested (an inherited setting on a base VM, or a stale installer copy); the VM is kept |
 | exit `2`, no reply at all | `logs/nanoclaw.log` around the ping timestamp, `bin/ncl sessions list` | container failed to spawn (OneCLI "not applied"), or the agent errored — container logs are gone after exit, so check the outbound DB: `pnpm exec tsx scripts/q.ts data/v2-sessions/<group>/<session>/outbound.db "select * from messages_out"` |
 | `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`); or `SERVICE: not_found` on a nohup-started host — see the source-review limitation above |
 | `snapshot … creation was not confirmed` / `NAME creation was not confirmed` | the lobby response right above it | name taken, malformed response, or copy source/destination mismatch — check before retrying |

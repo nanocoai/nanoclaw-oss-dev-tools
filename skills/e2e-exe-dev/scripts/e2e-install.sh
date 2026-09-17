@@ -27,7 +27,11 @@
 #   NANOCLAW_E2E_FORCE_AUTH    1 replaces an existing vault secret with the key
 #                              file (token rotation on a --base VM)
 #   NANOCLAW_E2E_GATEWAY      gateway kind on the gateway seam (setup/gateways/):
-#                             onecli (default) or iron-proxy; ignored by older refs
+#                             onecli (default) or iron-proxy; refs without the
+#                             seam accept only onecli. result.json records the
+#                             installed kind (`gateway`), the request
+#                             (`requested_gateway`) and whether the seam's
+#                             gateway step ran (`gateway_seam`)
 #   NANOCLAW_E2E_ONECLI_MODE   auto (default), reuse, or install; Mac drivers
 #                              require an explicit existing/new gateway choice
 #   NANOCLAW_E2E_REQUIRE_EXISTING_AUTH  1 forbids creating/replacing a vault secret
@@ -50,6 +54,11 @@ export NANOCLAW_NO_DIAGNOSTICS=1 NANOCLAW_SKIP_CLAUDE_ASSIST=1
 # setup/verify.ts counts any GITHUB_TOKEN in the environment as a configured
 # channel (its has() reads process.env) — keep the report about this install.
 unset GITHUB_TOKEN
+# On the gateway seam, gateway-auth, the credential store and the runtime all
+# prefer NANOCLAW_GATEWAY_PROVIDER from the environment over the .env stamp the
+# gateway step writes. An inherited value could make them use a different
+# gateway than the one installed here, so only the checkout's stamp decides.
+unset NANOCLAW_GATEWAY_PROVIDER
 export PATH="$HOME/.local/bin:$PATH"
 PLATFORM="$(uname -s)"
 if [ "$PLATFORM" = Darwin ]; then
@@ -67,6 +76,16 @@ case "${NANOCLAW_E2E_GATEWAY:-onecli}" in
   *) echo '[e2e] FAIL: invalid NANOCLAW_E2E_GATEWAY (onecli or iron-proxy)' >&2; exit 1 ;;
 esac
 KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
+REQUESTED_GATEWAY="${NANOCLAW_E2E_GATEWAY:-onecli}"
+# GATEWAY names the gateway this run proved installed; it stays empty (null in
+# result.json) until the gateway step's stamp confirms it, or a check finds
+# another kind, so a failure never labels the request as installed.
+GATEWAY=""
+# The gateway seam (setup/gateways/, nanocoai/nanoclaw#3815 onward) replaces the
+# onecli/auth steps; older refs only have OneCLI. GATEWAY_SEAM turns true only
+# once the seam's gateway step starts, so result.json says which path ran.
+if [ -f setup/gateways/step.ts ]; then SEAM_PRESENT=true; else SEAM_PRESENT=false; fi
+GATEWAY_SEAM=false
 PROVIDER="${NANOCLAW_E2E_PROVIDER:-claude}"
 AUTH_METHOD="${NANOCLAW_E2E_AUTH_METHOD:-api}"
 export NANOCLAW_AGENT_PROVIDER="$PROVIDER"
@@ -118,9 +137,10 @@ write_result() {
   set +e
   python3 - "$LOGS/result.json" "$SOURCE_COMMIT" "$SOURCE_DIRTY" \
     "$RESULT_STATUS" "$rc" "$PHASE" "$SERVICE_TYPE" "$PING_RESULT" "$STARTED_AT" \
-    "$PROVIDER" "$AUTH_METHOD" "$AUTH_SOURCE_COMMIT" <<'PY'
+    "$PROVIDER" "$AUTH_METHOD" "$AUTH_SOURCE_COMMIT" "$GATEWAY" "$GATEWAY_SEAM" "$REQUESTED_GATEWAY" <<'PY'
 import datetime, json, os, sys, tempfile
-path, commit, dirty, status, rc, phase, service, ping, started, provider, auth_method, auth_source_commit = sys.argv[1:]
+(path, commit, dirty, status, rc, phase, service, ping, started, provider, auth_method,
+ auth_source_commit, gateway, gateway_seam, requested_gateway) = sys.argv[1:]
 result = {
     "schema_version": 1,
     "status": status if int(rc) == 0 else "failed",
@@ -135,6 +155,9 @@ result = {
     "provider": provider,
     "auth_method": auth_method,
     "auth_source_commit": auth_source_commit,
+    "gateway": gateway or None,
+    "gateway_seam": gateway_seam == "true",
+    "requested_gateway": requested_gateway,
 }
 fd, temporary = tempfile.mkstemp(prefix=".result-", dir=os.path.dirname(path))
 try:
@@ -288,17 +311,32 @@ fi
 # ── 3. Wizard steps, in setup/auto.ts order ───────────────────────────────────
 step environment || die "environment step failed"
 
-GATEWAY="${NANOCLAW_E2E_GATEWAY:-onecli}"
 KEY_VALUE=""
-if [ -f setup/gateways/step.ts ]; then
+if [ "$SEAM_PRESENT" = true ]; then
   # Gateway seam (nanocoai/nanoclaw#3815 onward): the wizard installs or reuses
   # the selected gateway through its own skill (`--step gateway <kind>`) and
   # connects the model credential through `--step gateway-auth <provider>`.
   # The `onecli` and `auth` steps no longer exist on these refs.
-  say "gateway seam detected (setup/gateways/) — gateway: $GATEWAY"
-  step gateway "$GATEWAY" || die "gateway $GATEWAY install failed"
+  say "gateway seam detected (setup/gateways/) — gateway: $REQUESTED_GATEWAY"
+  GATEWAY_SEAM=true
+  step gateway "$REQUESTED_GATEWAY" || die "gateway $REQUESTED_GATEWAY install failed"
+  # The recorded gateway must be the installed one, not the requested one:
+  # installGateway stamps NANOCLAW_GATEWAY_PROVIDER into .env on every seam
+  # core, and #3840 cores also name the kind in the status block.
+  # On a mismatch the result must name what was installed, not what was asked.
+  INSTALLED_GATEWAY="$(field GATEWAY)"
+  if [ -n "$INSTALLED_GATEWAY" ] && [ "$INSTALLED_GATEWAY" != "$REQUESTED_GATEWAY" ]; then
+    GATEWAY="$INSTALLED_GATEWAY"
+    die "gateway step installed '$INSTALLED_GATEWAY', not the requested '$REQUESTED_GATEWAY'"
+  fi
+  STAMPED_GATEWAY="$(awk -F= '/^NANOCLAW_GATEWAY_PROVIDER=/{v=$2} END{gsub(/["\x27[:space:]]/, "", v); print v}' .env 2>/dev/null)"
+  if [ "$STAMPED_GATEWAY" != "$REQUESTED_GATEWAY" ]; then
+    GATEWAY="$STAMPED_GATEWAY"
+    die ".env stamps NANOCLAW_GATEWAY_PROVIDER='${STAMPED_GATEWAY:-unset}', not the requested '$REQUESTED_GATEWAY'"
+  fi
+  GATEWAY="$REQUESTED_GATEWAY"
   export PATH="$HOME/.local/bin:$PATH"; hash -r
-  case "$GATEWAY" in
+  case "$REQUESTED_GATEWAY" in
     onecli)
       # The OneCLI skill's auth flow has no prompt-free key path; seed the vault
       # the way its saveSecret() does, with the same check the old `auth` step
@@ -339,7 +377,7 @@ if [ -f setup/gateways/step.ts ]; then
       fi ;;
   esac
 else
-  [ "$GATEWAY" = onecli ] || die "NANOCLAW_E2E_GATEWAY=$GATEWAY needs the gateway seam (setup/gateways/); this ref only has OneCLI"
+  [ "$REQUESTED_GATEWAY" = onecli ] || die "NANOCLAW_E2E_GATEWAY=$REQUESTED_GATEWAY needs the gateway seam (setup/gateways/); this ref only has OneCLI"
   if [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = reuse ]; then
     step onecli --reuse || die "onecli (reuse) failed"
   elif [ "${NANOCLAW_E2E_ONECLI_MODE:-auto}" = install ]; then
@@ -352,6 +390,7 @@ else
     step onecli || die "onecli install failed"
   fi
   export PATH="$HOME/.local/bin:$PATH"; hash -r
+  GATEWAY=onecli
 
   # Auth: the wizard's runAuthStep short-circuits when the vault already holds an
   # anthropic secret; mirror that, otherwise seed it the way setup/auth.ts does.
@@ -397,6 +436,39 @@ fi
 if [ "$SERVICE_TYPE" = "nohup" ]; then
   say "no systemd — starting via ./start-nanoclaw.sh"
   bash ./start-nanoclaw.sh
+fi
+# A systemd manager or unit environment can carry NANOCLAW_GATEWAY_PROVIDER
+# past the unset above; the runtime prefers it over the .env stamp, so the
+# service could then use a different gateway than the one this run installed.
+if [ "$GATEWAY_SEAM" = true ] && [[ "$SERVICE_TYPE" = systemd-* ]] && command -v systemctl >/dev/null 2>&1; then
+  SYSTEMCTL=(systemctl); [ "$SERVICE_TYPE" = systemd-system ] || SYSTEMCTL+=(--user)
+  SERVICE_UNIT="$(field SERVICE_UNIT)"
+  # The service process's actual environment is authoritative (it already
+  # reflects Environment=, EnvironmentFile=, drop-ins, UnsetEnvironment= and
+  # the manager). Only when it cannot be read are those sources read instead.
+  # An inspection that cannot read any source is a failure, not a pass.
+  service_environment() {
+    local pid=""
+    [ -z "$SERVICE_UNIT" ] || pid="$("${SYSTEMCTL[@]}" show "$SERVICE_UNIT" -p MainPID --value 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -r "/proc/$pid/environ" ]; then
+      tr '\0' '\n' < "/proc/$pid/environ"
+      return 0
+    fi
+    "${SYSTEMCTL[@]}" show-environment 2>/dev/null || return 1
+    [ -n "$SERVICE_UNIT" ] || return 0
+    "${SYSTEMCTL[@]}" show "$SERVICE_UNIT" -p Environment 2>/dev/null | sed 's/^Environment=//' | tr ' ' '\n'
+    "${SYSTEMCTL[@]}" show "$SERVICE_UNIT" -p EnvironmentFiles 2>/dev/null | sed 's/^EnvironmentFiles=//' | tr ' ' '\n' \
+      | sed -e 's/^-//' -e 's/ *(ignore_errors=.*)$//' | while read -r file; do
+          if [ -n "$file" ] && [ -r "$file" ]; then cat "$file"; fi; done
+    return 0
+  }
+  SERVICE_ENVIRONMENT="$(service_environment)" || die "could not inspect the service environment for NANOCLAW_GATEWAY_PROVIDER (systemctl failed)"
+  # The product lowercases the configured kind; compare the same way.
+  SERVICE_GATEWAY="$(printf '%s\n' "$SERVICE_ENVIRONMENT" | awk -F= '/^[[:space:]]*NANOCLAW_GATEWAY_PROVIDER=/{v=$2} END{gsub(/["\x27[:space:]]/, "", v); print tolower(v)}')"
+  if [ -n "$SERVICE_GATEWAY" ] && [ "$SERVICE_GATEWAY" != "$REQUESTED_GATEWAY" ]; then
+    GATEWAY="$SERVICE_GATEWAY"
+    die "the service environment selects gateway '$SERVICE_GATEWAY', not the installed '$REQUESTED_GATEWAY'; clear NANOCLAW_GATEWAY_PROVIDER from the systemd environment"
+  fi
 fi
 
 # ── 4. Wire an agent to the always-on cli channel and ping it ─────────────────
@@ -456,6 +528,7 @@ STATUS: pass
 COMMIT: $SOURCE_COMMIT
 ROOT: $ROOT
 SERVICE_TYPE: $SERVICE_TYPE
+GATEWAY: $GATEWAY
 PING: ok
 REPLY: $(printf '%s' "$PING_OUT" | head -c 200 | tr '\n' ' ')
 LOG: logs/e2e/
