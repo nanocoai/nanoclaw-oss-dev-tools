@@ -1,0 +1,3268 @@
+{
+ "schema_version": 1,
+ "source": {
+  "recorded_at": "2026-09-16T22:29:05.246419+00:00",
+  "code_commit": "6e5008fe",
+  "docs_commit": "e3e1546"
+ },
+ "seed": 20260916,
+ "limit": 60,
+ "strata": {
+  "DRIFT": 11,
+  "MISSING": 1,
+  "UNSURE": 11,
+  "OK": 37
+ },
+ "sections": [
+  {
+   "id": "channels/mattermost#install",
+   "page": "channels/mattermost",
+   "title": "Mattermost",
+   "heading": "Install",
+   "line": 20,
+   "text": "Mattermost is offered in the first-run setup wizard, or add it later by running `/add-mattermost` in Claude Code. The flow:\n\n\n\n    The skill first looks for a Mattermost you already have: a configured `MATTERMOST_BASE_URL`, a healthy server on `localhost:8065` / `127.0.0.1:8065` (probed with `/api/v4/system/ping`), or a Mattermost Docker container it can offer to start. A found server is only a suggestion: you pick it, enter a different URL, or ask for a **local evaluation server** (Mattermost Team Edition plus PostgreSQL in containers, bound to `127.0.0.1:8065`, with config under `.nanoclaw/mattermost/`). Nothing is installed without showing you what will be created and getting approval.\n\n\n    Mattermost Desktop sends its configured server URL as the WebSocket `Origin`, so `ServiceSettings.SiteURL` must match the base URL you chose, and `ServiceSettings.WebsocketURL` must stay blank. The skill sets this via `mmctl` (host-local or inside the container) when it can, or gives you the exact commands; the evaluation server's Compose template sets it for you. It then verifies both values through the public `/api/v4/config/client?format=old` endpoint.\n\n\n    The skill copies the vendored adapter and its tests from the `channels` branch, appends `import './mattermost.js';` to `src/channels/index.ts`, and pins the WebSocket dependencies. It also removes the unscoped `chat-adapter-mattermost` npm package if present: nothing in NanoClaw imports it, and it is typosquat-shaped against the scoped `@chat-adapter` family.\n\n\n    Two different places in Mattermost: first, as a System Admin, turn on **System Console → Integrations → Bot Accounts → Enable Bot Account Creation** (this only permits creation). Then, back in the workspace, create the bot under **Product menu → Integrations → Bot Accounts → Add Bot Account** and copy its access token. Add the bot to each team and channel it should hear. Mattermost never adds bots to teams or channels automatically. The skill verifies the token against `/api/v4/users/me`.\n\n\n    Approval cards require the Mattermost **server** to reach NanoClaw. You provide a callback URL routable from the server (NanoClaw's base URL or the full `/webhook/mattermost` route; the adapter normalizes either). Mattermost does not sign action callbacks, so the skill generates a random shared secret; a callback without it is refused with `401` before anything is dispatched. For a private callback host, add it under **System Console → Environment → Developer → Allow untrusted internal connections**.\n\n\n    The skill asks for your Mattermost username (without `@`), resolves it against `/api/v4/users/username/<name>`, and opens the DM between you and the bot, capturing the `mattermost:<channel-id>` platform ID that `/init-first-agent` wires as your first chat.\n\n\n    `pnpm run build`, the registration and adapter regression tests, then a service restart so the channel and credentials load. For a first channel, continue with `/init-first-agent`; otherwise `/manage-channels`.\n\n\n\nThe credentials written to `.env`: `MATTERMOST_BASE_URL`, `MATTERMOST_BOT_TOKEN`, `MATTERMOST_CALLBACK_URL`, `MATTERMOST_CALLBACK_SECRET`. The adapter factory returns nothing without the first two, and `MATTERMOST_BASE_URL` is refreshed on every re-run so you can switch servers without touching credentials."
+  },
+  {
+   "id": "channels/more-channels#wechat",
+   "page": "channels/more-channels",
+   "title": "More channels",
+   "heading": "WeChat",
+   "line": 85,
+   "text": "Personal WeChat via Tencent's official iLink Bot API — first-party, free, and works with any personal account, unlike puppet-based libraries (wechaty/PadLocal) that risk bans. Login is a QR scan (the URL is written to `data/wechat/qr.txt` and logged); messages arrive by long-polling with a persisted cursor, so nothing is dropped across restarts and no public URL is needed.\n\n- **Transport:** native (Tencent iLink Bot API, long-poll)\n- **Credentials:** `WECHAT_ENABLED=true`, then scan the QR code; auth is saved under `data/wechat/`\n- **Threads:** no\n- **Install:** `/add-wechat`"
+  },
+  {
+   "id": "channels/slack#rooms-and-membership",
+   "page": "channels/slack",
+   "title": "Slack",
+   "heading": "Rooms and membership",
+   "line": 208,
+   "text": "The agents feature adds room membership handling. When a Slack user invites an agent bot into a room, NanoClaw can adopt the room and create the required messaging group. The current Chat SDK does not dispatch bot-departure events, so removing a bot does not reliably update its NanoClaw wiring automatically. Shared agent rooms admit bot-authored messages only when the room is on the `SLACK_A2A_ROOMS` allowlist; bot messages remain blocked everywhere else."
+  },
+  {
+   "id": "channels/slack#set-up-the-first-agent",
+   "page": "channels/slack",
+   "title": "Slack",
+   "heading": "Set up the first agent",
+   "line": 73,
+   "text": "Run the installer:\n\n        ```bash\n        bash nanoclaw.sh\n        ```\n\n\n        Select Slack when the setup wizard asks for a channel. When it asks how to create the app, select **Create it for me**.\n\n\n        Sign in with your NanoClaw account if prompted. Approve the Slack workspace connection in your browser, then return to the terminal.\n\n        If more than one workspace is connected, select the workspace where the agent should live.\n\n\n        NanoClaw creates a Socket Mode app, installs it, and stores the derived bot and app tokens in `.env`. The host never receives the workspace-level manager credential when provisioning runs through the managed service.\n\n        If the workspace requires admin approval, managed setup opens the app's install link and waits up to five minutes for approval. When the managed service returns the bot token, setup continues without token pasting.\n\n        If approval takes longer, the provisioning module is older, or you use a manager token directly, setup falls back to **Finish installing in Slack**. After approval, install the app, open **OAuth & Permissions**, and paste the `xoxb-…` Bot User OAuth Token at the next prompt. The app-level token is already stored.\n\n\n        Setup resolves your Slack member ID, wires the direct message to the first agent group, restarts the service, and sends the welcome message. Reply in Slack to verify the connection.\n\n\n\n\n\n    Use this path when you do not want managed provisioning or your workspace requires a self-managed app.\n\n\n\n        Go to [api.slack.com/apps](https://api.slack.com/apps), select **Create New App**, then select **From scratch**.\n\n\n        Under **OAuth & Permissions**, add these Bot Token Scopes:\n\n        ```text\n        chat:write\n        im:write\n        channels:history\n        groups:history\n        im:history\n        channels:read\n        groups:read\n        mpim:read\n        users:read\n        reactions:write\n        files:read\n        files:write\n        ```\n\n\n        Under **App Home**, enable the Messages Tab. Then enable **Allow users to send Slash commands and messages from the messages tab**.\n\n\n        For Socket Mode, create an App-Level Token with `connections:write`, enable Socket Mode, and subscribe to `message.channels`, `message.groups`, `message.im`, and `app_mention`. Socket Mode needs no public URL.\n\n        For webhook delivery, keep the Signing Secret and point Event Subscriptions and Interactivity to `https://<your-public-host>/webhook/slack`. Your public HTTPS endpoint must reach NanoClaw's webhook port, which defaults to `3000`.\n\n\n        Install the app to the workspace. Run `/add-slack` from Claude Code, `$add-slack` from Codex, or load `add-slack` with your harness's skill tool. Choose the same delivery mode and paste the credentials when prompted.\n\n\n\n\n\n\n  The manual checklist matches the base `/add-slack` app. A managed app is created with the full scope and event set for group-DM agent rooms, canvases, onboarding, and membership updates. To run the agents feature on a manually created app, add the extra scopes and events listed under \"What you get\" above."
+  },
+  {
+   "id": "extend/providers#ollama-add-ollama-provider",
+   "page": "extend/providers",
+   "title": "Agent providers",
+   "heading": "Ollama (`/add-ollama-provider`)",
+   "line": 67,
+   "text": "The skill remains in the repository, but its instructions target an older configuration path: they patch `readContainerConfig` and Docker argument assembly, then edit a generated group `container.json`. Current NanoClaw materializes that file from database-backed configuration and realizes a validated session spec through a driver. Those legacy edits are not a supported drop-in switch on current main.\n\nBefore using this skill, its integration needs to be ported and tested against the current config and admission paths. Do not treat direct edits to generated `container.json` as persistent configuration. Local-model tools such as [Atomic Chat and Ollama](/extend/tools) are a separate option: they give an existing agent a model to call rather than replacing its provider."
+  },
+  {
+   "id": "guides/scheduled-tasks#schedule-recurring-work",
+   "page": "guides/scheduled-tasks",
+   "title": "Schedule recurring work",
+   "heading": "Schedule recurring work",
+   "line": 1,
+   "text": "v2 has no scheduler service. A scheduled task is a row in an isolated per-task session's `messages_in` table with `kind='task'` and a `process_after` timestamp — the same inbox machinery, swept by the same host sweep, as any chat message. You drive it through the `ncl tasks` CLI: ask the agent in chat and it runs `ncl tasks` on your behalf, or run the commands yourself from the host. This tutorial assumes a working install with a wired agent (see [your first agent](/guides/first-agent)).\n\n\nAgents stamped from a [template](/templates/overview) may arrive with recurring tasks already defined. They are created **paused** — list them with `ncl tasks list --group <agent-group-id> --status paused` and enable the ones you want with `ncl tasks resume <task-id>`.\n\n\n\n\n\nAsk your agent, in whatever chat it's wired to:\n\n```text\nScout, every weekday at 9am remind me to post my standup update\n```\n\nMechanically, the agent runs `ncl tasks create` with a `--prompt`, a cron `--recurrence` (`0 9 * * 1-5`), and (for one-shots) a `--process-after` timestamp for the first run. NanoClaw provisions an isolated per-task session for the series and inserts a `messages_in` row there with `kind='task'`, status `pending`, your `process_after`, the cron expression, and `series_id` set to the task's own id. See the [session DB schema](/reference/db-schema#session-databases) for the columns.\n\nThe agent confirms with the generated id. Passing `--name \"standup\"` yields a readable id like `standup-a25c`; without a name, ids are `t-<hex>`. Recurrences over 4 fires per day are refused unless the task carries a `--script` gate (or the explicit `--dangerously-override-recurrence-limit` flag) — a high-frequency wake with no gate is almost always a mistake. For a one-shot task — \"remind me tomorrow at 2pm to review the budget\" — it passes `--process-after` and omits `--recurrence`.\n\n\n\n\nThere is no separate per-task scheduler. The [host sweep](/concepts/architecture#what-runs-when) periodically queues active sessions for reconciliation, waiting 60 seconds after the previous tick's work drains. Message writes and container-exit events can trigger earlier checks. Reconciliation counts pending rows with `process_after <= now` and wakes the task session's container if one isn't already running. The agent's poll loop then picks the task up like any inbound message and executes the prompt.\n\nTwo consequences worth internalizing:\n\n- **Timing is approximate.** A task due at 09:00:00 runs when reconciliation finds it due, plus queue work and any container cold start. The roughly one-minute resync is not a strict latency bound; do not schedule anything that needs second-level timing.\n- **Recurring tasks are clones, not loops.** When a recurring occurrence completes, reconciliation computes the next run with cron-parser, inserts a fresh `pending` row carrying the same `series_id` forward, and clears `recurrence` on the completed row so it isn't re-cloned. The series id is the stable handle; individual occurrence ids come and go. Once a series has no live occurrence left and its container has stopped, reconciliation closes its per-task session. History remains until explicitly deleted.\n\n\n\n\nYou can manage tasks by asking the agent in chat:\n\n```text\nScout, list my scheduled tasks\nScout, pause the standup reminder\nScout, move the standup reminder to 9:30\nScout, cancel the standup reminder\n```\n\nBehind those phrases (and available directly from the host) is the `ncl tasks` resource:\n\n| Command | Behavior |\n|---|---|\n| `ncl tasks list` | One row per series — the live `pending` or `paused` occurrence, not the pile of completed firings, each enriched with run count, failures, and next fire. |\n| `ncl tasks get <id>` | Full detail for one series: schedule, run history, failures, and the recent run-log lines. |\n| `ncl tasks update <id>` | Edits the live occurrence (matches by id *or* series id). Omitted fields are untouched; an empty `--prompt` is rejected. `--recurrence null` clears the schedule (the task becomes one-shot) and `--script null` removes the gate. |\n| `ncl tasks pause <id>` / `resume <id>` | Flip status between `pending` and `paused`. Paused rows are never counted as due, so they don't fire or wake anything. |\n| `ncl tasks run <id>` | Fire once now without changing the schedule — a safe test that neither consumes a one-shot nor advances a recurring series. |\n| `ncl tasks cancel <id>` | End the series (`status='cancelled'`, `recurrence` nulled); history rows stay. `--all` is the kill switch across every live task. |\n| `ncl tasks delete <id>` | For modern isolated tasks, delete the whole task session, mailbox history, attachments, heartbeat, and run log. Refused while its container is running. Legacy shared sessions keep their mailbox and lose only this series and its run log. |\n\nFull flags are in the [ncl tasks reference](/reference/ncl-cli#tasks).\n\n\n\n\nEvery firing that reaches the agent is a full model API call. For tasks that run more than a few times a day, `ncl tasks create` accepts an optional `--script` — a bash script that runs *before* the agent is invoked:\n\n```text\nScout, every hour check for open PRs needing my review. Use a script that\ncurls the GitHub API and only wake yourself if there are any.\n```\n\nThe contract, from `container/agent-runner/src/scheduling/task-script.ts`:\n\n1. When the task fires, the script runs first inside the container — 30-second timeout, 1 MB output cap.\n2. The **last line of stdout** must be JSON: `{ \"wakeAgent\": true|false, \"data\": ... }`.\n3. `wakeAgent: false` marks the occurrence completed without invoking the agent — a normal, quiet run; the sweep clones the next occurrence as usual. A script **error, timeout, or invalid output** is different: the occurrence is marked **failed**, consecutive failures back the series off exponentially (next run = the later of the cron slot and the backoff), and after 8 consecutive script failures the series auto-pauses with a run-log note — fix the script, then `ncl tasks resume <id>`.\n4. `wakeAgent: true` — the agent wakes with `data` injected into the task prompt as `scriptOutput`. The prompt's `<task>` element carries both the scheduled time (`time`, from `process_after`) and a fresh `current_time` stamped when the run reaches the agent — so relative wording like \"today\" stays correct even when a run fires late.\n\nBe honest about what this saves: the container still wakes on every firing (the sweep can't know the script's verdict in advance). The script gates the expensive part — the agent invocation — not the container spawn. Skip scripts entirely for tasks that need the agent's judgment every time, like daily briefings.\n\n\n\n\nWhen you say \"9am\", three layers have to agree on whose 9am. The chain: the host resolves `TIMEZONE` once at startup — `process.env.TZ`, then the `.env` file's `TZ`, then the system locale, falling back to `UTC`, each candidate validated as a real IANA identifier (`src/config.ts`). Every container is spawned with `-e TZ=<that value>` (`src/container-runner.ts`), and the agent-runner's `timezone.ts` resolves the same way inside.\n\nThe result: naive timestamps the agent passes (`2026-06-11T09:00:00`, no offset) and **cron expressions** — both at schedule time and when the host sweep computes the next recurrence — are interpreted in the task's timezone: the owning group's override when one is set, otherwise that instance value (`src/modules/scheduling/create.ts`). To pin the install default:\n\n```bash\n# in .env (or the host's environment)\nTZ=Europe/Madrid\n```\n\nRestart the host after changing it; the install default is read once at startup.\n\nA group can override the default without touching `.env`: `ncl groups config update <group> --timezone Europe/Lisbon` (or pass `--timezone` on `ncl groups create`). Scheduled-task times follow the override immediately — no restart — and the group's containers spawn with it as `TZ` (`src/cli/resources/groups.ts`, `src/container-runner.ts:485`). Pass `\"\"` to clear back to the install default.\n\n\n\n\nBecause scheduling is a host CLI resource now, you read it directly:\n\n```bash\nncl tasks list                       # every live series in scope\nncl tasks list --group <agent-id>    # scope to one agent group\nncl tasks get standup-a25c           # one series: schedule, run count, failures, recent run log\n```\n\nUnder the hood each series lives as `messages_in` rows with `kind='task'` in the agent group's isolated per-task session (`data/v2-sessions/<agent_group_id>/<task_session_id>/inbound.db`), not the central DB. A healthy recurring series shows one `pending` row (the next run) plus one `completed` row per past firing, all sharing a `series_id` — but `ncl tasks get` already surfaces that history, so you rarely need to open the database yourself."
+  },
+  {
+   "id": "operate/credentials#setting-it-up",
+   "page": "operate/credentials",
+   "title": "Credentials",
+   "heading": "Setting it up",
+   "line": 24,
+   "text": "The [setup wizard](/installation) handles the vault as one of its steps, with three paths:\n\n- **Fresh install (default)** — runs the OneCLI installer (a Docker Compose stack plus the `onecli` CLI), points the CLI at the new instance, and writes `ONECLI_URL` to `.env`.\n- **Reuse existing** — if setup detects a working `onecli` on the host, it asks before reinstalling. Choosing reuse leaves the running gateway untouched (re-running the installer would rebind the listener and break other apps using it) and just records its URL.\n- **Remote vault** — set `NANOCLAW_ONECLI_API_HOST` before running setup to point at a OneCLI instance on another machine. Setup installs only the CLI, health-checks the remote URL, and writes `ONECLI_URL`. Pass the remote vault's API token via `NANOCLAW_ONECLI_API_TOKEN` so setup can authenticate the CLI and write `ONECLI_API_KEY`.\n\nSetup installs the gateway and `onecli` CLI at the versions pinned in `versions.json` (`onecli-gateway`, `onecli-cli`), never at `latest`. It also probes the gateway's `/v1/health`: `@onecli-sh/sdk` 2.x talks to the gateway's `/v1` API, and a gateway that predates it answers `404` to every vault call — failures that look transient but are permanent. Setup never upgrades the gateway for you; it warns and points to the verbatim migration runbook, [`docs/onecli-upgrades.md`](https://github.com/nanocoai/nanoclaw/blob/main/docs/onecli-upgrades.md). The gateway pin also moves through `/update-nanoclaw` — see [Upgrading](/operate/upgrading).\n\nOn an existing install (for example after `/update-nanoclaw` brings in OneCLI as a breaking change), run the `/init-onecli` skill instead. It installs the vault, migrates any credentials it finds in `.env` (Anthropic keys, `OPENAI_API_KEY`, and similar container-facing secrets) into the vault, and removes the raw values from `.env`. Channel tokens like `TELEGRAM_BOT_TOKEN` stay in `.env` — the host process uses those, not the containers."
+  },
+  {
+   "id": "operate/ncl-cli#dropped-messages",
+   "page": "operate/ncl-cli",
+   "title": "The ncl admin CLI",
+   "heading": "dropped-messages",
+   "line": 142,
+   "text": "Read-only log of messages the router dropped, aggregated per sender and chat with a `reason` (`no_agent_wired`, `no_agent_engaged`, `unknown_sender_strict`, `unknown_sender_request_approval`, `unknown_sender_decline_notify`). Your first stop when a message got no reply:\n\n```bash\nncl dropped-messages list\n```"
+  },
+  {
+   "id": "operate/ncl-cli#messaging-groups-and-wirings",
+   "page": "operate/ncl-cli",
+   "title": "The ncl admin CLI",
+   "heading": "messaging-groups and wirings",
+   "line": 89,
+   "text": "A messaging group is one chat on one platform (unique `channel_type` + `platform_id`); a wiring connects it to an agent group and sets engagement rules. List commands accept column filters and `--limit`:\n\n```bash\nncl messaging-groups list --channel_type telegram\nncl wirings create --messaging-group-id <mg-id> --agent-group-id <group-id> --engage-mode mention-sticky\nncl wirings update --id <wiring-id> --session-mode per-thread\n```\n\nWiring columns: `engage_mode` (`mention` | `mention-sticky` | `pattern`), `engage_pattern`, `sender_scope` (`all` | `known`), `ignored_message_policy` (`drop` | `accumulate`), `session_mode` (`shared` | `per-thread` | `agent-shared`), `threads` (honor platform thread ids for this wiring; unset inherits the channel's default — you can turn threads *off* on a threaded platform, never *on* for one that has none), and `priority` (fanout order when several agents are wired to one chat; higher first). Engagement flags you omit on `create` default from the channel adapter's declaration.\n\n`messaging-groups send` injects a message into a chat as if a sender posted it, waking the wired agent — the host uses it to send a welcome on first wire:\n\n```bash\nncl messaging-groups send --channel-type telegram --platform-id <chat-id> --text \"hello\"\n```"
+  },
+  {
+   "id": "operate/troubleshooting#agent-never-replies",
+   "page": "operate/troubleshooting",
+   "title": "Troubleshooting",
+   "heading": "Agent never replies",
+   "line": 53,
+   "text": "Trace the message through the pipeline, in order:\n\n\n\n    ```bash\n    ncl dropped-messages list\n    ```\n    Each row aggregates drops per chat, with a `reason`:\n\n    | Reason | Meaning | Fix |\n    |---|---|---|\n    | `no_agent_wired` | No wiring exists for that chat | Create one: `ncl wirings create --messaging-group-id <id> --agent-group-id <id>` |\n    | `no_agent_engaged` | A wiring exists but its engage rules didn't fire | Check `engage_mode`: `mention` needs an @mention (or a DM); `pattern` matches `engage_pattern` against each message |\n    | `unknown_sender_strict` | Sender not recognized, strict policy | Add the sender, or relax the policy — see [Hardening](/operate/hardening#restrict-who-can-talk-to-your-agents) |\n    | `unknown_sender_request_approval` | Sender not recognized; an Allow/Deny card was sent to an approver's DM | The approver answers the card in their DM; `ncl dropped-messages list` shows the recorded drop either way |\n    | `unknown_sender_decline_notify` | Sender not recognized; in a DM the bot politely declined and notified an owner or admin | Add the sender if they should have access, or change the policy — repeated declines are deduplicated for 24 hours |\n\n\n    ```bash\n    ncl sessions list                      # container_status should be \"running\"\n    grep 'Spawning session' logs/nanoclaw.log | tail -5\n    docker ps --filter label=nanoclaw-install --format '{{.Names}} {{.Status}}'\n    ```\n    `stopped` is normal between messages — the sweep restarts the container when due messages arrive. If nothing spawns at all, see [Container won't spawn](#container-wont-spawn) below.\n\n\n    Inspect the session DBs (`inbound.db` / `outbound.db` under `data/v2-sessions/<group>/<session>/`). The `/debug` skill walks you through the exact queries. A `Container exited non-zero` warning in the host log carries the exit `code` and a `stderrTail` — the last ~10 lines of container stderr — which is where a boot failure usually shows. A clean or signal-killed exit logs `Container exited` at info level instead."
+  },
+  {
+   "id": "operate/troubleshooting#webhook-channel-is-silent",
+   "page": "operate/troubleshooting",
+   "title": "Troubleshooting",
+   "heading": "Webhook channel is silent",
+   "line": 108,
+   "text": "Webhook-based adapters (Slack, Teams, and similar) register routes on a shared local HTTP server. Confirm it's up and routed:\n\n```bash\ngrep 'Webhook server started' logs/nanoclaw.log   # shows port + registered adapters\ncurl -i http://localhost:3000/webhook/slack       # 404 \"Unknown adapter\" = not registered\n```\n\nThe server listens on `WEBHOOK_PORT` (default `3000`). If another process already holds that port, the listen fails and the host crashes with `FATAL Uncaught exception` — `WEBHOOK_PORT` is read from the process environment only (`src/webhook-server.ts:113`), so set it in the service definition or your shell, not `.env`, then restart. Channel-specific failures (tokens, tunnel/public URL, platform-side config) are covered on each channel page: [Slack](/channels/slack), [Teams](/channels/teams), [Channels overview](/channels/overview)."
+  },
+  {
+   "id": "operate/upgrading#updating-nanoclaw",
+   "page": "operate/upgrading",
+   "title": "Upgrading",
+   "heading": "Updating NanoClaw",
+   "line": 21,
+   "text": "Run `/update-nanoclaw` in a Claude Code session at your project root. The skill archives the controller scripts from the upstream ref into a temporary directory and runs `prepare` from there, so an update always starts with the upstream controller rather than the one in your checkout. Later commands run from the stage worktree or from your checkout.\n\n\n\n    The controller refuses to start unless your working tree is clean and your checkout is on a named branch. It records the current HEAD, creates a backup branch named `backup/pre-update-<hash>-<timestamp>-<unique>` and a backup tag named `pre-update-<hash>-<timestamp>-<unique>`, then creates a stage worktree on branch `update-nanoclaw/<id>`. Pick one strategy for it to apply there:\n\n    - **Merge**, the default.\n    - **Rebase**.\n    - **Cherry-pick**, with a named commit list.\n\n\n    A conflicting merge leaves the transaction in the `conflict` phase and the controller exits `2`. Resolve the conflict inside the stage worktree, never in your live checkout. Then resume from the stage worktree:\n\n    ```bash\n    pnpm exec tsx scripts/update-nanoclaw.ts resume --id \"$id\"\n    ```\n\n\n    Validation runs entirely in the stage worktree. It refreshes your installed skills first, commits the refreshed payloads, then runs `pnpm install --frozen-lockfile`, `pnpm run build`, and `pnpm test`. If the staged changes touched `container/agent-runner`, it also runs a Bun install and a `tsc --noEmit` pass over that directory. If Bun is not on your host, that typecheck is deferred to the image build instead. Your live checkout is still untouched at this point.\n\n\n    Cutover requires a validated transaction, a clean live tree, and a live HEAD that has not moved since prepare. A moved HEAD stops it with `Live checkout moved after the update was staged`. The controller then stops the service, drains this install's containers by label with a 300 second timeout, snapshots your mutable state, resets your checkout to the staged commit, and reinstalls and rebuilds. If the staged changes touched `container/`, the agent image is refreshed in the same step: `bash container/build.sh pull` on an install with `NANOCLAW_HARDENED_IMAGE=true`, and `bash container/build.sh` otherwise. See [the hardened runtime](/guides/echo-hardened-runtime) for which of those applies to you.\n\n\n    Your service stays down until every requirement is acknowledged as succeeded. A pending requirement blocks the finish step, and so does one acknowledged as failed. Requirements are derived for you and come in two kinds. A **breaking change** requirement is raised for each added `[BREAKING]` line in the `CHANGELOG.md` diff. An **external component** requirement is raised when the `onecli-gateway` or `onecli-cli` pin in `versions.json` moved, because those run outside your checkout and git cannot restore them. Follow [`docs/onecli-upgrades.md`](https://github.com/nanocoai/nanoclaw/blob/main/docs/onecli-upgrades.md) for that one. An external component you acknowledge as succeeded must carry a rollback instruction with it.\n\n\n    The finish step stamps the upgrade marker, restarts your service through the detected service mode, and health-verifies the result. A failure at any of those steps rolls your install back automatically.\n\n\n    Cleanup removes the stage worktree and its branch. It keeps the backup branch, the backup tag, and the snapshot, so you can still roll back afterwards. Pruning takes the id of the transaction to keep, and removes older finished ones and their git refs. Preview it with `--dry-run` first. Pruning always retains the keeper, everything newer, anything still in flight, and anything whose state it cannot read safely.\n\n\n\n\n  There is no `ncl` subcommand for upgrading. The admin CLI carries no update resource; the controller scripts are the interface.\n\n\nTo back out before cutover, abandon the transaction. Nothing has moved yet, so there is nothing to restore."
+  },
+  {
+   "id": "reference/container-config#cli-scope",
+   "page": "reference/container-config",
+   "title": "Container configuration",
+   "heading": "cli_scope",
+   "line": 68,
+   "text": "Host-side enforcement of what the agent can do through the in-container `ncl` CLI. One of:\n\n- `disabled` — all CLI requests rejected; the CLI instructions fragment is also dropped from the composed CLAUDE.md (that part applies at next spawn)\n- `group` (default) — only `groups`, `sessions`, `destinations`, `members`, and `tasks` resources plus `wirings get`/`update` for the current conversation's wiring, auto-scoped to the agent's own group; the agent cannot change `cli_scope` itself\n- `global` — full resource access; mutations still require approval\n\nThis is the only field **not** written to `container.json` — the host checks the database on every request. See [ncl CLI reference](/reference/ncl-cli#access-control) for the full enforcement rules."
+  },
+  {
+   "id": "reference/db-schema#pending-approvals",
+   "page": "reference/db-schema",
+   "title": "Database schema",
+   "heading": "pending_approvals",
+   "line": 195,
+   "text": "Host-side records for any approval-requiring request: `install_packages` / `add_mcp_server` (session-bound), and OneCLI credential approvals (`session_id` may be NULL, `action='onecli_credential'`). The OneCLI-specific columns let the host edit the admin card when a request expires and sweep stale rows on startup.\n\n| Column | Type | Default | Meaning |\n|---|---|---|---|\n| `approval_id` | TEXT | — | Primary key |\n| `session_id` | TEXT | `NULL` | FK → `sessions(id)` |\n| `request_id` | TEXT | — | The requesting side's correlation ID |\n| `action` | TEXT | — | What's being approved |\n| `payload` | TEXT | — | JSON request payload |\n| `agent_group_id` | TEXT | `NULL` | FK → `agent_groups(id)` |\n| `channel_type` / `platform_id` / `platform_message_id` | TEXT | `NULL` | Where the admin card lives, for later edits |\n| `instance` | TEXT | `NULL` | Adapter instance that delivered the card, so later edits resolve the same bot identity; `NULL` means the default instance (`channel_type`) (migration 023) |\n| `expires_at` | TEXT | `NULL` | Expiry for credential approvals |\n| `status` | TEXT | `'pending'` | `pending` \\| `approved` \\| `rejected` \\| `expired` \\| `awaiting_reason` (a reject-with-reason hold, see [security](/concepts/security#human-in-the-loop-approvals)) |\n| `title` | TEXT | `''` | Card title (render metadata) |\n| `options_json` | TEXT | `'[]'` | Card options (render metadata) |\n| `approver_user_id` | TEXT | `NULL` | When set — the named approver of an agent-to-agent [message policy](#agent_message_policies) — only that exact user may resolve the card; `NULL` keeps the group/owner authorization path (migration 018) |\n| `question` | TEXT | `''` | The original card body, persisted so terminal card edits (resolved, timed out — even across a host restart) can re-render it; pre-migration rows fall back to the title (migration 021) |\n| `created_at` | TEXT | — | ISO timestamp |"
+  },
+  {
+   "id": "reference/environment-variables#container-side-variables-agent-runner",
+   "page": "reference/environment-variables",
+   "title": "Environment variables",
+   "heading": "Container-side variables (agent runner)",
+   "line": 88,
+   "text": "Read inside the agent container by the agent runner. The host injects runtime, routing, and provider/gateway variables at spawn; these are not a blanket passthrough of the host environment. The rest are not passed through from the host environment; overriding them means baking them into a custom image or a provider container config.\n\n| Variable | Default | Read in | Effect |\n|---|---|---|---|\n| `TZ` | injected from host `TIMEZONE` | `agent-runner/src/timezone.ts:68` | Timezone for timestamps and scheduling inside the container. |\n| `NANOCLAW_CONVERSATIONS_DIR` | `/workspace/agent/conversations` | `agent-runner/src/providers/claude.ts:309` | Where pre-compaction conversation transcripts are archived as Markdown. |\n| `CLAUDE_TRANSCRIPT_ROTATE_BYTES` | `12582912` (12 MiB) | `agent-runner/src/providers/claude.ts:339` | Transcript size past which the session is rotated instead of resumed — cold resumes of huge transcripts would outlive the idle ceiling. |\n| `CLAUDE_TRANSCRIPT_ROTATE_AGE_DAYS` | `14` | `agent-runner/src/providers/claude.ts:347` | Age trigger for transcript rotation, measured from the first entry. Zero or negative disables the age check; size alone governs. |\n| `CLAUDE_CONFIG_DIR` | `~/.claude` | `agent-runner/src/providers/claude.ts:360` | Base directory the runner scans for Claude Code project transcripts. |\n| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `165000` | `agent-runner/src/providers/claude.ts:453` | Token window at which Claude Code auto-compacts context. Raise for 1M-context model variants. |\n\nLine numbers reference [`nanocoai/nanoclaw`](https://github.com/nanocoai/nanoclaw) at `639577c3` (v2.1.54) and will drift with future releases."
+  },
+  {
+   "id": "reference/environment-variables#host-process-environment-only",
+   "page": "reference/environment-variables",
+   "title": "Environment variables",
+   "heading": "Host process environment only",
+   "line": 38,
+   "text": "Read from `process.env` at host startup, with no `.env` fallback. Putting these in `.env` has no effect — the generated launchd plist, systemd unit, and nohup wrapper don't source it. Set them in the service definition or export them before `pnpm run dev`.\n\n| Variable | Default | Read in | Effect |\n|---|---|---|---|\n| `NANOCLAW_INSTALL_ID` | first 8 characters of SHA-1 of the project-root path (`process.cwd()` by default) | `src/install-slug.ts` | Explicit install identity for deployments where the checkout path is not stable. Must be 1–32 lowercase letters, digits, `_` or `-`, starting with a letter or digit; invalid values throw. No `.env` fallback. |\n| `CONTAINER_IMAGE` | per-install tag | `src/config.ts:70` | Full agent image override (name and tag). |\n| `CONTAINER_IMAGE_BASE` | per-install name | `src/config.ts:69` | Base image name override. The default embeds an install slug so two checkouts on one host don't clobber each other's image. |\n| `NANOCLAW_TEMPLATES_DIR` | `templates/` at the project root | `src/config.ts:63` | Local directory [templates](/templates/overview) resolve against; `--template <ref>` is relative to it. A local path only, never a URL. Resolved **once at host startup**, so setting it on an `ncl` invocation has no effect — `ncl` is a socket client and the host has already resolved the path. Change it in the service definition and restart the host. |\n| `WEBHOOK_PORT` | `3000` | `src/webhook-server.ts:113` | Port for the local webhook server. |\n| `LOG_LEVEL` | `info` | `src/log.ts:16` | One of `debug`, `info`, `warn`, `error`, `fatal`. |\n\n\n`CONTAINER_TIMEOUT`, `IDLE_TIMEOUT`, `MAX_CONCURRENT_CONTAINERS`, `CONTAINER_MAX_OUTPUT_SIZE`, and `MAX_MESSAGES_PER_PROMPT` were removed from the code and are no longer read anywhere (host or container). Container idle/stuck detection is now handled by the periodic host-sweep loop (`src/host-sweep.ts`), not a per-container timeout env var. Setting any of these five in `.env` or the process environment has no effect."
+  },
+  {
+   "id": "reference/environment-variables#read-from-env",
+   "page": "reference/environment-variables",
+   "title": "Environment variables",
+   "heading": "Read from .env",
+   "line": 13,
+   "text": "NanoClaw's own parser ([`src/env.ts`](https://github.com/nanocoai/nanoclaw/blob/main/src/env.ts)) returns only the keys requested by each caller from `.env` at the project root. The parser itself does not load values into `process.env`. For the core settings below, the process environment takes precedence over `.env` unless noted. `ANTHROPIC_BASE_URL` in the Claude provider is read from `.env` only. The shared parser strips matching outer single or double quotes, ignores blank values, and does not execute shell expressions. These parsing rules apply to callers of `readEnvFile`/`envValue`; some setup steps retain their own readers.\n\n| Variable | Default | Read in | Effect |\n|---|---|---|---|\n| `ASSISTANT_NAME` | `Andy` | `src/config.ts:29` | Assistant name. Also sets the default trigger, `@<name>`. |\n| `ASSISTANT_HAS_OWN_NUMBER` | `false` | `src/config.ts:47` | Set `true` when the assistant runs on its own WhatsApp number instead of yours. |\n| `ONECLI_URL` | — | `src/config.ts:75` | URL of the OneCLI Agent Vault. |\n| `ONECLI_API_KEY` | — | `src/config.ts:76` | API key for the vault. See [Credentials](/operate/credentials). |\n| `TZ` | system timezone, else `UTC` | `src/config.ts:101` | IANA timezone for scheduled tasks and timestamps. Invalid values are skipped, not errored. Injected into every agent container at spawn. |\n| `CONTAINER_CPU_LIMIT` | _unset_ (unbounded) | `src/config.ts:80` | Opt-in CPU cap per agent container, passed through to `docker create --cpus` (e.g. `2`). Empty leaves containers unbounded — the current default. Can be set in `.env` or the process environment. |\n| `CONTAINER_MEMORY_LIMIT` | _unset_ (unbounded) | `src/config.ts:81` | Opt-in memory cap per agent container, passed through to `docker create --memory` (e.g. `8g`). A hard cap only on a swapless host — there the runaway is OOM-killed; with swap present the container can spill past it. NanoClaw doesn't manage swap. Can be set in `.env` or the process environment. |\n| `CONTAINER_PIDS_LIMIT` | `2048` | `src/config.ts:88` | Process/thread cap per agent container, passed through to `docker create --pids-limit` — a fork-bomb backstop, and the one container limit that's on by default. Set `0` (or any non-numeric value) to drop the cap. Resolved with `??` rather than `||`, so an explicitly empty value in the process environment wins and disables the cap instead of falling through to `.env` or the default. Can be set in `.env` or the process environment. |\n| `NANOCLAW_EGRESS_LOCKDOWN` | `false` | `src/config.ts:92` | Set `true` to force all agent traffic through the OneCLI gateway on an internal Docker network. Spawns fail fast if the gateway isn't running. Can be set in `.env` or the process environment. See [Hardening](/operate/hardening). |\n| `NANOCLAW_EGRESS_NETWORK` | `nanoclaw-egress` | `src/config.ts:93` | Name of the locked-down Docker network. Can be set in `.env` or the process environment. |\n| `ONECLI_GATEWAY_CONTAINER` | `onecli` | `src/config.ts:95` | Name of the gateway container attached as the only egress hop. Can be set in `.env` or the process environment. |\n| `DEFAULT_AGENT_PROVIDER` | `claude` | `src/config.ts:36` | Instance-wide default agent provider stamped onto newly created agent groups. Existing groups are never retroactively changed, and per-group `ncl groups config update --provider` overrides it. Can be set in `.env` or the process environment. |\n| `NANOCLAW_DEFAULT_MODEL` | provider default | `src/config.ts` → `configFromDb` | Install-wide model used when the group's model is `NULL`. The group's own model wins. Restart the host to reload the setting, then restart affected agent sessions to apply it. |\n| `NANOCLAW_FAST_MODE` | `false` | `src/config.ts` → Claude provider `settings.fastMode` | Enables the Claude fast serving tier only for `1` or `true` (case-insensitive). Other values stay off. May change provider billing. No per-group fast-mode field; other providers must explicitly support the option. |\n| `NANOCLAW_RUNTIME_DRIVER` | `docker` | `src/drivers/index.ts` | Registered session driver. Process environment, then `.env`; unknown names abort startup. |\n| `NANOCLAW_GATEWAY_PROVIDER` | `onecli` | `src/gateway-providers/index.ts` | Registered gateway provider. Process environment, then `.env`; unknown names fail instead of disabling the gateway. |\n| `NANOCLAW_SESSION_MATERIAL_ROOT` | `data/session-materials` | `src/drivers/index.ts` | Root for materialized session files. Process environment, then `.env`. |\n| `ANTHROPIC_BASE_URL` | — | `src/providers/claude.ts:21` | Custom Anthropic-compatible endpoint, passed into agent containers with a placeholder auth token. Only active when setup has registered the custom-endpoint provider config; the real token stays in the vault. |"
+  },
+  {
+   "id": "reference/ncl-cli#approvals",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "approvals",
+   "line": 46,
+   "text": "In-flight approval cards waiting for an admin response. Read-only; rows are deleted after approve/reject/expiry.\n\n| Operation | Invocation | Access |\n| --- | --- | --- |\n| list | `ncl approvals list [--<column> <value>] [--limit N]` | open |\n| get | `ncl approvals get --id <approval-id>` | open |\n\nColumns (all usable as list filters): `approval_id`, `session_id`, `request_id`, `action` (e.g. `install_packages`, `add_mcp_server`, `onecli_credential`), `payload` (JSON), `created_at`, `agent_group_id`, `channel_type`, `platform_id`, `platform_message_id`, `expires_at`, `status` (`pending` | `approved` | `rejected` | `expired` | `awaiting_reason`), `approver_user_id`, `title`, `options_json`."
+  },
+  {
+   "id": "reference/ncl-cli#destinations",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "destinations",
+   "line": 57,
+   "text": "Per-agent routing entries and ACL — each row lets an agent send to a target (channel or another agent) under a local name. Local names are unique per agent. No `get`, `create`, `update`, or `delete`; mutations go through `add`/`remove`, which also project the change into every active session's `inbound.db` so running containers pick it up without restart.\n\n| Operation | Invocation | Access |\n| --- | --- | --- |\n| list | `ncl destinations list [--agent-group-id <id>] [...]` | open |\n| add | `ncl destinations add --agent-group-id <id> --local-name <name> --target-type <channel\\|agent> --target-id <id>` | approval |\n| remove | `ncl destinations remove --agent-group-id <id> --local-name <name>` | approval |\n\n`--target-id` is a `messaging_groups.id` when `--target-type channel`, an `agent_groups.id` when `agent`."
+  },
+  {
+   "id": "reference/ncl-cli#dropped-messages",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "dropped-messages",
+   "line": 69,
+   "text": "Log of messages dropped by the router or access gate, aggregated by `(channel_type, platform_id)` with a running count. List-only.\n\n| Operation | Invocation | Access |\n| --- | --- | --- |\n| list | `ncl dropped-messages list [--reason <value>] [...]` | open |\n\nColumns: `channel_type`, `platform_id`, `user_id`, `sender_name`, `reason` (`no_agent_wired` | `no_agent_engaged` | `unknown_sender_strict` | `unknown_sender_request_approval` | `unknown_sender_decline_notify`), `messaging_group_id`, `agent_group_id`, `message_count`, `first_seen`, `last_seen`."
+  },
+  {
+   "id": "reference/ncl-cli#groups",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "groups",
+   "line": 79,
+   "text": "Agent groups — logical agent identities with their own workspace folder, history, and container image.\n\n| Operation | Invocation | Access | Notes |\n| --- | --- | --- | --- |\n| list | `ncl groups list` | open | |\n| get | `ncl groups get --id <id>` | open | |\n| create | `ncl groups create --folder <folder> [--name <name>] [--timezone <iana-id>]` or `ncl groups create --template <ref> [--name <name>] [--timezone <iana-id>] [--id <id>] [--new] [--yes]` | approval | **Without `--template`:** `--folder` required and immutable, `--name` defaults to the folder, idempotent on `--folder` (creating an existing folder returns the existing row), and new ids are prefixed `ag-<uuid>`. **With `--template <ref>`:** stamps from a local [template](/templates/overview) under `templates/`. Combining it with `--folder` is **rejected** — a bare group *is* its folder, a templated group *is* its plugin. The display name is `--name`, else the manifest's `agentName`, else the template ref's leaf folder; the group folder derives from that name, with a random `-XXXXXXXX` suffix on collision. Always creates a new agent, except when updating one this template already made: a group can only be targeted if its workspace holds that plugin's manifest, so a hand-built group or one stamped from another template is rejected. Convergent rather than folder-idempotent: if a group already carries that plugin, the command returns an in-place [update plan](/templates/updating) instead of creating anything — `--yes` applies it, `--id` picks the target when several groups carry it, and `--new` forces a fresh stamp. `--name` and `--timezone` apply only when a group is created; both are ignored on an in-place update. Reader notices come back as `templateReport` on a create, and as `report` on an update. |\n| update | `ncl groups update --id <id> --name <name>` | approval | `name` is the only updatable column. |\n| delete | `ncl groups delete --id <id>` | approval | Custom cascading handler (not the generic single-table delete): removes sessions, destinations, approvals, role grants, memberships, and wirings in one FK-ordered transaction. Does **not** kill running containers or clean up `groups/<folder>/` and `data/v2-sessions/<id>/` on disk. |\n| restart | `ncl groups restart --id <id> [--rebuild] [--message <text>]` | approval | Host caller: restarts all running containers in the group. Agent caller: `--id` auto-filled, only the calling session restarts. `--rebuild` rebuilds the image first (required after package changes). `--message` queues an on-wake instruction so the fresh container starts and acts on it; without it the container stays stopped until the next user message. |\n| config get | `ncl groups config get --id <id>` | open | Shows `agent_group_id`, `provider`, `model`, `effort`, `image_tag`, `assistant_name`, `max_messages_per_prompt`, `skills`, `mcp_servers`, `packages_apt`, `packages_npm`, `additional_mounts`, `cli_scope`, `timezone`, `updated_at`. |\n| config update | `ncl groups config update --id <id> [--provider] [--model] [--effort] [--image-tag] [--assistant-name] [--max-messages-per-prompt] [--cli-scope <disabled\\|group\\|global>] [--timezone <iana-id>]` | approval | At least one flag required. Most changes take effect after `ncl groups restart`; `--timezone` grounds task scheduling immediately (empty string clears it back to the install default). |\n| config add-mcp-server | `ncl groups config add-mcp-server --id <id> --name <server> --command <cmd> [--args <json-array>] [--env <json-object>]` or `--url <url> [--headers <json-object>]` | approval | Exactly one of `--command`/`--url`. Server name: 1-64 chars of `[A-Za-z0-9_-]`. `--url` is a remote Streamable HTTP endpoint — HTTPS required (plain HTTP only for localhost / `host.docker.internal`), and URLs with embedded credentials, fragments, or secret-looking query params are rejected. Restart required to take effect. |\n| config remove-mcp-server | `ncl groups config remove-mcp-server --id <id> --name <server>` | approval | Restart required to take effect. |\n| config add-package | `ncl groups config add-package --id <id> --apt <pkg> \\| --npm <pkg>` | approval | At least one of `--apt`/`--npm`. Requires `ncl groups restart --rebuild`. |\n| config remove-package | `ncl groups config remove-package --id <id> --apt <pkg> \\| --npm <pkg>` | approval | Requires `ncl groups restart --rebuild`. |\n| config add-mount | `ncl groups config add-mount --id <id> --host <host-path> --container <container-path> [--ro]` | approval | **Host-only** — never runnable from inside a container (mounting host paths is a filesystem-access boundary). Adds a bind mount to `additional_mounts`; `--ro` makes it read-only. Restart required to take effect. |\n| config remove-mount | `ncl groups config remove-mount --id <id> --host <host-path> --container <container-path>` | approval | Host-only. Removes the matching mount. Restart required to take effect. |\n\n`add-mcp-server` and `remove-mcp-server` refuse to touch a server owned by a stamped [template](/templates/overview) — update the template and [restamp](/templates/updating) instead. A plugin-owned server removed by hand reappears on the next restamp."
+  },
+  {
+   "id": "reference/ncl-cli#members",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "members",
+   "line": 102,
+   "text": "Membership rows granting unprivileged users access to an agent group. Admins/owners are implicitly members and need no row. Checked by the router when a wiring's `sender_scope` is `known`.\n\n| Operation | Invocation | Access | Notes |\n| --- | --- | --- | --- |\n| list | `ncl members list [--agent-group-id <id>] [...]` | open | Columns: `user_id`, `agent_group_id`, `added_by`, `added_at`. |\n| add | `ncl members add --user <user-id> --group <group-id> [--added-by <user-id>]` | approval | Idempotent (`INSERT OR IGNORE`). `--user` must reference an existing `users.id`. |\n| remove | `ncl members remove --user <user-id> --group <group-id>` | approval | Errors if no matching row. |"
+  },
+  {
+   "id": "reference/ncl-cli#policies",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "policies",
+   "line": 136,
+   "text": "Per-message approval gate on an agent-to-agent connection. A row forces every message from one agent to another to be approved by a human before delivery — without un-wiring the [destination](#destinations). **No row = free flow.** Directed and per-pair: gate both directions with two policies. Operator-only — agents can't manage their own gates, and self-messages (`--from` equal to `--to`) are never gated.\n\n| Operation | Invocation | Access |\n| --- | --- | --- |\n| list | `ncl policies list [--<column> <value>]` | open |\n| set | `ncl policies set --from <agent-group-id> --to <agent-group-id> --approver <user-id>` | approval |\n| remove | `ncl policies remove --from <agent-group-id> --to <agent-group-id>` | approval |\n\n`set` upserts — re-running with a different `--approver` replaces it. Only the named `--approver` (or an owner) can approve a held message. Removing a policy returns the edge to free flow. Columns: `from_agent_group_id`, `to_agent_group_id`, `approver`, `created_at`."
+  },
+  {
+   "id": "reference/ncl-cli#roles",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "roles",
+   "line": 148,
+   "text": "Privilege grants. `owner` is always global; `admin` can be global (`agent_group_id` null) or scoped to one group. Admin at a group implies membership.\n\n| Operation | Invocation | Access | Notes |\n| --- | --- | --- | --- |\n| list | `ncl roles list [--role <owner\\|admin>] [...]` | open | Columns: `user_id`, `role` (`owner` \\| `admin`), `agent_group_id`, `granted_by`, `granted_at`. |\n| grant | `ncl roles grant --user <user-id> --role <owner\\|admin> [--group <group-id>] [--granted-by <user-id>]` | approval | Idempotent. Passing `--group` with `--role owner` is rejected — owner is always global. |\n| revoke | `ncl roles revoke --user <user-id> --role <role> [--group <group-id>]` | approval | Match includes scope: omit `--group` for global grants, pass it for scoped ones. |"
+  },
+  {
+   "id": "reference/ncl-cli#sessions",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "sessions",
+   "line": 158,
+   "text": "The runtime unit — one `(agent_group, messaging_group, thread)` combination mapped to a container. Created automatically by the router; read-only in the CLI.\n\n| Operation | Invocation | Access |\n| --- | --- | --- |\n| list | `ncl sessions list [--agent-group-id <id>] [--status active] [...]` | open |\n| get | `ncl sessions get --id <session-id>` | open |\n| history | `ncl sessions history <session-id> [--limit <n>]` | open |\n\nColumns: `id`, `agent_group_id`, `messaging_group_id` (null for agent-shared sessions), `thread_id` (per-thread mode only), `agent_provider` (null = inherit from group), `status` (`active` | `closed`), `container_status` (`running` | `idle` | `stopped` — `idle` is reserved and currently unused), `last_active`, `created_at`.\n\n`history` merges inbound and outbound rows chronologically so an agent can catch up on another session in its own group. Human output is `timestamp|direction|kind|sender|text`, with text capped at 200 characters. `--json` returns the raw rows with full text. The default limit is 50; the command selects the newest rows and prints them oldest-to-newest."
+  },
+  {
+   "id": "reference/ncl-cli#tasks",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "tasks",
+   "line": 172,
+   "text": "Scheduled tasks — the CLI home for what used to be the agent's `schedule_task` MCP tools. Each task is a **series**: the live `pending`/`paused` row is the next run, and completed rows are its run history. Tasks are created from the host or by an agent inside its own task session, and each runs in an isolated per-task session that the host closes once the series is spent (history remains until explicit deletion). Ids are `t-<hex>`, or `<slug>-<hex>` when you pass `--name`.\n\n| Operation | Invocation | Access |\n| --- | --- | --- |\n| list | `ncl tasks list [--status <pending\\|paused>] [--group <id>] [--session <id>] [--all]` | open |\n| get | `ncl tasks get --id <series-id> [--session <id>]` | open |\n| create | `ncl tasks create --prompt <text> [--name <name>] [--process-after <when>] [--recurrence <cron>] [--script <bash>] [--group <id>] [--dangerously-override-recurrence-limit]` | open |\n| update | `ncl tasks update --id <series-id> [--prompt] [--process-after] [--recurrence] [--script]` | open |\n| run | `ncl tasks run --id <series-id>` | open |\n| pause / resume | `ncl tasks pause --id <series-id>` / `ncl tasks resume --id <series-id>` | open |\n| cancel | `ncl tasks cancel (--id <series-id> \\| --all)` | open |\n| delete | `ncl tasks delete --id <series-id>` | open |\n| append-log | `ncl tasks append-log --msg <text> [--id <series-id>]` | open |\n\n| Flag | Notes |\n| --- | --- |\n| `--prompt` | Required on create. Must be nonblank when supplied on create or update; omit on update to retain the current prompt. |\n| `--process-after` | First/next run time — ISO 8601, offset, or naive-local in the group timezone (falling back to the install timezone). Required for one-shots; with `--recurrence` the first run is derived from the cron grid. |\n| `--recurrence` | Cron expression, evaluated in the group timezone (falling back to the install timezone). On `update`, `\"null\"`/`\"none\"` clears it (back to one-shot). Recurrences over 4 fires/day are refused unless the task has a `--script` gate or you pass `--dangerously-override-recurrence-limit`. |\n| `--name` | Short label folded into a readable series id (`<slug>-<hex>`). |\n| `--script` | Pre-task gate bash script — runs first; the agent only wakes if the script's last stdout line is JSON with `\"wakeAgent\": true`. |\n| `--group` | Agent group id (host callers). Auto-filled to the caller's own group inside a container. |\n| `--all` | On `cancel`, the kill switch — cancels every live task in scope. |\n| `--msg` | On `append-log`, the note to add. Inside a task run, `--id` is auto-derived from the caller's session. |\n\n`run` fires a task now without changing its schedule (a safe test that neither consumes a one-shot nor advances a recurring series — unlike `update --process-after now`). `append-log` adds a note to a task's run log (`tasks/<id>.md`); every run already auto-logs its final text, so it's for additive mid-run notes only.\n\n`delete` refuses a running task session. For an isolated task it removes the session mailbox, history, attachments, heartbeat, session directory and row, and run log. For legacy tasks in a shared session it removes only the series rows and run log."
+  },
+  {
+   "id": "reference/ncl-cli#wirings",
+   "page": "reference/ncl-cli",
+   "title": "ncl CLI reference",
+   "heading": "wirings",
+   "line": 229,
+   "text": "Connects a messaging group to an agent group — which agent handles which chat. Many-to-many in both directions. Under `group` CLI scope, agents get self-service access to the wiring of their current conversation only: `wirings get` and `wirings update` (limited to `engage_mode`/`engage_pattern`; the id is force-filled, updates stay approval-gated).\n\n| Operation | Invocation | Access |\n| --- | --- | --- |\n| list / get | `ncl wirings list` / `ncl wirings get --id <id>` | open |\n| create | `ncl wirings create --messaging-group-id <id> --agent-group-id <id> [flags]` | approval |\n| update | `ncl wirings update --id <id> [flags]` | approval |\n| delete | `ncl wirings delete --id <id>` | approval |\n\n| Flag | Type | Notes |\n| --- | --- | --- |\n| `--messaging-group-id` | string | On create: pass this, or the natural key instead (`--channel-type` + `--platform-id` [+ `--instance`]). Not updatable. Create is idempotent on the (messaging group, agent group) pair. |\n| `--agent-group-id` | string | On create: pass this or `--agent-group <folder>`. References `agent_groups.id`. Not updatable. |\n| `--priority` | number | Updatable, default 0. Fanout order when several agents are wired to one chat — higher first. |\n| `--engage-mode` | enum | Updatable. Omitted engage flags default from the target channel adapter's declaration for the chat context (DM vs group), falling back to `mention` when the channel declares none. `mention` — only when @mentioned or in DMs. `mention-sticky` — after one mention in a thread, responds to all subsequent messages there. `pattern` — matches every message against `engage_pattern`. |\n| `--engage-pattern` | string | Updatable. Regex, required when `engage_mode=pattern`; use `.` for always-on. Ignored in mention modes. |\n| `--sender-scope` | enum | Updatable, default `all`. `all` — any sender (subject to `unknown_sender_policy`). `known` — only users with a role or membership in the agent group. |\n| `--ignored-message-policy` | enum | Updatable, default `drop`. `drop` — agent never sees non-engaging messages. `accumulate` — stored as background context so the agent has prior context when triggered. |\n| `--session-mode` | enum | Updatable, default `shared`. `shared` — one session per (agent, messaging group). `per-thread` — one per thread/topic. `agent-shared` — one across all messaging groups wired to the agent. Threaded adapters in group chats force per-thread regardless, unless `--threads false` disables threads for the wiring. |\n| `--threads` | boolean | Updatable. Per-wiring thread override: `true`/`false` (or `1`/`0`). Omitted (`NULL`) inherits the channel adapter's declared thread default for the context. Hard-ANDed with the adapter's raw capability at router fanout — it can disable threads on a threaded platform, but never enable them on a non-threaded one. Disabling also lifts the per-thread session-mode forcing above. |"
+  },
+  {
+   "id": "reference/skills-catalog#channel-installs",
+   "page": "reference/skills-catalog",
+   "title": "Skills catalog",
+   "heading": "Channel installs",
+   "line": 22,
+   "text": "Each skill wires up one messaging channel. See [Channels](/channels/overview) for the full setup guides.\n\n| Skill | What it does |\n| --- | --- |\n| `/add-dial` | Adds the [Dial](/channels/dial) channel — a real phone number for SMS and AI voice calls through the `dial` CLI; native adapter, email sign-in, 6-digit SMS pairing, owner-only or public line |\n| `/add-dial-number` | Adds another phone number to an installed [Dial](/channels/dial) channel — a second owner-only or public line, wired to the same agent or a different one |\n| `/add-deltachat` | Adds the [Delta Chat](/channels/more-channels#delta-chat) channel via `@deltachat/stdio-rpc-server` — native adapter, email-based messaging with end-to-end encryption |\n| `/add-discord` | Adds the [Discord](/channels/discord) bot channel via Chat SDK |\n| `/add-emacs` | Adds [Emacs](/channels/more-channels#emacs) as a channel — interactive chat buffer and org-mode integration over a local HTTP bridge, no bot token needed |\n| `/add-gchat` | Adds the [Google Chat](/channels/more-channels#google-chat) channel via Chat SDK |\n| `/add-github` | Adds the [GitHub](/channels/more-channels#github) channel via Chat SDK — PR and issue comment threads as conversations |\n| `/add-imessage` | Adds the [iMessage](/channels/imessage) channel — local backend (this Mac's `chat.db`, macOS only) or hosted backend (a native iMessage line via [photon.codes](https://photon.codes)) |\n| `/add-linear` | Adds the [Linear](/channels/more-channels#linear) channel via Chat SDK — issue comment threads as conversations |\n| `/add-matrix` | Adds the [Matrix](/channels/more-channels#matrix) channel via Chat SDK — works with any homeserver |\n| `/add-mattermost` | Adds the [Mattermost](/channels/mattermost) bot channel via Chat SDK. Copies a vendored adapter rather than an npm package, offers to reuse a local server when one is running, and can create an evaluation server when none exists |\n| `/add-resend` | Adds the [Resend](/channels/more-channels#resend-email) email channel via Chat SDK |\n| `/add-signal` | Adds the [Signal](/channels/signal) channel via signal-cli TCP daemon — native adapter, no Chat SDK bridge |\n| `/add-slack` | Adds the base [Slack](/channels/slack) channel via Chat SDK — one bot, direct messages, and channel chat |\n| `/add-teams` | Adds the [Microsoft Teams](/channels/teams) channel via Chat SDK |\n| `/add-telegram` | Adds the [Telegram](/channels/telegram) channel via Chat SDK |\n| `/add-webex` | Adds the [Webex](/channels/more-channels#webex) channel via Chat SDK |\n| `/add-wechat` | Adds the [WeChat](/channels/more-channels#wechat) personal channel via Tencent's official iLink Bot API — long-polling and QR scan, no webhook |\n| `/add-whatsapp` | Adds the [WhatsApp](/channels/whatsapp) channel via native Baileys adapter — QR code or pairing code authentication |\n| `/add-whatsapp-cloud` | Adds the [WhatsApp Business Cloud API](/channels/more-channels#whatsapp-cloud-api) channel via Chat SDK — official Meta API |"
+  },
+  {
+   "id": "reference/skills-catalog#operational-skills",
+   "page": "reference/skills-catalog",
+   "title": "Skills catalog",
+   "heading": "Operational skills",
+   "line": 88,
+   "text": "Setup, maintenance, migration, and day-to-day administration of your install.\n\n| Skill | What it does |\n| --- | --- |\n| `/customize` | Adds new capabilities or modifies NanoClaw behavior — interactive skill that asks questions to understand what you want |\n| `/debug` | Debugs container agent issues — logs, session DBs, mounts, authentication problems, and common failures |\n| `/init-first-agent` | Walks you through creating the first agent for a DM channel — resolves your channel identity, wires the DM group, and triggers a welcome DM |\n| `/init-onecli` | Installs and initializes OneCLI Agent Vault, migrating existing `.env` credentials to the vault |\n| `/learn` | Distills a reusable skill from a source — a directory, URL, pasted notes, or the work just done in the conversation — or refines an existing one, writing a `.claude/skills/<name>/SKILL.md` to the project's skill guidelines. Creates or refines skills; it doesn't install them from a registry |\n| `/manage-channels` | Wires channels to agent groups, manages isolation levels, and adds new channel groups |\n| `/manage-mounts` | Configures which host directories agent containers can access — view, add, or remove mount allowlist entries |\n| `/migrate-from-openclaw` | Migrates from OpenClaw to NanoClaw v2 — detects an existing install, extracts identity, credentials, and tasks, then guides interactive migration |\n| `/migrate-from-v1` | Finishes migrating a NanoClaw v1 install into v2 after `migrate-v2.sh` — seeds the owner, reconciles container configs, helps port custom v1 code |\n| `/migrate-memory` | Carries an agent group's memory across a provider switch (e.g. Claude ↔ Codex) — run after `ncl groups config update --provider`; reads the source provider's memory store, distills it into the target's, and restarts the group |\n| `/migrate-slack-agents` | Migrates a classic single-bot Slack install to one provisioned Slack app per agent group, preserving identities, workspaces, memory, and wiring — or records the choice to stay on classic |\n| `/migrate-nanoclaw` | Extracts your customizations from a fork, generates a replayable migration guide, and upgrades to upstream by reapplying them on a clean base |\n| `/setup` | Runs initial NanoClaw setup — install, configure, first-time setup |\n| `/update-nanoclaw` | Brings upstream updates into a customized install with preview, selective cherry-pick, and low token usage |\n| `/update-skills` | Refreshes installed channel/provider payloads and dependency pins from upstream without repeating credential prompts or channel wiring |"
+  },
+  {
+   "id": "reference/skills-catalog#provider-installs",
+   "page": "reference/skills-catalog",
+   "title": "Skills catalog",
+   "heading": "Provider installs",
+   "line": 59,
+   "text": "Each skill swaps the agent runtime for a different provider. See [Providers](/extend/providers).\n\n| Skill | What it does |\n| --- | --- |\n| `/add-codex` | Uses Codex (CLI + AppServer) as the full agent provider in place of the Claude Agent SDK — ChatGPT subscription or `OPENAI_API_KEY`, per-group via `ncl groups config update --provider codex` |\n| `/add-ollama-provider` | Legacy Ollama integration workflow; its config patches need reconciliation with current database-backed group configuration before use |\n| `/add-opencode` | Installs OpenCode as an agent provider, selected per group with `ncl groups config update --provider opencode` — OpenRouter, OpenAI, Google, DeepSeek, and more via OpenCode config |"
+  },
+  {
+   "id": "reference/skills-catalog#tool-installs",
+   "page": "reference/skills-catalog",
+   "title": "Skills catalog",
+   "heading": "Tool installs",
+   "line": 69,
+   "text": "Each skill adds a capability or MCP tool to your agents. See [Tools](/extend/tools).\n\n| Skill | What it does |\n| --- | --- |\n| `/add-anydoc` | Adds local office-document-to-Markdown conversion to agent containers with the pinned Firecrawl AnyDoc CLI — Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV, and text-based PDF without uploading to a hosted parser |\n| `/add-atomic-chat-tool` | Adds the Atomic Chat MCP server so agents can call local models served by the Atomic Chat desktop app via its OpenAI-compatible API |\n| `/add-clidash` | Adds clidash — a zero-dependency, read-only web dashboard that derives its tabs and tables at runtime from any CLI that lists resources as JSON, pre-wired for NanoClaw's `ncl` CLI |\n| `/add-dashboard` | Adds a monitoring dashboard — installs `@nanoco/nanoclaw-dashboard` and a pusher that sends periodic JSON snapshots |\n| `/add-dial-tool` | Gives chosen agents the [Dial](/channels/dial#the-dial-tool-sms-and-calls-from-inside-the-sandbox) `dial` CLI as a container tool — SMS, AI voice calls, and inbound codes from the sandbox; OneCLI credential injection for `api.getdial.ai`, scoped per agent with block rules |\n| `/add-karpathy-llm-wiki` | Adds a persistent wiki knowledge base to a group, based on Karpathy's LLM Wiki pattern |\n| `/add-macos-statusbar` | Adds a macOS menu bar status indicator with Start, Stop, and Restart controls (macOS only) |\n| `/add-mnemon` | Adds persistent graph-based memory via mnemon — agents recall past context before responding and remember insights after each turn |\n| `/add-ollama-tool` | Adds the Ollama MCP server so agents can call local models and optionally manage the Ollama model library |\n| `/add-rtk` | Installs the rtk token-compression proxy into agent containers — routes Bash tool calls through rtk for 60–90% token savings on dev commands |\n| `/add-tavily-tool` | Adds Tavily Search and Extract as keyless remote MCP tools through the pinned `mcp-remote` bridge — no API key by default; an optional paid-key upgrade goes through the OneCLI vault |\n| `/add-vercel` | Adds Vercel deployment capability — installs the Vercel CLI in agent containers with OneCLI credential injection for `api.vercel.com` |"
+  }
+ ],
+ "pairs": [
+  {
+   "key": "ncl:approvals-status-enum|reference/ncl-cli#approvals",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:approvals-status-enum",
+    "area": "ncl",
+    "statement": "`ncl approvals` column `status` accepts exactly these values: `pending`, `approved`, `rejected`, `expired`.",
+    "evidence": {
+     "file": "src/cli/resources/approvals.ts",
+     "line": 44,
+     "excerpt": "name: 'status' enum: ['pending', 'approved', 'rejected', 'expired']"
+    }
+   },
+   "section_id": "reference/ncl-cli#approvals",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.96
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.82,
+      "confidence": 0.81,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.02,
+       "1": 0.14,
+       "2": 0.84,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1086,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.807
+  },
+  {
+   "key": "ncl:approvals-status-enum|reference/db-schema#pending-approvals",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:approvals-status-enum",
+    "area": "ncl",
+    "statement": "`ncl approvals` column `status` accepts exactly these values: `pending`, `approved`, `rejected`, `expired`.",
+    "evidence": {
+     "file": "src/cli/resources/approvals.ts",
+     "line": 44,
+     "excerpt": "name: 'status' enum: ['pending', 'approved', 'rejected', 'expired']"
+    }
+   },
+   "section_id": "reference/db-schema#pending-approvals",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.94
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.89
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.72,
+      "confidence": 0.66,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.06,
+       "1": 0.2,
+       "2": 0.71,
+       "3": 0.03
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1410,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.654
+  },
+  {
+   "key": "ncl:dropped-messages-reason-enum|operate/ncl-cli#dropped-messages",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:dropped-messages-reason-enum",
+    "area": "ncl",
+    "statement": "`ncl dropped-messages` column `reason` accepts exactly these values: `no_agent_wired`, `no_agent_engaged`, `unknown_sender_strict`, `unknown_sender_request_approval`.",
+    "evidence": {
+     "file": "src/cli/resources/dropped-messages.ts",
+     "line": 17,
+     "excerpt": "name: 'reason' enum: ['no_agent_wired', 'no_agent_engaged', 'unknown_sender_strict', 'unknown_sender_request_approval']"
+    }
+   },
+   "section_id": "operate/ncl-cli#dropped-messages",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.91
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.7,
+      "confidence": 0.7,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.06,
+       "1": 0.19,
+       "2": 0.75,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 993,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.644
+  },
+  {
+   "key": "ncl:dropped-messages-reason-enum|reference/ncl-cli#dropped-messages",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:dropped-messages-reason-enum",
+    "area": "ncl",
+    "statement": "`ncl dropped-messages` column `reason` accepts exactly these values: `no_agent_wired`, `no_agent_engaged`, `unknown_sender_strict`, `unknown_sender_request_approval`.",
+    "evidence": {
+     "file": "src/cli/resources/dropped-messages.ts",
+     "line": 17,
+     "excerpt": "name: 'reason' enum: ['no_agent_wired', 'no_agent_engaged', 'unknown_sender_strict', 'unknown_sender_request_approval']"
+    }
+   },
+   "section_id": "reference/ncl-cli#dropped-messages",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.88,
+      "confidence": 0.87,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.03,
+       "1": 0.07,
+       "2": 0.9,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1066,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.605
+  },
+  {
+   "key": "ncl:dropped-messages-reason-enum|operate/troubleshooting#agent-never-replies",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:dropped-messages-reason-enum",
+    "area": "ncl",
+    "statement": "`ncl dropped-messages` column `reason` accepts exactly these values: `no_agent_wired`, `no_agent_engaged`, `unknown_sender_strict`, `unknown_sender_request_approval`.",
+    "evidence": {
+     "file": "src/cli/resources/dropped-messages.ts",
+     "line": 17,
+     "excerpt": "name: 'reason' enum: ['no_agent_wired', 'no_agent_engaged', 'unknown_sender_strict', 'unknown_sender_request_approval']"
+    }
+   },
+   "section_id": "operate/troubleshooting#agent-never-replies",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.86
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.81
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.78,
+      "confidence": 0.77,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.06,
+       "1": 0.1,
+       "2": 0.84,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1440,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.642
+  },
+  {
+   "key": "ncl:tasks-update-flags|reference/ncl-cli#tasks",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:tasks-update-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks update` (open) declares exactly these flags (any other flag is rejected): `--id`, `--prompt`, `--process-after`, `--recurrence`, `--dangerously-override-recurrence-limit`, `--script`, `--group`, `--session`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 574,
+     "excerpt": "update: { access: 'open', args: [--id, --prompt, --process-after, --recurrence, --dangerously-override-recurrence-limit, --script, --group, --session] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.87
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.78,
+      "confidence": 0.76,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.02,
+       "1": 0.19,
+       "2": 0.78,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1815,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.911
+  },
+  {
+   "key": "ncl:tasks-cancel-flags|reference/ncl-cli#tasks",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:tasks-cancel-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks cancel` (open) declares exactly these flags (any other flag is rejected): `--id`, `--all`, `--group`, `--session`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 598,
+     "excerpt": "cancel: { access: 'open', args: [--id, --all, --group, --session] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.88
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.9
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.76,
+      "confidence": 0.75,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.04,
+       "1": 0.17,
+       "2": 0.78,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1761,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.588
+  },
+  {
+   "key": "ncl:tasks-resume-flags|reference/ncl-cli#tasks",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "ncl:tasks-resume-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks resume` (open) declares exactly these flags (any other flag is rejected): `--id`, `--group`, `--session`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 642,
+     "excerpt": "resume: { access: 'open', args: [--id, --group, --session] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.71
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.85
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.38,
+      "confidence": 0.37,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.16,
+       "1": 0.31,
+       "2": 0.53,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1754,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.685
+  },
+  {
+   "key": "env:WEBHOOK_PORT|operate/troubleshooting#webhook-channel-is-silent",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "env:WEBHOOK_PORT",
+    "area": "env",
+    "statement": "`WEBHOOK_PORT` is read from the process environment first, then from `.env`; its default is `3000`.",
+    "evidence": {
+     "file": "src/config.ts",
+     "line": 119,
+     "excerpt": "const raw = process.env.WEBHOOK_PORT || envConfig.WEBHOOK_PORT || '3000';"
+    }
+   },
+   "section_id": "operate/troubleshooting#webhook-channel-is-silent",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.63
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.94,
+      "confidence": 0.85,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.05,
+       "1": 0.02,
+       "2": 0.88,
+       "3": 0.05
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1113,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.621
+  },
+  {
+   "key": "env:WEBHOOK_PORT|reference/environment-variables#host-process-environment-only",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "env:WEBHOOK_PORT",
+    "area": "env",
+    "statement": "`WEBHOOK_PORT` is read from the process environment first, then from `.env`; its default is `3000`.",
+    "evidence": {
+     "file": "src/config.ts",
+     "line": 119,
+     "excerpt": "const raw = process.env.WEBHOOK_PORT || envConfig.WEBHOOK_PORT || '3000';"
+    }
+   },
+   "section_id": "reference/environment-variables#host-process-environment-only",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.78
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.56
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.89,
+      "confidence": 0.82,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.05,
+       "1": 0.04,
+       "2": 0.88,
+       "3": 0.03
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1440,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.613
+  },
+  {
+   "key": "skills:add-ollama-provider|extend/providers#ollama-add-ollama-provider",
+   "stratum": "DRIFT",
+   "fact": {
+    "id": "skills:add-ollama-provider",
+    "area": "skills",
+    "statement": "A workspace skill `/add-ollama-provider` exists under `.claude/skills/`; it is invoked when: Route a NanoClaw agent group to a local Ollama model instead of the Anthropic API. Ollama speaks the Anthropic API natively (v1/messages), so no provider code changes are needed — just env var overrides and a model setting. Use when the user wants to run their agent locally, cut API costs, or experiment with open-weight models. See docs/ollama.md for background.",
+    "evidence": {
+     "file": ".claude/skills/add-ollama-provider/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-ollama-provider / description: Route a NanoClaw agent group to a local Ollama model instead of the Anthropic API. Ollama speaks the Anthropic API natively (v1/messages), so no provider code changes are needed — just env var overrides and a model setting. Use when the user wants to run their agent locally, cut API costs, or experiment with open-weight models. See docs/ollama.md for backg…"
+    }
+   },
+   "section_id": "extend/providers#ollama-add-ollama-provider",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.76
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.69,
+      "confidence": 0.52,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.19,
+       "1": 0.01,
+       "2": 0.71,
+       "3": 0.09
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1202,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.695
+  },
+  {
+   "key": "timestamps:rule-1|guides/scheduled-tasks#schedule-recurring-work",
+   "stratum": "MISSING",
+   "fact": {
+    "id": "timestamps:rule-1",
+    "area": "timestamps",
+    "statement": "**Storage**: every timestamp written from JS is `new Date().toISOString()` (ISO-8601 UTC with `Z`). Central SQL receives that timestamp as a parameter; never use `datetime('now')` or `strftime(...)` there because they are SQLite-specific and the naive shape is misparsed as local time by `new Date()`. SQLite-only mailbox SQL may use `strftime('%Y-%m-%dT%H:%M:%fZ','now')`. SQLite-only comparisons wrap both sides in `datetime()`.",
+    "evidence": {
+     "file": "CLAUDE.md",
+     "line": 268,
+     "excerpt": "**Storage**: every timestamp written from JS is `new Date().toISOString()` (ISO-8601 UTC with `Z`). Central SQL receives that timestamp as a parameter; never use `datetime('now')` or `strftime(...)` there because they are SQLite-specific and the naive shape is misparsed as local time by `new Date()`. SQLite-only mailbox SQL may use `strftime('%Y-%m-%dT%H:%M:%fZ','now')`. SQLite-only comparisons w…"
+    }
+   },
+   "section_id": "guides/scheduled-tasks#schedule-recurring-work",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.06
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.08
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.06,
+      "confidence": 0.94,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.96,
+       "1": 0.01,
+       "2": 0.02,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2537,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.718
+  },
+  {
+   "key": "ncl:groups-config-remove-package-flags|reference/ncl-cli#groups",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "ncl:groups-config-remove-package-flags",
+    "area": "ncl",
+    "statement": "`ncl groups config remove-package` (approval) names these flags in its help text: `--rebuild`, `--id`, `--apt`, `--npm`.",
+    "evidence": {
+     "file": "src/cli/resources/groups.ts",
+     "line": 553,
+     "excerpt": "config remove-package: { access: 'approval', description: ... --rebuild --id --apt --npm }"
+    }
+   },
+   "section_id": "reference/ncl-cli#groups",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.34
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.86
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.98,
+      "confidence": 0.42,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.3,
+       "1": 0.43,
+       "2": 0.27,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2257,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.715
+  },
+  {
+   "key": "ncl:sessions-history-flags|reference/ncl-cli#sessions",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "ncl:sessions-history-flags",
+    "area": "ncl",
+    "statement": "`ncl sessions history` (open) declares exactly these flags (any other flag is rejected): `--id`, `--limit`.",
+    "evidence": {
+     "file": "src/cli/resources/sessions.ts",
+     "line": 54,
+     "excerpt": "history: { access: 'open', args: [--id, --limit] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#sessions",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.34
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.83
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.27,
+      "confidence": 0.26,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.23,
+       "1": 0.28,
+       "2": 0.49,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1175,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.62
+  },
+  {
+   "key": "ncl:tasks-get-flags|reference/ncl-cli#tasks",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "ncl:tasks-get-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks get` (open) declares exactly these flags (any other flag is rejected): `--id`, `--group`, `--session`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 470,
+     "excerpt": "get: { access: 'open', args: [--id, --group, --session] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.37
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.91
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.37,
+      "confidence": 0.36,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.11,
+       "1": 0.42,
+       "2": 0.47,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1754,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.613
+  },
+  {
+   "key": "ncl:tasks-append-log-flags|reference/ncl-cli#tasks",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "ncl:tasks-append-log-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks append-log` (open) declares exactly these flags (any other flag is rejected): `--msg`, `--id`, `--group`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 546,
+     "excerpt": "append-log: { access: 'open', args: [--msg, --id, --group] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.62
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.63,
+      "confidence": 0.62,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.03,
+       "1": 0.31,
+       "2": 0.66,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1756,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.6
+  },
+  {
+   "key": "ncl:tasks-run-flags|reference/ncl-cli#tasks",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "ncl:tasks-run-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks run` (open) declares exactly these flags (any other flag is rejected): `--id`, `--group`, `--session`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 613,
+     "excerpt": "run: { access: 'open', args: [--id, --group, --session] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.69
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.89
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.39,
+      "confidence": 0.38,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.16,
+       "1": 0.29,
+       "2": 0.54,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1754,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.661
+  },
+  {
+   "key": "ncl:tasks-pause-flags|reference/ncl-cli#tasks",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "ncl:tasks-pause-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks pause` (open) declares exactly these flags (any other flag is rejected): `--id`, `--group`, `--session`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 628,
+     "excerpt": "pause: { access: 'open', args: [--id, --group, --session] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.46
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.83
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.4,
+      "confidence": 0.39,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.12,
+       "1": 0.37,
+       "2": 0.51,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1754,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.651
+  },
+  {
+   "key": "ncl:tasks-delete-flags|reference/ncl-cli#tasks",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "ncl:tasks-delete-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks delete` (open) declares exactly these flags (any other flag is rejected): `--id`, `--group`, `--session`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 656,
+     "excerpt": "delete: { access: 'open', args: [--id, --group, --session] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.35
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.89
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.41,
+      "confidence": 0.4,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.08,
+       "1": 0.43,
+       "2": 0.48,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1754,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.664
+  },
+  {
+   "key": "env:NANOCLAW_DEFAULT_MODEL|reference/environment-variables#read-from-env",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "env:NANOCLAW_DEFAULT_MODEL",
+    "area": "env",
+    "statement": "`NANOCLAW_DEFAULT_MODEL` is read from the process environment first, then from `.env`; it is unset (empty) by default.",
+    "evidence": {
+     "file": "src/config.ts",
+     "line": 50,
+     "excerpt": "export const DEFAULT_MODEL = process.env.NANOCLAW_DEFAULT_MODEL || envConfig.NANOCLAW_DEFAULT_MODEL || '';"
+    }
+   },
+   "section_id": "reference/environment-variables#read-from-env",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.45
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.84
+     },
+     "staleness": {
+      "type": "score",
+      "score": 1.24,
+      "confidence": 0.23,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.31,
+       "1": 0.14,
+       "2": 0.54,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2155,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.708
+  },
+  {
+   "key": "env:NANOCLAW_FAST_MODE|reference/environment-variables#read-from-env",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "env:NANOCLAW_FAST_MODE",
+    "area": "env",
+    "statement": "`NANOCLAW_FAST_MODE` is read from the process environment first, then from `.env`; it is unset (empty) by default.",
+    "evidence": {
+     "file": "src/config.ts",
+     "line": 56,
+     "excerpt": "(process.env.NANOCLAW_FAST_MODE || envConfig.NANOCLAW_FAST_MODE || '').toLowerCase(),"
+    }
+   },
+   "section_id": "reference/environment-variables#read-from-env",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.44
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.9
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.44,
+      "confidence": 0.56,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.65,
+       "1": 0.28,
+       "2": 0.07,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2155,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.723
+  },
+  {
+   "key": "skills:catalog|reference/skills-catalog#tool-installs",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "skills:catalog",
+    "area": "skills",
+    "statement": "There are exactly 52 workspace skills under `.claude/skills/` with a SKILL.md: `add-anydoc`, `add-atomic-chat-tool`, `add-clidash`, `add-codex`, `add-dashboard`, `add-deltachat`, `add-dial`, `add-dial-number`, `add-dial-tool`, `add-discord`, `add-emacs`, `add-gchat`, `add-github`, `add-imessage`, `add-karpathy-llm-wiki`, `add-linear`, `add-macos-statusbar`, `add-matrix`, `add-mattermost`, `add-mnemon`, `add-ollama-provider`, `add-ollama-tool`, `add-opencode`, `add-resend`, `add-rtk`, `add-signal`, `add-slack`, `add-tavily-tool`, `add-teams`, `add-telegram`, `add-vercel`, `add-webex`, `add-wechat`, `add-whatsapp`, `add-whatsapp-cloud`, `customize`, `debug`, `init-first-agent`, `init-onecli`, `learn`, `manage-channels`, `manage-mounts`, `migrate-from-openclaw`, `migrate-from-v1`, `migrate-memory`, `migrate-nanoclaw`, `migrate-slack-agents`, `setup`, `slack-a2a-rooms`, `slack-agent-flow`, `update-nanoclaw`, `update-skills`.",
+    "evidence": {
+     "file": ".claude/skills",
+     "line": 1,
+     "excerpt": "directory listing"
+    }
+   },
+   "section_id": "reference/skills-catalog#tool-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.06
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.45
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.26,
+      "confidence": 0.74,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.84,
+       "1": 0.07,
+       "2": 0.09,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1718,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.591
+  },
+  {
+   "key": "timestamps:rule-2|reference/environment-variables#container-side-variables-agent-runner",
+   "stratum": "UNSURE",
+   "fact": {
+    "id": "timestamps:rule-2",
+    "area": "timestamps",
+    "statement": "**Display**: anything shown to an agent or a user renders in the install timezone — `formatLocalTime` (prose) or `formatLocalStamp` (log lines) from `src/timezone.ts` / `container/agent-runner/src/timezone.ts`. `--json` output, DB values, and operator logs stay ISO.",
+    "evidence": {
+     "file": "CLAUDE.md",
+     "line": 269,
+     "excerpt": "**Display**: anything shown to an agent or a user renders in the install timezone — `formatLocalTime` (prose) or `formatLocalStamp` (log lines) from `src/timezone.ts` / `container/agent-runner/src/timezone.ts`. `--json` output, DB values, and operator logs stay ISO."
+    }
+   },
+   "section_id": "reference/environment-variables#container-side-variables-agent-runner",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.08
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.46
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.25,
+      "confidence": 0.75,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.81,
+       "1": 0.13,
+       "2": 0.06,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1470,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.617
+  },
+  {
+   "key": "skills:update-nanoclaw|operate/upgrading#updating-nanoclaw",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:update-nanoclaw",
+    "area": "skills",
+    "statement": "A workspace skill `/update-nanoclaw` exists under `.claude/skills/`; it is invoked when: Transactionally update a customized NanoClaw checkout from official upstream without exposing live mounted source, with fork-safe skill refresh, mutable-state snapshots, migration gates, exact-code upgrade markers, detected service restart, health verification, and automatic local rollback. Use for routine merge, rebase, or selective upstream updates.",
+    "evidence": {
+     "file": ".claude/skills/update-nanoclaw/SKILL.md",
+     "line": 2,
+     "excerpt": "name: update-nanoclaw / description: Transactionally update a customized NanoClaw checkout from official upstream without exposing live mounted source, with fork-safe skill refresh, mutable-state snapshots, migration gates, exact-code upgrade markers, detected service restart, health verification, and automatic local rollback. Use for routine merge, rebase, or selective upstream updates."
+    }
+   },
+   "section_id": "operate/upgrading#updating-nanoclaw",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.05
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.13,
+      "confidence": 0.87,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.93,
+       "1": 0.03,
+       "2": 0.02,
+       "3": 0.02
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1895,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.662
+  },
+  {
+   "key": "gateway:selection-unknown|reference/environment-variables#read-from-env",
+   "stratum": "OK",
+   "fact": {
+    "id": "gateway:selection-unknown",
+    "area": "gateway",
+    "statement": "Setting `NANOCLAW_GATEWAY_PROVIDER` to a name with no registered gateway provider throws at startup and lists the installed kinds; other gateways arrive as skills (overlays) and the host never silently falls back to another gateway.",
+    "evidence": {
+     "file": "src/gateway-providers/index.ts",
+     "line": 44,
+     "excerpt": "`NANOCLAW_GATEWAY_PROVIDER='${kind}' but no gateway provider is registered for '${kind}'; ` +"
+    }
+   },
+   "section_id": "reference/environment-variables#read-from-env",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.08
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.88
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.29,
+      "confidence": 0.71,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.79,
+       "1": 0.14,
+       "2": 0.07,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2180,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.714
+  },
+  {
+   "key": "skills:learn|reference/skills-catalog#operational-skills",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:learn",
+    "area": "skills",
+    "statement": "A workspace skill `/learn` exists under `.claude/skills/`; it is invoked when: Distill a reusable skill from anything — a directory, a URL, pasted notes, or what you just did together — or refine an existing skill with new learnings. Use when the user says '/learn', 'learn this', 'turn this into a skill', 'capture this workflow', 'make a skill from <source>', or 'improve/update the <name> skill'. Produces or updates a .claude/skills/<name>/SKILL.md authored to NanoClaw's skill guidelines. (This CREATES or REFINES a skill from a source; it does not install existing skills from a registry.)",
+    "evidence": {
+     "file": ".claude/skills/learn/SKILL.md",
+     "line": 2,
+     "excerpt": "name: learn / description: Distill a reusable skill from anything — a directory, a URL, pasted notes, or what you just did together — or refine an existing skill with new learnings. Use when the user says '/learn', 'learn this', 'turn this into a skill', 'capture this workflow', 'make a skill from <source>', or 'improve/update the <name> skill'. Produces or updates a .claude/skills/<name>/SKILL.m…"
+    }
+   },
+   "section_id": "reference/skills-catalog#operational-skills",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.02,
+      "confidence": 0.98,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.98,
+       "1": 0.02,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1703,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.658
+  },
+  {
+   "key": "skills:debug|reference/skills-catalog#operational-skills",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:debug",
+    "area": "skills",
+    "statement": "A workspace skill `/debug` exists under `.claude/skills/`; it is invoked when: Debug container agent issues. Use when things aren't working, container fails, authentication problems, or to understand how the container system works. Covers logs, session DBs, mounts, and common issues.",
+    "evidence": {
+     "file": ".claude/skills/debug/SKILL.md",
+     "line": 2,
+     "excerpt": "name: debug / description: Debug container agent issues. Use when things aren't working, container fails, authentication problems, or to understand how the container system works. Covers logs, session DBs, mounts, and common issues."
+    }
+   },
+   "section_id": "reference/skills-catalog#operational-skills",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.02,
+      "confidence": 0.98,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.99,
+       "1": 0.01,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1559,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.647
+  },
+  {
+   "key": "ncl:destinations-target_type-enum|reference/ncl-cli#destinations",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:destinations-target_type-enum",
+    "area": "ncl",
+    "statement": "`ncl destinations` column `target_type` accepts exactly these values: `channel`, `agent`.",
+    "evidence": {
+     "file": "src/cli/resources/destinations.ts",
+     "line": 53,
+     "excerpt": "name: 'target_type' enum: ['channel', 'agent']"
+    }
+   },
+   "section_id": "reference/ncl-cli#destinations",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.95
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.01,
+      "confidence": 0.99,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.99,
+       "1": 0.01,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1085,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.714
+  },
+  {
+   "key": "skills:add-wechat|channels/more-channels#wechat",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-wechat",
+    "area": "skills",
+    "statement": "A workspace skill `/add-wechat` exists under `.claude/skills/`; it is invoked when: Add WeChat (personal) channel integration via Tencent's official iLink Bot API. Uses long-polling and QR scan — no webhook, no ToS risk, no paid token.",
+    "evidence": {
+     "file": ".claude/skills/add-wechat/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-wechat / description: Add WeChat (personal) channel integration via Tencent's official iLink Bot API. Uses long-polling and QR scan — no webhook, no ToS risk, no paid token."
+    }
+   },
+   "section_id": "channels/more-channels#wechat",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.2,
+      "confidence": 0.8,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.9,
+       "1": 0.04,
+       "2": 0.02,
+       "3": 0.04
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1092,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.727
+  },
+  {
+   "key": "ncl:wirings-engage_mode-enum|operate/ncl-cli#messaging-groups-and-wirings",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:wirings-engage_mode-enum",
+    "area": "ncl",
+    "statement": "`ncl wirings` column `engage_mode` accepts exactly these values: `pattern`, `mention`, `mention-sticky`.",
+    "evidence": {
+     "file": "src/cli/resources/wirings.ts",
+     "line": 71,
+     "excerpt": "name: 'engage_mode' enum: ['pattern', 'mention', 'mention-sticky']"
+    }
+   },
+   "section_id": "operate/ncl-cli#messaging-groups-and-wirings",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.96
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.02,
+      "confidence": 0.98,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.99,
+       "1": 0.01,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1217,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.591
+  },
+  {
+   "key": "skills:add-mattermost|channels/mattermost#install",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-mattermost",
+    "area": "skills",
+    "statement": "A workspace skill `/add-mattermost` exists under `.claude/skills/`; it is invoked when: Add a self-hosted or cloud Mattermost bot channel through the Chat SDK bridge, reusing a healthy server when available and linking to official server setup guidance when needed.",
+    "evidence": {
+     "file": ".claude/skills/add-mattermost/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-mattermost / description: Add a self-hosted or cloud Mattermost bot channel through the Chat SDK bridge, reusing a healthy server when available and linking to official server setup guidance when needed."
+    }
+   },
+   "section_id": "channels/mattermost#install",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.91
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.02,
+      "confidence": 0.98,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.98,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1750,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.687
+  },
+  {
+   "key": "container-config:cli_scope-default|reference/container-config#cli-scope",
+   "stratum": "OK",
+   "fact": {
+    "id": "container-config:cli_scope-default",
+    "area": "container-config",
+    "statement": "`container_configs.cli_scope` defaults to 'group'.",
+    "evidence": {
+     "file": "src/db/migrations/015-cli-scope.ts",
+     "line": 9,
+     "excerpt": "cli_scope NOT NULL DEFAULT 'group'"
+    }
+   },
+   "section_id": "reference/container-config#cli-scope",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.02
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.98
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.0,
+      "confidence": 1.0,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 1.0,
+       "1": 0.0,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1036,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.654
+  },
+  {
+   "key": "env:NANOCLAW_RUNTIME_DRIVER|reference/environment-variables#read-from-env",
+   "stratum": "OK",
+   "fact": {
+    "id": "env:NANOCLAW_RUNTIME_DRIVER",
+    "area": "env",
+    "statement": "`NANOCLAW_RUNTIME_DRIVER` selects the session runtime driver; it is read from the process environment first, then from `.env`, and defaults to `docker`. A configured name with no registered implementation is an error at startup, not a fallback.",
+    "evidence": {
+     "file": "src/drivers/index.ts",
+     "line": 63,
+     "excerpt": "DEFAULT_DRIVER_KIND = 'docker'"
+    }
+   },
+   "section_id": "reference/environment-variables#read-from-env",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.94
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.02,
+      "confidence": 0.98,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.98,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2160,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.761
+  },
+  {
+   "key": "skills:migrate-slack-agents|reference/skills-catalog#operational-skills",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:migrate-slack-agents",
+    "area": "skills",
+    "statement": "A workspace skill `/migrate-slack-agents` exists under `.claude/skills/`; it is invoked when: Migrate a classic single-bot Slack install to one provisioned Slack app per existing agent group while preserving agent identities, workspaces, memory, and wiring behavior — or record the operator's choice to stay on classic, which remains supported. Use when /update-nanoclaw surfaces the Slack agents requirement, or standalone any time later.",
+    "evidence": {
+     "file": ".claude/skills/migrate-slack-agents/SKILL.md",
+     "line": 2,
+     "excerpt": "name: migrate-slack-agents / description: Migrate a classic single-bot Slack install to one provisioned Slack app per existing agent group while preserving agent identities, workspaces, memory, and wiring behavior — or record the operator's choice to stay on classic, which remains supported. Use when /update-nanoclaw surfaces the Slack agents requirement, or standalone any time later."
+    }
+   },
+   "section_id": "reference/skills-catalog#operational-skills",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.94
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.33,
+      "confidence": 0.67,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.69,
+       "1": 0.29,
+       "2": 0.02,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1637,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.745
+  },
+  {
+   "key": "env:CONTAINER_MEMORY_LIMIT|reference/environment-variables#read-from-env",
+   "stratum": "OK",
+   "fact": {
+    "id": "env:CONTAINER_MEMORY_LIMIT",
+    "area": "env",
+    "statement": "`CONTAINER_MEMORY_LIMIT` is read from the process environment first, then from `.env`; it is unset (empty) by default.",
+    "evidence": {
+     "file": "src/config.ts",
+     "line": 100,
+     "excerpt": "export const CONTAINER_MEMORY_LIMIT = process.env.CONTAINER_MEMORY_LIMIT || envConfig.CONTAINER_MEMORY_LIMIT || '';"
+    }
+   },
+   "section_id": "reference/environment-variables#read-from-env",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.11
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.91
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.35,
+      "confidence": 0.65,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.72,
+       "1": 0.21,
+       "2": 0.06,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2160,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.693
+  },
+  {
+   "key": "skills:add-whatsapp-cloud|reference/skills-catalog#channel-installs",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-whatsapp-cloud",
+    "area": "skills",
+    "statement": "A workspace skill `/add-whatsapp-cloud` exists under `.claude/skills/`; it is invoked when: Add WhatsApp Business Cloud API channel via Chat SDK. Official Meta API.",
+    "evidence": {
+     "file": ".claude/skills/add-whatsapp-cloud/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-whatsapp-cloud / description: Add WhatsApp Business Cloud API channel via Chat SDK. Official Meta API."
+    }
+   },
+   "section_id": "reference/skills-catalog#channel-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.02
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.96
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.0,
+      "confidence": 1.0,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 1.0,
+       "1": 0.0,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1716,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.658
+  },
+  {
+   "key": "ncl:wirings-create-flags|reference/ncl-cli#wirings",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:wirings-create-flags",
+    "area": "ncl",
+    "statement": "`ncl wirings create` (approval) names these flags in its help text: `--messaging-group-id`, `--channel-type`, `--platform-id`, `--instance`, `--agent-group-id`, `--agent-group`, `--engage-mode`, `--engage-pattern`, `--session-mode`, `--sender-scope`, `--ignored-message-policy`, `--threads`, `--priority`.",
+    "evidence": {
+     "file": "src/cli/resources/wirings.ts",
+     "line": 168,
+     "excerpt": "create: { access: 'approval', description: ... --messaging-group-id --channel-type --platform-id --instance --agent-group-id --agent-group --engage-mode --engage-pattern --session-mode --sender-scope --ignored-message-policy --threads --priority }"
+    }
+   },
+   "section_id": "reference/ncl-cli#wirings",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.08
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.89
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.81,
+      "confidence": 0.43,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.38,
+       "1": 0.43,
+       "2": 0.18,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1731,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.676
+  },
+  {
+   "key": "skills:add-linear|reference/skills-catalog#channel-installs",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-linear",
+    "area": "skills",
+    "statement": "A workspace skill `/add-linear` exists under `.claude/skills/`; it is invoked when: Add Linear channel integration via Chat SDK. Issue comment threads as conversations.",
+    "evidence": {
+     "file": ".claude/skills/add-linear/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-linear / description: Add Linear channel integration via Chat SDK. Issue comment threads as conversations."
+    }
+   },
+   "section_id": "reference/skills-catalog#channel-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.02
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.95
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.01,
+      "confidence": 0.99,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 1.0,
+       "1": 0.0,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1703,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.6
+  },
+  {
+   "key": "ncl:approvals-verbs|reference/ncl-cli#approvals",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:approvals-verbs",
+    "area": "ncl",
+    "statement": "`ncl approvals` exposes exactly these verbs, with their access level for agent callers: list (open), get (open). `open` runs inline; `approval` sends an approval card when called from inside a container.",
+    "evidence": {
+     "file": "src/cli/resources/approvals.ts",
+     "line": 3,
+     "excerpt": "registerResource plural 'approvals' operations {'list': 'open', 'get': 'open'} custom []"
+    }
+   },
+   "section_id": "reference/ncl-cli#approvals",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.15
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.85
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.24,
+      "confidence": 0.76,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.83,
+       "1": 0.09,
+       "2": 0.07,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1108,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.792
+  },
+  {
+   "key": "env:ONECLI_API_KEY|reference/environment-variables#read-from-env",
+   "stratum": "OK",
+   "fact": {
+    "id": "env:ONECLI_API_KEY",
+    "area": "env",
+    "statement": "`ONECLI_API_KEY` is read from the process environment first, then from `.env`; it has no default.",
+    "evidence": {
+     "file": "src/config.ts",
+     "line": 95,
+     "excerpt": "export const ONECLI_API_KEY = process.env.ONECLI_API_KEY || envConfig.ONECLI_API_KEY;"
+    }
+   },
+   "section_id": "reference/environment-variables#read-from-env",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.22
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.85
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.94,
+      "confidence": 0.06,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.41,
+       "1": 0.27,
+       "2": 0.28,
+       "3": 0.04
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2146,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.651
+  },
+  {
+   "key": "ncl:groups-delete-flags|reference/ncl-cli#groups",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:groups-delete-flags",
+    "area": "ncl",
+    "statement": "`ncl groups delete` (approval) names these flags in its help text: `--id`.",
+    "evidence": {
+     "file": "src/cli/resources/groups.ts",
+     "line": 225,
+     "excerpt": "delete: { access: 'approval', description: ... --id }"
+    }
+   },
+   "section_id": "reference/ncl-cli#groups",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.85
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.03,
+      "confidence": 0.97,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.98,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2233,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.582
+  },
+  {
+   "key": "ncl:policies-remove-flags|reference/ncl-cli#policies",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:policies-remove-flags",
+    "area": "ncl",
+    "statement": "`ncl policies remove` (approval) names these flags in its help text: `--from`, `--to`.",
+    "evidence": {
+     "file": "src/cli/resources/policies.ts",
+     "line": 44,
+     "excerpt": "remove: { access: 'approval', description: ... --from --to }"
+    }
+   },
+   "section_id": "reference/ncl-cli#policies",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.82
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.04,
+      "confidence": 0.96,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.98,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1137,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.637
+  },
+  {
+   "key": "ncl:tasks-create-flags|reference/ncl-cli#tasks",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:tasks-create-flags",
+    "area": "ncl",
+    "statement": "`ncl tasks create` (open) declares exactly these flags (any other flag is rejected): `--name`, `--prompt`, `--recurrence`, `--dangerously-override-recurrence-limit`, `--process-after`, `--script`, `--group`.",
+    "evidence": {
+     "file": "src/cli/resources/tasks.ts",
+     "line": 484,
+     "excerpt": "create: { access: 'open', args: [--name, --prompt, --recurrence, --dangerously-override-recurrence-limit, --process-after, --script, --group] }"
+    }
+   },
+   "section_id": "reference/ncl-cli#tasks",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.08
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.12,
+      "confidence": 0.88,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.91,
+       "1": 0.06,
+       "2": 0.03,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1808,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.614
+  },
+  {
+   "key": "ncl:roles-role-enum|reference/ncl-cli#roles",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:roles-role-enum",
+    "area": "ncl",
+    "statement": "`ncl roles` column `role` accepts exactly these values: `owner`, `admin`.",
+    "evidence": {
+     "file": "src/cli/resources/roles.ts",
+     "line": 5,
+     "excerpt": "name: 'role' enum: ['owner', 'admin']"
+    }
+   },
+   "section_id": "reference/ncl-cli#roles",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.95
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.01,
+      "confidence": 0.99,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 1.0,
+       "1": 0.0,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1096,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.65
+  },
+  {
+   "key": "skills:init-first-agent|reference/skills-catalog#operational-skills",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:init-first-agent",
+    "area": "skills",
+    "statement": "A workspace skill `/init-first-agent` exists under `.claude/skills/`; it is invoked when: Walk the operator through wiring the first NanoClaw agent to a DM channel — resolve the operator's channel identity, select or create the agent, and trigger a welcome DM via the normal delivery path. Use after channel credentials are configured and the service is running.",
+    "evidence": {
+     "file": ".claude/skills/init-first-agent/SKILL.md",
+     "line": 2,
+     "excerpt": "name: init-first-agent / description: Walk the operator through wiring the first NanoClaw agent to a DM channel — resolve the operator's channel identity, select or create the agent, and trigger a welcome DM via the normal delivery path. Use after channel credentials are configured and the service is running."
+    }
+   },
+   "section_id": "reference/skills-catalog#operational-skills",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.29,
+      "confidence": 0.71,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.74,
+       "1": 0.24,
+       "2": 0.02,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1591,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.678
+  },
+  {
+   "key": "skills:add-opencode|reference/skills-catalog#provider-installs",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-opencode",
+    "area": "skills",
+    "statement": "A workspace skill `/add-opencode` exists under `.claude/skills/`; it is invoked when: Use OpenCode as an agent provider. OpenRouter, OpenAI, Google, DeepSeek, etc. via OpenCode config — not the Anthropic Agent SDK. Per group via `ncl groups config update --provider opencode`; host passes OPENCODE_* and XDG mount when spawning containers.",
+    "evidence": {
+     "file": ".claude/skills/add-opencode/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-opencode / description: Use OpenCode as an agent provider. OpenRouter, OpenAI, Google, DeepSeek, etc. via OpenCode config — not the Anthropic Agent SDK. Per group via `ncl groups config update --provider opencode`; host passes OPENCODE_* and XDG mount when spawning containers."
+    }
+   },
+   "section_id": "reference/skills-catalog#provider-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.06
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.6,
+      "confidence": 0.4,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.5,
+       "1": 0.42,
+       "2": 0.08,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1184,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.726
+  },
+  {
+   "key": "skills:add-whatsapp|reference/skills-catalog#channel-installs",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-whatsapp",
+    "area": "skills",
+    "statement": "A workspace skill `/add-whatsapp` exists under `.claude/skills/`; it is invoked when: Add WhatsApp channel via native Baileys adapter. Direct connection — no Chat SDK bridge. Uses QR code or pairing code for authentication.",
+    "evidence": {
+     "file": ".claude/skills/add-whatsapp/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-whatsapp / description: Add WhatsApp channel via native Baileys adapter. Direct connection — no Chat SDK bridge. Uses QR code or pairing code for authentication."
+    }
+   },
+   "section_id": "reference/skills-catalog#channel-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.95
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.06,
+      "confidence": 0.94,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.95,
+       "1": 0.05,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1739,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.692
+  },
+  {
+   "key": "ncl:members-add-flags|reference/ncl-cli#members",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:members-add-flags",
+    "area": "ncl",
+    "statement": "`ncl members add` (approval) names these flags in its help text: `--user`, `--group`.",
+    "evidence": {
+     "file": "src/cli/resources/members.ts",
+     "line": 33,
+     "excerpt": "add: { access: 'approval', description: ... --user --group }"
+    }
+   },
+   "section_id": "reference/ncl-cli#members",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.06
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.81
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.15,
+      "confidence": 0.85,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.89,
+       "1": 0.07,
+       "2": 0.04,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1064,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.655
+  },
+  {
+   "key": "ncl:groups-config-add-mcp-server-flags|reference/ncl-cli#groups",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:groups-config-add-mcp-server-flags",
+    "area": "ncl",
+    "statement": "`ncl groups config add-mcp-server` (approval) names these flags in its help text: `--id`, `--name`, `--command`, `--args`, `--env`, `--url`, `--headers`.",
+    "evidence": {
+     "file": "src/cli/resources/groups.ts",
+     "line": 453,
+     "excerpt": "config add-mcp-server: { access: 'approval', description: ... --id --name --command --args --env --url --headers }"
+    }
+   },
+   "section_id": "reference/ncl-cli#groups",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.1
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.86
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.57,
+      "confidence": 0.43,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.57,
+       "1": 0.3,
+       "2": 0.12,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2277,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.639
+  },
+  {
+   "key": "skills:add-vercel|reference/skills-catalog#tool-installs",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-vercel",
+    "area": "skills",
+    "statement": "A workspace skill `/add-vercel` exists under `.claude/skills/`; it is invoked when: Add Vercel deployment capability to NanoClaw agents. Installs the Vercel CLI in agent containers and sets up OneCLI credential injection for api.vercel.com. Use when the user wants agents to deploy web applications to Vercel.",
+    "evidence": {
+     "file": ".claude/skills/add-vercel/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-vercel / description: Add Vercel deployment capability to NanoClaw agents. Installs the Vercel CLI in agent containers and sets up OneCLI credential injection for api.vercel.com. Use when the user wants agents to deploy web applications to Vercel."
+    }
+   },
+   "section_id": "reference/skills-catalog#tool-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.13,
+      "confidence": 0.87,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.89,
+       "1": 0.1,
+       "2": 0.01,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1526,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.613
+  },
+  {
+   "key": "skills:slack-a2a-rooms|channels/slack#rooms-and-membership",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:slack-a2a-rooms",
+    "area": "skills",
+    "statement": "A workspace skill `/slack-a2a-rooms` exists under `.claude/skills/`; it is invoked when: Agent-to-agent Slack rooms — a group DM (MPIM) holding a human plus two or more NanoClaw sibling bots, where each bot hears the room over its own Socket Mode connection. Registers the admission policy on the Slack channel's bot-inbound guard so bot-authored inbound is admitted only for rooms allowlisted in SLACK_A2A_ROOMS (re-attributed as slack:bot:<bot_id>, hop-limited via SLACK_A2A_MAX_HOPS), plus scripts/open-a2a-room.ts to open a room and register it.",
+    "evidence": {
+     "file": ".claude/skills/slack-a2a-rooms/SKILL.md",
+     "line": 2,
+     "excerpt": "name: slack-a2a-rooms / description: Agent-to-agent Slack rooms — a group DM (MPIM) holding a human plus two or more NanoClaw sibling bots, where each bot hears the room over its own Socket Mode connection. Registers the admission policy on the Slack channel's bot-inbound guard so bot-authored inbound is admitted only for rooms allowlisted in SLACK_A2A_ROOMS (re-attributed as slack:bot:<bot_id>, …"
+    }
+   },
+   "section_id": "channels/slack#rooms-and-membership",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.08
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.86
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.48,
+      "confidence": 0.52,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.64,
+       "1": 0.26,
+       "2": 0.09,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1182,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.703
+  },
+  {
+   "key": "ncl:policies-set-flags|reference/ncl-cli#policies",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:policies-set-flags",
+    "area": "ncl",
+    "statement": "`ncl policies set` (approval) names these flags in its help text: `--from`, `--to`, `--approver`.",
+    "evidence": {
+     "file": "src/cli/resources/policies.ts",
+     "line": 25,
+     "excerpt": "set: { access: 'approval', description: ... --from --to --approver }"
+    }
+   },
+   "section_id": "reference/ncl-cli#policies",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.9
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.02,
+      "confidence": 0.98,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.99,
+       "1": 0.01,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1147,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.658
+  },
+  {
+   "key": "skills:add-slack|channels/slack#set-up-the-first-agent",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-slack",
+    "area": "skills",
+    "statement": "A workspace skill `/add-slack` exists under `.claude/skills/`; it is invoked when: Add Slack channel integration via Chat SDK.",
+    "evidence": {
+     "file": ".claude/skills/add-slack/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-slack / description: Add Slack channel integration via Chat SDK."
+    }
+   },
+   "section_id": "channels/slack#set-up-the-first-agent",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.04,
+      "confidence": 0.96,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.97,
+       "1": 0.02,
+       "2": 0.01,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1579,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.653
+  },
+  {
+   "key": "ncl:wirings-verbs|reference/ncl-cli#wirings",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:wirings-verbs",
+    "area": "ncl",
+    "statement": "`ncl wirings` exposes exactly these verbs, with their access level for agent callers: list (open), get (open), update (approval), delete (approval), create (approval). `open` runs inline; `approval` sends an approval card when called from inside a container.",
+    "evidence": {
+     "file": "src/cli/resources/wirings.ts",
+     "line": 48,
+     "excerpt": "registerResource plural 'wirings' operations {'list': 'open', 'get': 'open', 'update': 'approval', 'delete': 'approval'} custom ['create']"
+    }
+   },
+   "section_id": "reference/ncl-cli#wirings",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.1
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.26,
+      "confidence": 0.74,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.79,
+       "1": 0.16,
+       "2": 0.05,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1686,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.631
+  },
+  {
+   "key": "env:CONTAINER_PIDS_LIMIT|reference/environment-variables#read-from-env",
+   "stratum": "OK",
+   "fact": {
+    "id": "env:CONTAINER_PIDS_LIMIT",
+    "area": "env",
+    "statement": "`CONTAINER_PIDS_LIMIT` is read from the process environment first, then from `.env`; its default is `2048`. It is resolved with `??`, so an explicitly empty value wins over the default.",
+    "evidence": {
+     "file": "src/config.ts",
+     "line": 107,
+     "excerpt": "export const CONTAINER_PIDS_LIMIT = process.env.CONTAINER_PIDS_LIMIT ?? envConfig.CONTAINER_PIDS_LIMIT ?? '2048';"
+    }
+   },
+   "section_id": "reference/environment-variables#read-from-env",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.25
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.92
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.87,
+      "confidence": 0.13,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.51,
+       "1": 0.18,
+       "2": 0.26,
+       "3": 0.05
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 2186,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.651
+  },
+  {
+   "key": "ncl:destinations-add-flags|reference/ncl-cli#destinations",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:destinations-add-flags",
+    "area": "ncl",
+    "statement": "`ncl destinations add` (approval) names these flags in its help text: `--agent-group-id`, `--local-name`, `--target-type`, `--target-id`.",
+    "evidence": {
+     "file": "src/cli/resources/destinations.ts",
+     "line": 96,
+     "excerpt": "add: { access: 'approval', description: ... --agent-group-id --local-name --target-type --target-id }"
+    }
+   },
+   "section_id": "reference/ncl-cli#destinations",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.88
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.05,
+      "confidence": 0.95,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.96,
+       "1": 0.02,
+       "2": 0.02,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1113,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.672
+  },
+  {
+   "key": "ncl:destinations-remove-flags|reference/ncl-cli#destinations",
+   "stratum": "OK",
+   "fact": {
+    "id": "ncl:destinations-remove-flags",
+    "area": "ncl",
+    "statement": "`ncl destinations remove` (approval) names these flags in its help text: `--agent-group-id`, `--local-name`.",
+    "evidence": {
+     "file": "src/cli/resources/destinations.ts",
+     "line": 123,
+     "excerpt": "remove: { access: 'approval', description: ... --agent-group-id --local-name }"
+    }
+   },
+   "section_id": "reference/ncl-cli#destinations",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.04
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.88
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.04,
+      "confidence": 0.96,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.98,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1098,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.691
+  },
+  {
+   "key": "skills:add-signal|reference/skills-catalog#channel-installs",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-signal",
+    "area": "skills",
+    "statement": "A workspace skill `/add-signal` exists under `.claude/skills/`; it is invoked when: Add Signal channel integration via signal-cli device-link. Native adapter — no Chat SDK bridge.",
+    "evidence": {
+     "file": ".claude/skills/add-signal/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-signal / description: Add Signal channel integration via signal-cli device-link. Native adapter — no Chat SDK bridge."
+    }
+   },
+   "section_id": "reference/skills-catalog#channel-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.19
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.95
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.58,
+      "confidence": 0.42,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.54,
+       "1": 0.35,
+       "2": 0.11,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1717,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.723
+  },
+  {
+   "key": "skills:add-github|reference/skills-catalog#channel-installs",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:add-github",
+    "area": "skills",
+    "statement": "A workspace skill `/add-github` exists under `.claude/skills/`; it is invoked when: Add GitHub channel integration via Chat SDK. PR and issue comment threads as conversations.",
+    "evidence": {
+     "file": ".claude/skills/add-github/SKILL.md",
+     "line": 2,
+     "excerpt": "name: add-github / description: Add GitHub channel integration via Chat SDK. PR and issue comment threads as conversations."
+    }
+   },
+   "section_id": "reference/skills-catalog#channel-installs",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.02
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.95
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.0,
+      "confidence": 1.0,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 1.0,
+       "1": 0.0,
+       "2": 0.0,
+       "3": 0.0
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1715,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.662
+  },
+  {
+   "key": "skills:init-onecli|operate/credentials#setting-it-up",
+   "stratum": "OK",
+   "fact": {
+    "id": "skills:init-onecli",
+    "area": "skills",
+    "statement": "A workspace skill `/init-onecli` exists under `.claude/skills/`; it is invoked when: Install and initialize OneCLI Agent Vault. Migrates existing .env credentials to the vault. Use after /update-nanoclaw brings in OneCLI as a breaking change, or for first-time OneCLI setup.",
+    "evidence": {
+     "file": ".claude/skills/init-onecli/SKILL.md",
+     "line": 2,
+     "excerpt": "name: init-onecli / description: Install and initialize OneCLI Agent Vault. Migrates existing .env credentials to the vault. Use after /update-nanoclaw brings in OneCLI as a breaking change, or for first-time OneCLI setup."
+    }
+   },
+   "section_id": "operate/credentials#setting-it-up",
+   "recorded_response": {
+    "model": "jev-1.13.0",
+    "answers": {
+     "contradicts": {
+      "type": "noul",
+      "noul": 0.03
+     },
+     "covers": {
+      "type": "noul",
+      "noul": 0.93
+     },
+     "staleness": {
+      "type": "score",
+      "score": 0.04,
+      "confidence": 0.96,
+      "legend": {
+       "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+       "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+       "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+       "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+      },
+      "probabilities": {
+       "0": 0.97,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.01
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 1445,
+     "output_tokens": 53
+    }
+   },
+   "recorded_elapsed_seconds": 0.632
+  }
+ ]
+}

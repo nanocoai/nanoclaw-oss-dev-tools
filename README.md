@@ -23,6 +23,7 @@ selected provider's authentication choices from that exact Git revision.
 | [e2e-wizard](skills/e2e-wizard/SKILL.md) | Drive the real public setup wizard through a PTY on a fresh exe.dev VM or Proxmox LXC, with a retained agent reply, service proof and sanitized evidence. |
 | [e2e-windows](skills/e2e-windows/SKILL.md) | Qualify Windows WSL2 with the local Docker Desktop engine, then run the public wizard with validated reply, service and sanitized evidence. |
 | [e2e-triage](skills/e2e-triage/SKILL.md) | Research unexpected E2E failures against upstream issues and PRs, recommend next actions, and prepare drafts using the target repository’s current issue forms. |
+| [typesafe-docs-drift](skills/typesafe-docs-drift/SKILL.md) | Rank where the docs portal disagrees with the NanoClaw code using the TypeSafe decision API: deterministic fact extraction, lexical section search, contradicts / covers / staleness per pair, DRIFT / MISSING / UNSURE / OK report; offline fixture replay; nothing written. |
 | [shared-terminal](skills/shared-terminal/SKILL.md) | One local browser terminal shared by the human and agent for supervised installers and interactive handoffs on macOS or Linux. |
 
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with

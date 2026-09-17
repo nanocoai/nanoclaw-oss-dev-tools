@@ -1,0 +1,188 @@
+{
+ "schema_version": 1,
+ "labeled_at": "2026-09-17",
+ "labeled_by": "Claude (LLM-assisted reviewer), by reading the NanoClaw source at 6e5008fe and the nanoclaw-docs section text at e3e1546, without looking at any contender's answers for the pair. Not independently verified by a human; spot-check before relying on it.",
+ "rule": "contradicts is true when the section states a name, value, default, option list or behavior that cannot hold if the fact holds; a usage synopsis that omits a flag the code declares counts, and is marked borderline. Silence is not a contradiction.",
+ "labels": {
+  "ncl:approvals-status-enum|reference/ncl-cli#approvals": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs list a fifth status `awaiting_reason`; the CLI enum in approvals.ts:47 has four values."
+  },
+  "ncl:approvals-status-enum|reference/db-schema#pending-approvals": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "db-schema status column also lists `awaiting_reason`, which the `ncl approvals` enum does not accept as a filter value."
+  },
+  "ncl:dropped-messages-reason-enum|operate/ncl-cli#dropped-messages": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs list `unknown_sender_decline_notify` as a reason; dropped-messages.ts:20 enum has only four values."
+  },
+  "ncl:dropped-messages-reason-enum|reference/ncl-cli#dropped-messages": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Same extra `unknown_sender_decline_notify` value in the reference columns list."
+  },
+  "ncl:dropped-messages-reason-enum|operate/troubleshooting#agent-never-replies": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Troubleshooting reason table has an `unknown_sender_decline_notify` row the CLI enum lacks."
+  },
+  "ncl:tasks-update-flags|reference/ncl-cli#tasks": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs synopsis for update omits `--dangerously-override-recurrence-limit`, `--group`, `--session`, which tasks.ts declares."
+  },
+  "ncl:tasks-cancel-flags|reference/ncl-cli#tasks": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs synopsis `cancel (--id | --all)` omits the declared `--group` and `--session`."
+  },
+  "ncl:tasks-resume-flags|reference/ncl-cli#tasks": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": true,
+   "justification": "Docs synopsis `resume --id` omits declared `--group`/`--session`; an omission in a synopsis, so borderline."
+  },
+  "env:WEBHOOK_PORT|operate/troubleshooting#webhook-channel-is-silent": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs say WEBHOOK_PORT is process-environment only, not `.env`; config.ts getWebhookPort reads process.env then .env."
+  },
+  "env:WEBHOOK_PORT|reference/environment-variables#host-process-environment-only": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": false,
+   "justification": "Reference page files WEBHOOK_PORT under 'no .env fallback'; the code has a .env fallback."
+  },
+  "skills:add-ollama-provider|extend/providers#ollama-add-ollama-provider": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": true,
+   "justification": "Docs say the skill patches readContainerConfig and Docker args; the skill description says only env overrides and a model setting. The docs are the accurate side, so borderline as drift."
+  },
+  "timestamps:rule-1|guides/scheduled-tasks#schedule-recurring-work": {
+   "contradicts": false,
+   "covers": false,
+   "borderline": false,
+   "justification": "Scheduled-tasks guide says nothing about timestamp storage rules; unrelated."
+  },
+  "ncl:tasks-delete-flags|reference/ncl-cli#tasks": {
+   "contradicts": true,
+   "covers": true,
+   "borderline": true,
+   "justification": "Docs synopsis `delete --id` omits declared `--group`/`--session`; omission in a synopsis, borderline."
+  },
+  "ncl:wirings-create-flags|reference/ncl-cli#wirings": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Every flag named in the help text appears in the wirings reference section."
+  },
+  "skills:debug|reference/skills-catalog#operational-skills": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Catalog row for `/debug` matches the skill description."
+  },
+  "ncl:tasks-create-flags|reference/ncl-cli#tasks": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs create synopsis lists the same seven flags the code declares."
+  },
+  "timestamps:rule-2|reference/environment-variables#container-side-variables-agent-runner": {
+   "contradicts": false,
+   "covers": false,
+   "borderline": false,
+   "justification": "Section only has the container `TZ` row; it does not address display formatting rules."
+  },
+  "skills:update-nanoclaw|operate/upgrading#updating-nanoclaw": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Upgrading page describes `/update-nanoclaw` consistently with the skill description."
+  },
+  "skills:add-mattermost|channels/mattermost#install": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Mattermost install section names `/add-mattermost` and agrees with the description."
+  },
+  "skills:add-wechat|channels/more-channels#wechat": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "WeChat section names `/add-wechat`; nothing conflicts."
+  },
+  "container-config:cli_scope-default|reference/container-config#cli-scope": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs say `group` (default), matching migration 015."
+  },
+  "env:NANOCLAW_DEFAULT_MODEL|reference/environment-variables#read-from-env": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Row gives 'provider default' and the intro states process env precedence over .env; consistent with an empty default."
+  },
+  "gateway:selection-unknown|reference/environment-variables#read-from-env": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Row says unknown names fail instead of disabling the gateway; consistent."
+  },
+  "skills:add-github|reference/skills-catalog#channel-installs": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Catalog row for `/add-github` matches the description."
+  },
+  "skills:slack-a2a-rooms|channels/slack#rooms-and-membership": {
+   "contradicts": false,
+   "covers": false,
+   "borderline": false,
+   "justification": "Section describes A2A room admission via SLACK_A2A_ROOMS consistently but never names the `/slack-a2a-rooms` skill."
+  },
+  "ncl:sessions-history-flags|reference/ncl-cli#sessions": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs `history <session-id> [--limit <n>]`; positional id equals `--id`, so the flag set matches."
+  },
+  "ncl:destinations-add-flags|reference/ncl-cli#destinations": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs add synopsis has the same four flags."
+  },
+  "ncl:roles-role-enum|reference/ncl-cli#roles": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Docs list `owner` | `admin`, same as the enum."
+  },
+  "env:NANOCLAW_RUNTIME_DRIVER|reference/environment-variables#read-from-env": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Row: default docker, process env then .env, unknown names abort startup; consistent."
+  },
+  "env:CONTAINER_MEMORY_LIMIT|reference/environment-variables#read-from-env": {
+   "contradicts": false,
+   "covers": true,
+   "borderline": false,
+   "justification": "Row: unset (unbounded), .env or process environment; consistent."
+  }
+ }
+}
