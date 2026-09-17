@@ -6,3 +6,7 @@ __pycache__/
 # Private live-run evidence and machine-specific terminal prototype.
 /evidence/
 /tools/shared-terminal/
+
+# typesafe-docs-drift raw answers (doc excerpts and code snippets) and this clone's worktrees.
+/skills/typesafe-docs-drift/output/
+/.worktrees/

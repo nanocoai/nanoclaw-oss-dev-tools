@@ -1,0 +1,414 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-17T00:00:00Z",
+  "code_commit": "6e5008fe",
+  "docs_commit": "e3e1546",
+  "note": "Facts and sections are real (nanocoai/nanoclaw and nanoclaw-docs on 2026-09-17, section text truncated); responses are hand-written in the documented TypeSafe answer shapes, not recorded from the API.",
+  "facts": [
+    {
+      "id": "ncl:groups-config-update-flags",
+      "area": "ncl",
+      "statement": "`ncl groups config update` (approval) names these flags in its help text: `--id`, `--provider`, `--model`, `--effort`, `--speed`, `--image-tag`, `--assistant-name`, `--max-messages-per-prompt`, `--cli-scope`, `--timezone`.",
+      "evidence": {
+        "file": "src/cli/resources/groups.ts",
+        "line": 389,
+        "excerpt": "config update: { access: 'approval', description: ... --id --provider --model --effort --speed --image-tag --assistant-name --max-messages-per-prompt --cli-scope --timezone }"
+      },
+      "terms": [
+        "assistant-name",
+        "cli-scope",
+        "config",
+        "effort",
+        "groups",
+        "id",
+        "image-tag",
+        "max-messages-per-prompt",
+        "model",
+        "ncl",
+        "provider",
+        "speed",
+        "timezone"
+      ]
+    },
+    {
+      "id": "container-config:cli-scope-values",
+      "area": "container-config",
+      "statement": "`cli_scope` accepts exactly these values via `ncl groups config update --cli-scope`: `disabled`, `group`, `global`.",
+      "evidence": {
+        "file": "src/cli/resources/groups.ts",
+        "line": 434,
+        "excerpt": "['disabled', 'group', 'global'].includes(scope)"
+      },
+      "terms": [
+        "cli-scope",
+        "cli_scope",
+        "disabled",
+        "global",
+        "group"
+      ]
+    },
+    {
+      "id": "env:CONTAINER_PIDS_LIMIT",
+      "area": "env",
+      "statement": "`CONTAINER_PIDS_LIMIT` is read from the process environment first, then from `.env`; its default is `2048`. It is resolved with `??`, so an explicitly empty value wins over the default.",
+      "evidence": {
+        "file": "src/config.ts",
+        "line": 107,
+        "excerpt": "export const CONTAINER_PIDS_LIMIT = process.env.CONTAINER_PIDS_LIMIT ?? envConfig.CONTAINER_PIDS_LIMIT ?? '2048';"
+      },
+      "terms": [
+        "CONTAINER_PIDS_LIMIT"
+      ]
+    },
+    {
+      "id": "gateway:selection-default",
+      "area": "gateway",
+      "statement": "One credential gateway provider is active per install, selected by `NANOCLAW_GATEWAY_PROVIDER`; when the variable is unset the `onecli` gateway is used, so an install that never sets it behaves as before.",
+      "evidence": {
+        "file": "src/gateway-providers/index.ts",
+        "line": 26,
+        "excerpt": "DEFAULT_GATEWAY_PROVIDER_KIND = 'onecli'"
+      },
+      "terms": [
+        "NANOCLAW_GATEWAY_PROVIDER",
+        "credential gateway",
+        "gateway",
+        "onecli"
+      ]
+    },
+    {
+      "id": "gateway:selection-unknown",
+      "area": "gateway",
+      "statement": "Setting `NANOCLAW_GATEWAY_PROVIDER` to a name with no registered gateway provider throws at startup and lists the installed kinds; other gateways arrive as skills (overlays) and the host never silently falls back to another gateway.",
+      "evidence": {
+        "file": "src/gateway-providers/index.ts",
+        "line": 44,
+        "excerpt": "`NANOCLAW_GATEWAY_PROVIDER='${kind}' but no gateway provider is registered for '${kind}'; ` +"
+      },
+      "terms": [
+        "NANOCLAW_GATEWAY_PROVIDER",
+        "gateway",
+        "overlay",
+        "skill"
+      ]
+    },
+    {
+      "id": "timestamps:rule-1",
+      "area": "timestamps",
+      "statement": "**Storage**: every timestamp written from JS is `new Date().toISOString()` (ISO-8601 UTC with `Z`). Central SQL receives that timestamp as a parameter; never use `datetime('now')` or `strftime(...)` there because they are SQLite-specific and the naive shape is misparsed as local time by `new Date()`. SQLite-only mailbox SQL may use `strftime('%Y-%m-%dT%H:%M:%fZ','now')`. SQLite-only comparisons wrap both sides in `datetime()`.",
+      "evidence": {
+        "file": "CLAUDE.md",
+        "line": 268,
+        "excerpt": "**Storage**: every timestamp written from JS is `new Date().toISOString()` (ISO-8601 UTC with `Z`). Central SQL receives that timestamp as a parameter; never use `datetime('now')` or `strftime(...)` there because they are SQLite-specific and the naive shape is misparsed as local time by `new Date()`. SQLite-only mailbox SQL may use `strftime('%Y-%m-%dT%H:%M:%fZ','now')`. SQLite-only comparisons w…"
+      },
+      "terms": [
+        "ISO",
+        "UTC",
+        "Z",
+        "datetime('now')",
+        "datetime()",
+        "new Date()",
+        "new Date().toISOString()",
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        "strftime(...)",
+        "timestamp",
+        "timezone"
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "id": "operate/configuration#read-from-env",
+      "page": "operate/configuration",
+      "title": "Configuration",
+      "heading": "Read from .env",
+      "level": 3,
+      "line": 22,
+      "text": "| Variable | Default | What it does |\n|---|---|---|\n| `ASSISTANT_NAME` | `Andy` | The assistant's name. Also sets the default trigger, `@<name>`. |\n| `ASSISTANT_HAS_OWN_NUMBER` | `false` | Set `true` when the assistant runs on its own WhatsApp number instead of yours. |\n| `DEFAULT_AGENT_PROVIDER` | `claude` | Provider stamped on **new** agent groups at creation. Existing groups are never touched, and the per-group `provider` config still wins. |\n| `NANOCLAW_DEFAULT_MODEL` | provider SDK default | Model used at the next spawn for groups without their own model. Unlike the provider default, this is not stamped at group creation. |\n| `NANOCLAW_FAST_MODE` | `false` | Enables the faster, higher-priced serving tier for the Claude provider. Only `1` or `true` enables it, case-insensitively. |\n| `NANOCLAW_RUNTIME_DRIVER` | `docker` | Selects an installed session driver. Docker is the only driver shipped here; an unregistered value fails. |\n| `NANOCLAW_GATEWAY_PROVIDER` | `onecli` | Selects an installed credential-gateway provider. An unregistered value fails. |\n| `NANOCLAW_SESSION_MATERIAL_ROOT` | `data/session-materials` | Host directory admitted for session identity material. |\n| `ONECLI_URL` | — | URL of the OneCLI Agent Vault. |\n| `ONECLI_API_KEY` | — | API key for the vault. See [Credentials](/operate/credentials). |\n| `TZ` | system timezone, else `UTC` | IANA timezone for scheduled tasks and message timestamps. Invalid values are skipped, not errored. |\n| `CONTAINER_CPU_LIMIT` | _unset_ (unbounded) | Opt-in CPU cap per container, passed to `docker create --cpus` (e.g. `2`). Can be set in `.env` or the process environment. |\n| `CONTAINER_MEMORY_LIMIT` | _unset_ (unbounded) | Opt-in memory cap per container, passed to `docker create --memory` (e.g. `8g`). Hard cap only on a swapless host. Can be set in `.env` or the process environment. |\n| `NANOCLAW_EGRESS_LOCKDOWN` | `false` | Set `true` to force all agent traffic through the OneCLI gateway on an internal Docker network. Fails fast if the gateway isn't running. Can be set in `.env` or the process environment. See [Hardening](/operate/hardening). |\n| `NANOCLAW_EGRESS_NETWORK` | `nanoclaw-egress` | Name of the locked-down Docker network. Can be set in `.env` or the process environment. |\n| `ONECLI_GATEWAY_CONTAINER` | `onecli` | Name of the gateway container attached as the only egress hop. Can be set in `.env` or the process environment. |\n| `ANTHROPIC_BASE_URL` | — | Custom Anthropic-compatible endpoint for ",
+      "keywords": "[\"configuration\", \"environment variables\", \".env\", \"container config\", \"ASSISTANT_NAME\", \"LOG_LEVEL\", \"container_configs\"]"
+    },
+    {
+      "id": "operate/credentials#accessing-the-onecli-dashboard",
+      "page": "operate/credentials",
+      "title": "Credentials",
+      "heading": "Accessing the OneCLI dashboard",
+      "level": 2,
+      "line": 83,
+      "text": "The vault ships a web dashboard at the same address as `ONECLI_URL` — the \"OneCLI web UI\". Open it in a browser to connect OAuth services, browse secrets, and watch gateway activity.\n\nTwo gotchas on a headless install:\n\n- The dashboard binds where OneCLI binds. On installs where containers reach the gateway over the Docker bridge, that address isn't routable from your laptop — reach it through an SSH tunnel or a private network such as a tailnet rather than exposing the port publicly.\n- OAuth **Connect** flows finish by redirecting the browser back into the dashboard at OneCLI's configured `APP_URL`, which defaults to `http://localhost:10254`. Started from a remote browser, the provider consent itself works (that redirect is derived from the request), but the final hop lands on localhost and dies unless `APP_URL` is set to the URL you actually browse from. The `connect_url` links the gateway hands to agents are built from the same value, so an unset `APP_URL` makes those unreachable too.\n\nDashboard specifics beyond this are OneCLI's territory — see the [OneCLI docs](https://onecli.sh/docs).",
+      "keywords": "[\"credentials\", \"OneCLI\", \"Agent Vault\", \"secrets\", \"approval\", \"onecli-managed\", \"credential proxy\", \"ANTHROPIC_BASE_URL\"]"
+    },
+    {
+      "id": "operate/ncl-cli#agents-can-run-ncl-too",
+      "page": "operate/ncl-cli",
+      "title": "The ncl admin CLI",
+      "heading": "Agents can run ncl too",
+      "level": 2,
+      "line": 46,
+      "text": "The same command surface is exposed to agents inside containers. What an agent may do is controlled per group by `cli_scope` in its container config:\n\n- **`disabled`** — all `ncl` commands are rejected.\n- **`group`** (default) — the agent only sees the `groups`, `sessions`, `destinations`, `members`, and `tasks` resources, pinned to its own group: IDs are auto-filled, rows from other groups are filtered out, and it cannot change its own `cli_scope`. It also gets `wirings get`/`wirings update` for the current conversation's wiring only — the id is force-filled, and updates may only change `engage_mode`/`engage_pattern`.\n- **`global`** — full access to every resource.\n\nAcross most resources, mutating verbs (`create`, `update`, `delete`, `grant`, `restart`, ...) are approval-gated for agents: the agent gets `approval-pending` and an admin receives a card showing the exact command. The exception is `tasks` — every tasks verb, including `create` and `cancel`, is open to agents, since a task is scoped to the agent's own group. From the host socket, the same verbs run immediately — the socket file permissions are the auth boundary. Change the scope with:\n\n```bash\nncl groups config update --id <group-id> --cli-scope disabled\n```",
+      "keywords": "[\"ncl\", \"cli\", \"admin\", \"unix socket\", \"cli_scope\", \"groups\", \"wirings\", \"sessions\", \"approvals\"]"
+    },
+    {
+      "id": "reference/environment-variables#read-from-env",
+      "page": "reference/environment-variables",
+      "title": "Environment variables",
+      "heading": "Read from .env",
+      "level": 2,
+      "line": 13,
+      "text": "NanoClaw's own parser ([`src/env.ts`](https://github.com/nanocoai/nanoclaw/blob/main/src/env.ts)) returns only the keys requested by each caller from `.env` at the project root. The parser itself does not load values into `process.env`. For the core settings below, the process environment takes precedence over `.env` unless noted. `ANTHROPIC_BASE_URL` in the Claude provider is read from `.env` only. The shared parser strips matching outer single or double quotes, ignores blank values, and does not execute shell expressions. These parsing rules apply to callers of `readEnvFile`/`envValue`; some setup steps retain their own readers.\n\n| Variable | Default | Read in | Effect |\n|---|---|---|---|\n| `ASSISTANT_NAME` | `Andy` | `src/config.ts:29` | Assistant name. Also sets the default trigger, `@<name>`. |\n| `ASSISTANT_HAS_OWN_NUMBER` | `false` | `src/config.ts:47` | Set `true` when the assistant runs on its own WhatsApp number instead of yours. |\n| `ONECLI_URL` | — | `src/config.ts:75` | URL of the OneCLI Agent Vault. |\n| `ONECLI_API_KEY` | — | `src/config.ts:76` | API key for the vault. See [Credentials](/operate/credentials). |\n| `TZ` | system timezone, else `UTC` | `src/config.ts:101` | IANA timezone for scheduled tasks and timestamps. Invalid values are skipped, not errored. Injected into every agent container at spawn. |\n| `CONTAINER_CPU_LIMIT` | _unset_ (unbounded) | `src/config.ts:80` | Opt-in CPU cap per agent container, passed through to `docker create --cpus` (e.g. `2`). Empty leaves containers unbounded — the current default. Can be set in `.env` or the process environment. |\n| `CONTAINER_MEMORY_LIMIT` | _unset_ (unbounded) | `src/config.ts:81` | Opt-in memory cap per agent container, passed through to `docker create --memory` (e.g. `8g`). A hard cap only on a swapless host — there the runaway is OOM-killed; with swap present the container can spill past it. NanoClaw doesn't manage swap. Can be set in `.env` or the process environment. |\n| `CONTAINER_PIDS_LIMIT` | `2048` | `src/config.ts:88` | Process/thread cap per agent container, passed through to `docker create --pids-limit` — a fork-bomb backstop, and the one container limit that's on by default. Set `0` (or any non-numeric value) to drop the cap. Resolved with `??` rather than `||`, so an explicitly empty value in the process environment wins and disables the cap instead of falling through to `.env` or the default. Can be set in `.env` or the process environment. |\n| `NANOCLAW_EGRESS_LOCKDOWN` |",
+      "keywords": "[\"environment variables\", \".env\", \"configuration\", \"ASSISTANT_NAME\", \"LOG_LEVEL\", \"NANOCLAW_SKIP\", \"NANOCLAW_EGRESS_LOCKDOWN\", \"setup\", \"reference\"]"
+    },
+    {
+      "id": "reference/ncl-cli#groups",
+      "page": "reference/ncl-cli",
+      "title": "ncl CLI reference",
+      "heading": "groups",
+      "level": 2,
+      "line": 79,
+      "text": "Agent groups — logical agent identities with their own workspace folder, history, and container image.\n\n| Operation | Invocation | Access | Notes |\n| --- | --- | --- | --- |\n| list | `ncl groups list` | open | |\n| get | `ncl groups get --id <id>` | open | |\n| create | `ncl groups create --folder <folder> [--name <name>] [--timezone <iana-id>]` or `ncl groups create --template <ref> [--name <name>] [--timezone <iana-id>] [--id <id>] [--new] [--yes]` | approval | **Without `--template`:** `--folder` required and immutable, `--name` defaults to the folder, idempotent on `--folder` (creating an existing folder returns the existing row), and new ids are prefixed `ag-<uuid>`. **With `--template <ref>`:** stamps from a local [template](/templates/overview) under `templates/`. Combining it with `--folder` is **rejected** — a bare group *is* its folder, a templated group *is* its plugin. The display name is `--name`, else the manifest's `agentName`, else the template ref's leaf folder; the group folder derives from that name, with a random `-XXXXXXXX` suffix on collision. Always creates a new agent, except when updating one this template already made: a group can only be targeted if its workspace holds that plugin's manifest, so a hand-built group or one stamped from another template is rejected. Convergent rather than folder-idempotent: if a group already carries that plugin, the command returns an in-place [update plan](/templates/updating) instead of creating anything — `--yes` applies it, `--id` picks the target when several groups carry it, and `--new` forces a fresh stamp. `--name` and `--timezone` apply only when a group is created; both are ignored on an in-place update. Reader notices come back as `templateReport` on a create, and as `report` on an update. |\n| update | `ncl groups update --id <id> --name <name>` | approval | `name` is the only updatable column. |\n| delete | `ncl groups delete --id <id>` | approval | Custom cascading handler (not the generic single-table delete): removes sessions, destinations, approvals, role grants, memberships, and wirings in one FK-ordered transaction. Does **not** kill running containers or clean up `groups/<folder>/` and `data/v2-sessions/<id>/` on disk. |\n| restart | `ncl groups restart --id <id> [--rebuild] [--message <text>]` | approval | Host caller: restarts all running containers in the group. Agent caller: `--id` auto-filled, only the calling session restarts. `--rebuild` rebuilds the image first (required afte",
+      "keywords": "[\"ncl\", \"cli\", \"reference\", \"commands\", \"flags\", \"groups\", \"wirings\", \"sessions\", \"roles\", \"members\", \"destinations\", \"approvals\", \"cli_scope\"]"
+    },
+    {
+      "id": "templates/building#skills",
+      "page": "templates/building",
+      "title": "Building a template",
+      "heading": "Skills",
+      "level": 2,
+      "line": 168,
+      "text": "Each immediate subfolder of `skills/` is one skill, named after the folder. The whole folder is copied, so put `SKILL.md` (with `name` and `description` frontmatter) and any `references/*.md` inside it, following the usual [skill conventions](/extend/writing-skills).\n\nSkills land in the group's private skills overlay — keyed to that group, never shared with others. Each skill's `name` and `description` are always in the prompt, and that's what the auto-trigger matches on; only the body is read on demand.\n\nA non-conforming skill is skipped with a named notice at stamp time, never silently dropped.",
+      "keywords": "[\"build template\", \"author template\", \"plugin.json\", \"mcp.json\", \"ai.nanoco.nanoclaw\", \"instructions.md\", \"additional_context\", \"template tasks\", \"agent plugins\", \"test template\"]"
+    }
+  ],
+  "candidates": {
+    "ncl:groups-config-update-flags": [
+      "reference/ncl-cli#groups"
+    ],
+    "container-config:cli-scope-values": [
+      "operate/ncl-cli#agents-can-run-ncl-too"
+    ],
+    "env:CONTAINER_PIDS_LIMIT": [
+      "reference/environment-variables#read-from-env"
+    ],
+    "gateway:selection-default": [
+      "operate/credentials#accessing-the-onecli-dashboard"
+    ],
+    "gateway:selection-unknown": [
+      "templates/building#skills",
+      "operate/configuration#read-from-env"
+    ],
+    "timestamps:rule-1": []
+  },
+  "scores": {
+    "ncl:groups-config-update-flags|reference/ncl-cli#groups": 410.935,
+    "container-config:cli-scope-values|operate/ncl-cli#agents-can-run-ncl-too": 133.167,
+    "env:CONTAINER_PIDS_LIMIT|reference/environment-variables#read-from-env": 136.279,
+    "gateway:selection-default|operate/credentials#accessing-the-onecli-dashboard": 48.726,
+    "gateway:selection-unknown|templates/building#skills": 37.878,
+    "gateway:selection-unknown|operate/configuration#read-from-env": 67.252
+  },
+  "responses": {
+    "ncl:groups-config-update-flags|reference/ncl-cli#groups": {
+      "model": "jev-latest",
+      "answers": {
+        "contradicts": {
+          "type": "noul",
+          "noul": 0.78
+        },
+        "covers": {
+          "type": "noul",
+          "noul": 0.96
+        },
+        "staleness": {
+          "type": "score",
+          "score": 1.12,
+          "legend": {
+            "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+            "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+            "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+            "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+          },
+          "probabilities": {
+            "0": 0.14,
+            "1": 0.62,
+            "2": 0.22,
+            "3": 0.02
+          },
+          "confidence": 0.71
+        }
+      },
+      "usage": {
+        "input_tokens": 2610,
+        "output_tokens": 96
+      }
+    },
+    "container-config:cli-scope-values|operate/ncl-cli#agents-can-run-ncl-too": {
+      "model": "jev-latest",
+      "answers": {
+        "contradicts": {
+          "type": "noul",
+          "noul": 0.03
+        },
+        "covers": {
+          "type": "noul",
+          "noul": 0.95
+        },
+        "staleness": {
+          "type": "score",
+          "score": 0.08,
+          "legend": {
+            "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+            "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+            "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+            "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+          },
+          "probabilities": {
+            "0": 0.93,
+            "1": 0.06,
+            "2": 0.01,
+            "3": 0.0
+          },
+          "confidence": 0.93
+        }
+      },
+      "usage": {
+        "input_tokens": 1480,
+        "output_tokens": 96
+      }
+    },
+    "env:CONTAINER_PIDS_LIMIT|reference/environment-variables#read-from-env": {
+      "model": "jev-latest",
+      "answers": {
+        "contradicts": {
+          "type": "noul",
+          "noul": 0.05
+        },
+        "covers": {
+          "type": "noul",
+          "noul": 0.9
+        },
+        "staleness": {
+          "type": "score",
+          "score": 0.2,
+          "legend": {
+            "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+            "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+            "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+            "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+          },
+          "probabilities": {
+            "0": 0.83,
+            "1": 0.14,
+            "2": 0.03,
+            "3": 0.0
+          },
+          "confidence": 0.88
+        }
+      },
+      "usage": {
+        "input_tokens": 3020,
+        "output_tokens": 96
+      }
+    },
+    "gateway:selection-default|operate/credentials#accessing-the-onecli-dashboard": {
+      "model": "jev-latest",
+      "answers": {
+        "contradicts": {
+          "type": "noul",
+          "noul": 0.42
+        },
+        "covers": {
+          "type": "noul",
+          "noul": 0.55
+        },
+        "staleness": {
+          "type": "score",
+          "score": 0.9,
+          "legend": {
+            "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+            "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+            "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+            "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+          },
+          "probabilities": {
+            "0": 0.4,
+            "1": 0.35,
+            "2": 0.2,
+            "3": 0.05
+          },
+          "confidence": 0.4
+        }
+      },
+      "usage": {
+        "input_tokens": 1210,
+        "output_tokens": 96
+      }
+    },
+    "gateway:selection-unknown|templates/building#skills": {
+      "model": "jev-latest",
+      "answers": {
+        "contradicts": {
+          "type": "noul",
+          "noul": 0.02
+        },
+        "covers": {
+          "type": "noul",
+          "noul": 0.08
+        },
+        "staleness": {
+          "type": "score",
+          "score": 0.05,
+          "legend": {
+            "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+            "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+            "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+            "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+          },
+          "probabilities": {
+            "0": 0.95,
+            "1": 0.05,
+            "2": 0.0,
+            "3": 0.0
+          },
+          "confidence": 0.95
+        }
+      },
+      "usage": {
+        "input_tokens": 1160,
+        "output_tokens": 96
+      }
+    },
+    "gateway:selection-unknown|operate/configuration#read-from-env": {
+      "model": "jev-latest",
+      "answers": {
+        "contradicts": {
+          "type": "noul",
+          "noul": 0.1
+        },
+        "covers": {
+          "type": "noul",
+          "noul": 0.25
+        },
+        "staleness": {
+          "type": "score",
+          "score": 0.3,
+          "legend": {
+            "0": "Current: the section states the fact correctly, or does not touch the point the fact makes at all.",
+            "1": "Slightly outdated: a name, default value, flag spelling or minor detail differs from the fact, but a reader following the section would still succeed.",
+            "2": "Wrong: the section states something the code no longer does or never did on this point; a reader following it would be misled, get an error, or miss a required step.",
+            "3": "Dangerous if followed: following the section on this point could lose data, expose a credential, weaken a security boundary, or leave the install broken."
+          },
+          "probabilities": {
+            "0": 0.75,
+            "1": 0.2,
+            "2": 0.05,
+            "3": 0.0
+          },
+          "confidence": 0.8
+        }
+      },
+      "usage": {
+        "input_tokens": 1750,
+        "output_tokens": 96
+      }
+    }
+  }
+}

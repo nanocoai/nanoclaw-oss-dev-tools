@@ -1,11 +1,13 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-15**. This checkout contains **7 skills**, with plugin
-manifest version **0.11.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
+Verified: **2026-09-17**. This checkout contains **8 skills**, with plugin
+manifest version **0.12.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
-provides a local terminal for human and agent handoffs.
+provides a local terminal for human and agent handoffs. `typesafe-docs-drift`
+ranks where the docs portal disagrees with the code through the TypeSafe
+decision API and writes nothing.
 
 Installed skill copies must be updated separately, and the manifest version
 does not imply a tagged GitHub release.
@@ -31,6 +33,7 @@ attempt exposed a harness tool-path bug and remains a retained failure. See the
 | [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. On 2026-09-15 a fresh exe.dev VM passed the distributed harness with OpenCode through a custom OpenAI-compatible endpoint. | Native macOS, OpenCode on Proxmox/WSL2 and the OpenRouter/DeepSeek backends, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
 | [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed again on 2026-09-14 at current NanoClaw `main`; terminal-close and post-Windows-reboot inference also passed with locally validated sanitized evidence. | WSL-only restart still left the service/socket unavailable, and Docker Desktop did not start automatically after Windows reboot. |
 | [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
+| [typesafe-docs-drift](../skills/typesafe-docs-drift/SKILL.md) | Ranks disagreements between a NanoClaw checkout and the nanoclaw-docs portal through the TypeSafe System One API: deterministic facts, lexical candidate sections, one fan-out request per pair, gated DRIFT / MISSING / UNSURE / OK verdicts. | Offline fixture replay and mocked-transport tests; one live run on 2026-09-16 (142 facts, 426 requests, 71.5 s: DRIFT 7, MISSING 1, UNSURE 11, OK 123; see [typesafe-docs-drift.md](typesafe-docs-drift.md)). | Detection only; candidate recall is lexical top-3; fixture answers are hand-written. |
 | [shared-terminal](../skills/shared-terminal/SKILL.md) | One local PTY with browser and agent control, for supervised interactive work. | macOS browser typing, interactive prompts, agent/human handoff and shutdown passed; real HTTP/PTY tests passed. | Native Windows, WSL and browser forwarding are unqualified. |
 
 The shared baseline for the three headless skills tested NanoClaw
@@ -309,7 +312,7 @@ run inside the dedicated WSL2 distribution from the NanoClaw checkout.
 
 **Entry point:** [SKILL.md](../skills/e2e-triage/SKILL.md), invoked by the testing
 agent after an unexpected failure or directly against a retained run. Install it
-alongside the E2E skill; the plugin includes all seven. This workflow adds no
+alongside the E2E skill; the plugin includes all eight. This workflow adds no
 runtime or GitHub dependency to the shell/Python test drivers.
 
 - Captures distinct failures without rewriting installation/recovery outcomes.
@@ -338,6 +341,31 @@ bug form and contribution rules were inspected at
 `74224f62a6c08418acccc727114ab02f92e403bf`, and a local field mapping was prepared.
 This is manual workflow validation with live reads, not a fresh E2E installation
 or automated proof of future agent behavior. No issue or comment was posted.
+
+## typesafe-docs-drift
+
+**Entry point:** [typesafe-docs-drift.py](../skills/typesafe-docs-drift/scripts/typesafe-docs-drift.py),
+run from a NanoClaw checkout (`--code`, default `.`) with a nanoclaw-docs
+checkout (`--docs`).
+
+- Needs Python 3.10+ and, for live mode, `TYPESAFE_API_KEY` exported in the
+  shell. Standard library only; no SDK.
+- Extracts facts with code (57 `ncl`, 18 env, 8 container-config, 53 skills,
+  3 gateway, 3 timestamp facts on NanoClaw `6e5008fe`), finds the top 3 doc
+  sections per fact with a BM25 index, and sends one fan-out request per pair
+  asking `contradicts`, `covers` and `staleness`.
+- Gates on the nouls (0.7) and the score confidence (0.5), all overridable,
+  and prints one ranked row per fact with the doc page and heading, the
+  numbers and the code evidence; a per-area summary reports tokens and wall
+  time.
+- `--facts-only` and `--plan` show the deterministic half without a key;
+  `--fixture` replays recorded facts, sections and responses; `--record`
+  saves a live run in that format. Raw answers go to a gitignored directory.
+- Writes nothing anywhere. Details: [typesafe-docs-drift.md](typesafe-docs-drift.md).
+
+Validation: fixture replay through the full pipeline and the mocked tests in
+`tests/test_typesafe_docs_drift.py`, plus one live run on 2026-09-16 whose
+sanitized summary is recorded on the detail page.
 
 ## Installation and maintenance
 
