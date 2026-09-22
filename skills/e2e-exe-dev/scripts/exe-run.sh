@@ -21,8 +21,11 @@
 #   --interactive  drive the real public wizard (fresh VM, requires --result-file)
 #   --provider  provider value selected from provider-options.py
 #   --auth-method  provider-owned auth method value
-#   --gateway   onecli (default) or iron-proxy; headless only, needs a gateway-seam ref
-#               (env NANOCLAW_E2E_GATEWAY); recorded in the result and evidence
+#   --gateway   onecli (default) or iron-proxy (env NANOCLAW_E2E_GATEWAY); needs a
+#               gateway-seam ref; headless runs pass it to the installer, wizard
+#               runs to `nanoclaw.sh --gateway-provider`; bound into the result
+#   --supervised-human-auth  wizard only: allow Codex device pairing; the
+#               pairing link and code land in <result-file>.handoff (0600)
 #   --opencode-model  full backend/model ID for OpenCode wizard runs
 #   --opencode-base-url  custom HTTP(S) API endpoint
 #   --opencode-provider  API scheme for a custom endpoint (default: openai)
@@ -39,14 +42,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REF=HEAD REPO="" KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropic_key}"
 NAME="" BASE="" SNAPSHOT="" RM=0 CPU=4 MEMORY=8GB DISK=40GB
-RESULT_FILE="" INTERACTIVE=0 ARTIFACTS_DIR="" WIZARD_TIMEOUT=1200
+RESULT_FILE="" INTERACTIVE=0 ARTIFACTS_DIR="" WIZARD_TIMEOUT=1200 SUPERVISED=0
 PROVIDER="" AUTH_METHOD="" PAYLOAD_REF="" OPENCODE_MODEL="" OPENCODE_BASE_URL="" OPENCODE_PROVIDER=""
 GATEWAY="${NANOCLAW_E2E_GATEWAY:-onecli}" GATEWAY_SELECTED=0
 MODEL_ARGS=()
 KEY_SELECTED=0
 WIZARD_DIR="$HERE/../../e2e-wizard"
 RUN_ID=""
-AUTH_SOURCE_COMMIT=""
+AUTH_SOURCE_COMMIT="" PAYLOAD_COMMIT=""
 DEV_TOOLS_COMMIT="" HARNESS_SHA256="" REMOVAL_REQUESTED=0
 
 fail() { echo "[exe-run] $1" >&2; exit "${2:-64}"; }
@@ -68,6 +71,7 @@ while [ $# -gt 0 ]; do
     --disk) DISK="$2"; shift 2 ;;
     --result-file) RESULT_FILE="$2"; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
+    --supervised-human-auth) SUPERVISED=1; shift ;;
     --provider) PROVIDER="$2"; shift 2 ;;
     --auth-method) AUTH_METHOD="$2"; shift 2 ;;
     --gateway) GATEWAY="$2"; GATEWAY_SELECTED=1; shift 2 ;;
@@ -105,7 +109,7 @@ result = {
     "auth_method": auth_method or None,
     "auth_source_commit": auth_source_commit or None,
     "gateway": None,
-    "requested_gateway": None if interactive == "1" else gateway,
+    "requested_gateway": gateway,
     "run_id": run_id,
 }
 fd, temporary = tempfile.mkstemp(prefix=".e2e-result-", dir=os.path.dirname(os.path.abspath(path)))
@@ -170,12 +174,15 @@ fi
 [[ "$PROVIDER" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid provider value"
 [[ "$AUTH_METHOD" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid auth method value"
 [[ "$GATEWAY" =~ ^(onecli|iron-proxy)$ ]] || fail "invalid gateway: $GATEWAY (onecli or iron-proxy)"
-if [ "$INTERACTIVE" -eq 1 ] && { [ "$GATEWAY_SELECTED" -eq 1 ] || [ "$GATEWAY" != onecli ]; }; then
-  # The public wizard chooses its gateway through its own flow; the PTY driver
-  # does not select one yet, so a non-default request would silently not apply.
-  fail "--gateway/NANOCLAW_E2E_GATEWAY apply to headless runs; the wizard driver does not select a gateway yet"
-fi
 export NANOCLAW_E2E_GATEWAY="$GATEWAY"
+if [ "$SUPERVISED" -eq 1 ]; then
+  # Only Codex device pairing needs no return channel: the guest prints a
+  # link and code, which this driver relays into a private local file.
+  [ "$INTERACTIVE" -eq 1 ] || fail "--supervised-human-auth requires --interactive"
+  [ "$PROVIDER:$AUTH_METHOD" = codex:device ] \
+    || fail "--supervised-human-auth on exe.dev supports codex device pairing only; Claude subscription sign-in needs the Proxmox or direct wizard entry points"
+  [ "$KEY_SELECTED" -eq 0 ] || fail "human handoff authentication must not use --credential-file" 66
+fi
 if [ "$PROVIDER" = opencode ] && [[ "$AUTH_METHOD" =~ ^(custom|local)$ ]]; then
   [ "$KEY_SELECTED" = 1 ] || fail "custom/local OpenCode requires explicit --credential-file" 66
 fi
@@ -220,15 +227,24 @@ PYMODEL
   PROVIDER_JSON="$("${DISCOVERY[@]}")" || fail "could not discover provider/auth choices from the exact revision" 65
   AUTH_SOURCE_COMMIT="$(printf '%s' "$PROVIDER_JSON" | python3 -c '
 import json, sys
-provider, method = sys.argv[1:]
+provider, method, supervised = sys.argv[1:]
 selected = json.load(sys.stdin)["selected"]
 matches = [item for item in selected["auth_methods"] if item["value"] == method]
 if len(matches) != 1 or not matches[0]["usable_for_e2e"]:
     sys.exit("selected auth method is not usable for E2E")
-if matches[0]["automation"] != "credential-file":
-    sys.exit("selected auth method requires a live human handoff")
-print(selected["auth_source_commit"])
-' "$PROVIDER" "$AUTH_METHOD")" || fail "provider/auth selection is unavailable to the unattended wizard" 64
+automation = matches[0]["automation"]
+if automation == "human-handoff" and supervised != "1":
+    sys.exit("selected auth method requires a live human handoff; add --supervised-human-auth")
+if automation not in ("credential-file", "human-handoff"):
+    sys.exit("selected auth method is unsupported by the wizard driver")
+# A branch-owned payload (alone or beside a bundled block) is pinned by its own commit.
+kind = selected.get("payload_kind")
+payload = selected["auth_source_commit"] if kind == "branch" else next(
+    (source["commit"] for source in selected.get("payload_sources", []) if source["kind"] == "branch"), "")
+print(selected["auth_source_commit"] + " " + payload)
+' "$PROVIDER" "$AUTH_METHOD" "$SUPERVISED")" || fail "provider/auth selection is unavailable to the unattended wizard" 64
+  PAYLOAD_COMMIT="${AUTH_SOURCE_COMMIT#* }"; AUTH_SOURCE_COMMIT="${AUTH_SOURCE_COMMIT%% *}"
+  [ -z "$PAYLOAD_COMMIT" ] || [[ "$PAYLOAD_COMMIT" =~ ^[a-f0-9]{40}$ ]] || fail "invalid payload commit"
 else
   [ -z "$OPENCODE_MODEL$OPENCODE_BASE_URL$OPENCODE_PROVIDER" ] || fail "OpenCode options require --interactive"
   AUTH_SOURCE_COMMIT="$COMMIT"
@@ -264,7 +280,8 @@ print(digest.hexdigest())
 PY
 )" || fail "could not identify the installed E2E harness" 66
 KEY_CHECK=0
-python3 - "$KEY_FILE" <<'PY' || KEY_CHECK=$?
+[ "$SUPERVISED" -eq 0 ] || KEY_FILE=""
+[ -z "$KEY_FILE" ] || python3 - "$KEY_FILE" <<'PY' || KEY_CHECK=$?
 import os, stat, sys
 
 try:
@@ -324,7 +341,7 @@ print(dest)
 ' "$1" "$2"
 }
 
-echo "[exe-run] vm=$NAME ref=$REF commit=$COMMIT repo=$REPO gateway=$([ "$INTERACTIVE" -eq 1 ] && echo wizard || echo "$GATEWAY")"
+echo "[exe-run] vm=$NAME ref=$REF commit=$COMMIT repo=$REPO gateway=$GATEWAY$([ "$INTERACTIVE" -eq 1 ] && echo " (wizard)")"
 PHASE=create
 if [ -n "$BASE" ]; then
   CREATED="$(ssh -o BatchMode=yes exe.dev cp "$BASE" "$NAME" --cpu="$CPU" --memory="$MEMORY" --disk="$DISK" --json)" \
@@ -365,7 +382,9 @@ json.dump({
 }, sys.stdout)
 sys.stdout.write("\n")
 PY
-"${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e; cat > ~/.nanoclaw-e2e/credential; chmod 600 ~/.nanoclaw-e2e/credential' < "$KEY_FILE"
+if [ -n "$KEY_FILE" ]; then
+  "${VM[@]}" 'set -e; umask 077; mkdir -p ~/.nanoclaw-e2e; cat > ~/.nanoclaw-e2e/credential; chmod 600 ~/.nanoclaw-e2e/credential' < "$KEY_FILE"
+fi
 if [ "$INTERACTIVE" -eq 1 ]; then
   COPYFILE_DISABLE=1 tar -C "$WIZARD_DIR" -cf - requirements.txt scenarios/fresh-cli.json \
     scripts/provider-options.py scripts/wizard-run.py scripts/wizard-install.sh scripts/collect-wizard.py | \
@@ -397,14 +416,94 @@ REPO_QUOTED="$(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "
 PHASE=checkout
 INSTALL_COMMAND="NANOCLAW_E2E_ROOT=\$HOME/nanoclaw NANOCLAW_E2E_KEY_FILE=\$HOME/.nanoclaw-e2e/credential NANOCLAW_E2E_PROVIDER='$PROVIDER' NANOCLAW_E2E_AUTH_METHOD='$AUTH_METHOD' NANOCLAW_E2E_AUTH_SOURCE_COMMIT='$AUTH_SOURCE_COMMIT' bash ~/e2e-install.sh"
 if [ "$INTERACTIVE" -eq 1 ]; then
-  INSTALL_COMMAND="bash ~/.nanoclaw-e2e/wizard/scripts/wizard-install.sh --run-id '$RUN_ID' --timeout '$WIZARD_TIMEOUT' --provider '$PROVIDER' --auth-method '$AUTH_METHOD' --credential-file \$HOME/.nanoclaw-e2e/credential"
+  INSTALL_COMMAND="bash ~/.nanoclaw-e2e/wizard/scripts/wizard-install.sh --run-id '$RUN_ID' --timeout '$WIZARD_TIMEOUT' --provider '$PROVIDER' --auth-method '$AUTH_METHOD' --gateway '$GATEWAY'"
+  if [ "$SUPERVISED" -eq 1 ]; then
+    INSTALL_COMMAND="$INSTALL_COMMAND --supervised-human-auth"
+  else
+    INSTALL_COMMAND="$INSTALL_COMMAND --credential-file \$HOME/.nanoclaw-e2e/credential"
+  fi
   MODEL_QUOTED="$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"})"
   INSTALL_COMMAND="$INSTALL_COMMAND $MODEL_QUOTED"
   INSTALL_COMMAND="$INSTALL_COMMAND --expected-auth-source-commit '$AUTH_SOURCE_COMMIT'"
   if [ -n "$PAYLOAD_REF" ]; then
     INSTALL_COMMAND="$INSTALL_COMMAND --payload-ref '$PAYLOAD_REF'"
   fi
+  if [ -n "$PAYLOAD_COMMIT" ]; then
+    INSTALL_COMMAND="$INSTALL_COMMAND --expected-payload-commit '$PAYLOAD_COMMIT'"
+  fi
 fi
+# A supervised wizard run writes its pairing request on the guest
+# (~/.nanoclaw-e2e/auth-handoffs/<run_id>/request.json). Relay it once into a
+# private local file next to the result; never into this log or the evidence.
+HANDOFF_FILE=""
+# Prints the guest wizard's exit code once its result is terminal, else nothing.
+remote_wizard_exit() {
+  local value
+  value="$("${VM[@]}" 'python3 - <<"PY" 2>/dev/null
+import json, os
+try:
+    result = json.load(open(os.path.expanduser("~/nanoclaw/logs/e2e/result.json")))
+except Exception:
+    raise SystemExit(0)
+if result.get("status") in ("pass", "failed") and isinstance(result.get("exit_code"), int):
+    print(result["exit_code"])
+PY' 2>/dev/null)"
+  [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value"
+  return 0
+}
+relay_handoff() {
+  local remote="\$HOME/.nanoclaw-e2e/auth-handoffs/$RUN_ID/request.json" polls=0
+  while kill -0 "$1" 2>/dev/null; do
+    sleep 5
+    polls=$((polls + 1))
+    # A guest that failed before pairing (and whose session lingers) must not
+    # keep this relay waiting; the completion watcher takes over.
+    if [ $((polls % 3)) -eq 0 ] && [ -n "$(remote_wizard_exit)" ]; then
+      return
+    fi
+    if REQUEST="$("${VM[@]}" "cat $remote 2>/dev/null" 2>/dev/null)" && [ -n "$REQUEST" ]; then
+      # Create the private file exclusively (no symlink following, no reuse of
+      # a file something else placed at this path) and print only its path.
+      if printf '%s\n' "$REQUEST" | python3 -c '
+import os, sys
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags, 0o600)
+with os.fdopen(fd, "w") as out:
+    out.write(sys.stdin.read())
+' "$HANDOFF_FILE"; then
+        echo "[exe-run] device pairing requested: open the link and enter the code from $HANDOFF_FILE (private, 0600)" >&2
+      else
+        echo "[exe-run] could not create the private handoff file $HANDOFF_FILE; read the request on the VM instead" >&2
+      fi
+      return
+    fi
+  done
+}
+# The guest wizard writes its own terminal result (status pass/failed with an
+# exit code) before its SSH session ends. Twice on 2026-09-22 the session then
+# stayed open although nothing on the VM still held it, so once that result
+# exists the driver waits one more minute and then takes the wizard's exit
+# code itself instead of hanging on SSH; evidence is exported separately.
+wait_for_wizard() {
+  local remote_exit="" grace=0
+  while kill -0 "$1" 2>/dev/null; do
+    sleep 15
+    kill -0 "$1" 2>/dev/null || break
+    if [ -z "$remote_exit" ]; then
+      remote_exit="$(remote_wizard_exit)"
+    else
+      grace=$((grace + 1))
+      if [ "$grace" -ge 4 ]; then
+        echo "[exe-run] the wizard finished with exit $remote_exit but its SSH session did not close; continuing without it" >&2
+        kill "$1" 2>/dev/null
+        wait "$1" 2>/dev/null
+        WIZARD_EXIT_OVERRIDE="$remote_exit"
+        return
+      fi
+    fi
+  done
+}
+WIZARD_EXIT_OVERRIDE=""
 set +e
 "${VM[@]}" "set -e
   printf '%s\n' '$RUN_ID' > ~/.nanoclaw-e2e/controller-active
@@ -425,8 +524,19 @@ set +e
   test \"\$(git -C ~/nanoclaw rev-parse HEAD)\" = '$COMMIT'
   . ~/.nanoclaw-e2e/run-env.sh
   rm ~/.nanoclaw-e2e/run-env.sh
-  cd ~/nanoclaw && $INSTALL_COMMAND"
+  cd ~/nanoclaw && $INSTALL_COMMAND" </dev/null &
+INSTALL_PID=$!
+if [ "$SUPERVISED" -eq 1 ]; then
+  HANDOFF_FILE="$RESULT_FILE.handoff"
+  rm -f "$HANDOFF_FILE"
+  relay_handoff "$INSTALL_PID"
+fi
+if [ "$INTERACTIVE" -eq 1 ]; then
+  wait_for_wizard "$INSTALL_PID"
+fi
+wait "$INSTALL_PID"
 RC=$?
+[ -z "$WIZARD_EXIT_OVERRIDE" ] || RC="$WIZARD_EXIT_OVERRIDE"
 set -e
 
 if [ "$INTERACTIVE" -eq 1 ]; then
@@ -436,9 +546,10 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   if "${VM[@]}" 'COPYFILE_DISABLE=1 tar -C ~/nanoclaw/logs/e2e-wizard -cf - .' | \
     python3 "$WIZARD_DIR/scripts/collect-wizard.py" \
       --artifacts-dir "$ARTIFACTS_DIR" --result-file "$RESULT_FILE" \
-      --commit "$COMMIT" --run-id "$RUN_ID" --exit-code "$RC" --key-file "$KEY_FILE" \
-      --provider "$PROVIDER" --auth-method "$AUTH_METHOD" \
-      --auth-source-commit "$AUTH_SOURCE_COMMIT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}; then
+      --commit "$COMMIT" --run-id "$RUN_ID" --exit-code "$RC" ${KEY_FILE:+--key-file "$KEY_FILE"} \
+      --provider "$PROVIDER" --auth-method "$AUTH_METHOD" --gateway "$GATEWAY" \
+      --auth-source-commit "$AUTH_SOURCE_COMMIT" ${PAYLOAD_COMMIT:+--payload-commit "$PAYLOAD_COMMIT"} \
+      ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}; then
     RESULT_EXPORTED=1
   else
     echo "[exe-run] could not export sanitized wizard evidence; keeping $NAME" >&2
@@ -474,7 +585,7 @@ elif [ -n "$RESULT_FILE" ]; then
   fi
 fi
 
-if ! "${VM[@]}" 'rm -f ~/.nanoclaw-e2e/credential'; then
+if ! "${VM[@]}" 'rm -f ~/.nanoclaw-e2e/credential ~/.nanoclaw-e2e/auth-handoffs/*/request.json'; then
   echo "[exe-run] could not remove the staged credential; keeping $NAME" >&2
   [ "$RC" -ne 0 ] || RC=74
 fi

@@ -56,11 +56,26 @@ def load_json(files, name, code):
     return value
 
 
+def retained_agent_ok(retained, provider):
+    """The runner's receipt: one group, resolved to the provider through ncl (plus optional detail fields)."""
+    if not isinstance(retained, dict) or retained.get('provider') != provider or retained.get('group_count') != 1:
+        return False
+    if not str(retained.get('verified_via', '')).startswith('ncl'):
+        return False
+    effective = retained.get('effective_providers')
+    if effective is not None and (not isinstance(effective, list) or not effective
+                                  or any(value != provider for value in effective)):
+        return False
+    return True
+
+
 def collect(source, destination, result_path, expected, run_id, exit_code, key_file,
             provider=None, auth_method=None, auth_source_commit=None,
             require_codex_cli_fallback=None, opencode_model=None,
-            opencode_base_url=None, opencode_provider=None):
+            opencode_base_url=None, opencode_provider=None, gateway='onecli', payload_commit=None):
     destination, result_path = Path(destination), Path(result_path)
+    if gateway not in runner.GATEWAYS:
+        reject('gateway-mismatch')
     if destination.exists() or destination.is_symlink():
         reject('destination-exists')
     key = ''
@@ -138,6 +153,16 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
         reject('provider-selection-mismatch')
     if opencode_model is not None and result.get('opencode_model') != opencode_model:
         reject('provider-selection-mismatch')
+    if payload_commit is not None and result.get('payload_commit') != payload_commit:
+        reject('provider-selection-mismatch')
+    # The run asked for the selected gateway; a pass installed it and, for
+    # Iron, used the seam. A failure may name whatever the wizard stamped.
+    installed, seam = result.get('gateway'), result.get('gateway_seam')
+    if (result.get('requested_gateway') != gateway or not isinstance(seam, bool)
+            or (installed is not None and not isinstance(installed, str))):
+        reject('gateway-mismatch')
+    if exit_code == 0 and (installed != gateway or (gateway == 'iron-proxy' and not seam)):
+        reject('gateway-mismatch')
     for key, value in (('opencode_base_url', opencode_base_url), ('opencode_provider', opencode_provider)):
         if value is not None and result.get(key) != value:
             reject('provider-selection-mismatch')
@@ -188,9 +213,7 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
                     or target.get('personal_auth_absent_before_wizard') is not True
                     or target.get('personal_auth_absent_after_wizard') is not True
                     or target.get('device_handoff_observed') is not True
-                    or target.get('retained_agent') != {
-                        'group_count': 1, 'provider': 'codex', 'verified_via': 'ncl',
-                    }):
+                    or not retained_agent_ok(target.get('retained_agent'), 'codex')):
                 reject('acceptance-evidence-missing')
             if result.get('require_codex_cli_fallback') is True and (
                     target.get('cli_fallback_required') is not True
@@ -203,9 +226,7 @@ def collect(source, destination, result_path, expected, run_id, exit_code, key_f
                     or target.get('authorization_handoff_observed') is not True
                     or not isinstance(target.get('authorization_response_submitted'), bool)
                     or target.get('token_capture_and_vault_proof') is not True
-                    or target.get('retained_agent') != {
-                        'group_count': 1, 'provider': 'claude', 'verified_via': 'ncl',
-                    }):
+                    or not retained_agent_ok(target.get('retained_agent'), 'claude')):
                 reject('acceptance-evidence-missing')
     temporary = Path(tempfile.mkdtemp(prefix='.wizard-export-', dir=destination.parent))
     try:
@@ -238,12 +259,14 @@ def main():
     parser.add_argument('--opencode-base-url')
     parser.add_argument('--opencode-provider')
     parser.add_argument('--require-codex-cli-fallback', action='store_true', default=None)
+    parser.add_argument('--gateway', default='onecli', choices=runner.GATEWAYS)
+    parser.add_argument('--payload-commit', help='branch-owned payload commit selected before provisioning')
     args = parser.parse_args()
     try:
         collect(sys.stdin.buffer, args.artifacts_dir, args.result_file, args.commit, args.run_id,
                 args.exit_code, args.key_file, args.provider, args.auth_method,
                 args.auth_source_commit, args.require_codex_cli_fallback, args.opencode_model,
-                args.opencode_base_url, args.opencode_provider)
+                args.opencode_base_url, args.opencode_provider, args.gateway, args.payload_commit)
     except ValidationError as error:
         print('[e2e-wizard] artifact validation failed: ' + error.code, file=sys.stderr)
         return 74

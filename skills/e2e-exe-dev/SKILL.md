@@ -88,6 +88,13 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
   `0600` file; the installer seeds it into the OneCLI vault exactly as
   `setup/auth.ts` does (`onecli secrets create --type anthropic
   --host-pattern api.anthropic.com`).
+- Key files for every credential-file method follow one convention:
+  `~/.nanoclaw-e2e/<provider>_key`, mode `0600`, owned by you, one key and
+  nothing else. `anthropic_key` (Claude; also OpenCode `custom` with
+  `--opencode-provider anthropic`), `openrouter_key` and `deepseek_key`
+  (OpenCode), `openai_key` (Codex `api`). The drivers take the path through
+  `--credential-file` only; they never print, log or export a key, and the
+  guest copy is removed before teardown.
 - A Debian/Ubuntu image on the VM (exe.dev's default). Both bootstrap
   helpers are apt-based: `setup/install-node.sh` (NodeSource) and
   `setup/install-docker.sh` (`get.docker.com` + `usermod -aG docker`).
@@ -114,22 +121,32 @@ python3 "$PROVIDER_HELPER" --root "$PWD" --revision "$COMMIT" --provider claude
 ```
 
 For a bundled provider (`payload_kind: bundled`), use the NanoClaw SHA directly
-without `--payload-ref`. For a branch-owned provider, first fetch the one `nc:copy from-branch:` payload
-named by its offered skill from the owning remote, then pass that fetched ref as
-`--payload-ref`. Record both `nanoclaw_commit` and `auth_source_commit`. Never
-guess a payload remote or silently choose a provider or auth method.
+without `--payload-ref`. For a branch-owned provider, first fetch the `nc:copy
+from-branch:` payload named by its offered skill from the owning remote, then
+pass that fetched ref as `--payload-ref`. A skill may declare both (Codex on
+nanoclaw `290aa683` copies its runtime from the `providers` branch and bundles
+its auth hook): discovery reports `payload_kind: mixed`, lists every source
+with its commit under `payload_sources`, stamps each file with the commit it
+comes from, and takes `auth_source_commit` from the block that carries
+`setup/providers/<provider>.ts`. Record both `nanoclaw_commit` and
+`auth_source_commit`. Never guess a payload remote or silently choose a
+provider or auth method.
 
 The unattended headless installer currently supports Claude `api` and `oauth`.
 Its `existing` mode is only for an explicitly selected reused gateway whose
 vault already has a usable Anthropic credential; it is not a public-picker
-choice. The public wizard can also automate credential-file methods exposed by
-other offered providers. OpenCode runs require `--interactive` and
-`--opencode-model`; custom/self-hosted endpoints also use `--opencode-base-url`
-and an API-key file. Follow [OpenCode wizard coverage](../e2e-wizard/SKILL.md#opencode).
-Browser, subscription, or device methods require a
-separately authorized live human handoff; these drivers stop before allocation
-because they cannot complete that handoff unattended. `skip` cannot produce an
-E2E pass. Read a credential only after the operator chooses its matching method.
+choice. Every other offered provider goes through the public wizard
+(`--interactive`), which automates the credential-file methods those providers
+expose and, with `--gateway onecli|iron-proxy`, installs the requested gateway
+on a seam ref. OpenCode runs require `--interactive` and `--opencode-model`;
+custom/self-hosted endpoints also use `--opencode-base-url` and an API-key
+file. Follow [OpenCode wizard coverage](../e2e-wizard/SKILL.md#opencode).
+Codex `device` pairing is the one human handoff this driver supports, behind
+`--supervised-human-auth` (see [Supervised
+authentication](../e2e-wizard/references/supervised-auth.md)); browser and
+Claude subscription methods still stop before allocation because their
+handoffs cannot be completed from here. `skip` cannot produce an E2E pass.
+Read a credential only after the operator chooses its matching method.
 
 ## Workflow
 
@@ -393,12 +410,27 @@ had to be stored as `CLAUDE_CODE_OAUTH_TOKEN` by hand, which is what the
 `--gateway iron-proxy --auth-method oauth` against a core with #3840
 (`44bfc117884232a6d1092024bc0a9f6e59bcb728`): status blocks from both gateway
 steps, `PING: ok`, `verify: success`, exit 0, sanitized evidence retained.
-Those runs predate the `gateway` result field. Not covered by Iron yet, both
-OneCLI-only: [e2e-wizard](../e2e-wizard/SKILL.md#gateway-seam-limitation) and
-[e2e-macos](../e2e-macos/SKILL.md#choose-the-gateway-explicitly). OpenCode through Iron
-([nanocoai/nanoclaw#3825](https://github.com/nanocoai/nanoclaw/pull/3825))
-also needs an HTTPS-on-443 model endpoint and the read-only `gateway-trust` CA
-mount in the agent container; neither is automated here.
+Those runs predate the `gateway` result field. On **2026-09-22** both gateways
+passed the headless driver with Claude on nanoclaw
+`eaf071c567cebc25a2c9bb758fa73c3c1c3c4708` (#3818 head, cells A and B of the
+gateway-stack e2e), on fresh VMs, with real replies and `verify: success`.
+
+The public-wizard driver takes the same `--gateway` since the second 2026-09-22
+run and forwards it as `nanoclaw.sh --gateway-provider <kind>` (the product's
+own flag; the Advanced screen sets the same value). That is the route for the
+providers the headless installer cannot drive: OpenCode's backend picker and
+Codex's login are clack prompts with no prompt-free path. OpenCode through
+Iron ([nanocoai/nanoclaw#3825](https://github.com/nanocoai/nanoclaw/pull/3825))
+needs an HTTPS-on-443 model host with a DNS name (Iron's front proxy refuses
+plaintext and other ports) and mounts the read-only `gateway-trust` CA into
+the agent container; the wizard driver records whether an agent container
+carried that mount (`opencode_target_receipt.gateway_trust_mount_observed`).
+Codex device pairing under Iron records the adapter's own credential proof
+instead of a OneCLI listing. See [e2e-wizard](../e2e-wizard/SKILL.md#gateway-seam)
+for the seam-ref scenario and the cells C/D evidence. Still OneCLI-only:
+[e2e-macos](../e2e-macos/SKILL.md#choose-the-gateway-explicitly) and the
+Proxmox wizard adapter, which refuses a gateway selection rather than
+ignoring it.
 
 ## Gotchas (each one cost a wrong assumption)
 
@@ -485,7 +517,9 @@ mount in the agent container; neither is automated here.
 | `container step failed` | `logs/e2e/container.log` | Docker Hub pull blocked, or the smoke test failed inside the image |
 | exit `3` (no `data/cli.sock`) | `logs/nanoclaw.error.log` | host crashed at start — read the first ERROR; the upgrade tripwire is not it (`service` stamped the marker) |
 | exit `2` with an auth-error reply | the reply text in `logs/e2e/ping.out` | wrong or expired key in the vault; `onecli secrets` to fix, then re-run (auth step short-circuits, so delete the bad secret first). With Iron, an OAuth token stored as an API key shows the same symptom; use `--auth-method oauth` |
-| `invalid gateway` / `does not select a gateway` (exit `64`) | the `--gateway` value or `NANOCLAW_E2E_GATEWAY` in your shell | only `onecli` and `iron-proxy` exist, and only headless runs take the choice; nothing was created |
+| `invalid gateway` (exit `64`) | the `--gateway` value or `NANOCLAW_E2E_GATEWAY` in your shell | only `onecli` and `iron-proxy` exist; nothing was created |
+| `supports claude only` / `supervised-human-auth` (exit `1`/`64`) | the `--provider`/`--auth-method` pair | headless runs drive Claude only; other providers need `--interactive`, and Codex `device` also `--supervised-human-auth`; nothing was created |
+| `device pairing requested` in the driver output | `<result-file>.handoff` (private, `0600`) | Codex is waiting for you: open the link and enter the code within the wizard's 10-minute handoff window |
 | `result-identity-mismatch` on export after a green install | `logs/e2e/result.json` `gateway` on the VM vs. the driver's `--gateway` | the installer ran another gateway than requested (an inherited setting on a base VM, or a stale installer copy); the VM is kept |
 | exit `2`, no reply at all | `logs/nanoclaw.log` around the ping timestamp, `bin/ncl sessions list` | container failed to spawn (OneCLI "not applied"), or the agent errored — container logs are gone after exit, so check the outbound DB: `pnpm exec tsx scripts/q.ts data/v2-sessions/<group>/<session>/outbound.db "select * from messages_out"` |
 | `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`); or `SERVICE: not_found` on a nohup-started host — see the source-review limitation above |

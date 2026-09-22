@@ -15,6 +15,33 @@ Development milestone (plugin 0.11.0); not yet released.
 
 ### Added
 
+- The exe.dev public-wizard driver forwards `--gateway onecli|iron-proxy` as
+  `nanoclaw.sh --gateway-provider` on gateway-seam refs, adapts the bundled
+  scenario to the seam (no `onecli` step; `auth` only for providers that log
+  it), and binds `gateway`, `requested_gateway` and `gateway_seam` into the
+  wizard result and sanitized evidence exactly like the headless path; the
+  collector rejects a mismatch. This makes OpenCode and Codex testable under
+  Iron Proxy (cells C and D of the 2026-09-22 gateway-stack e2e).
+- `exe-run.sh --interactive --supervised-human-auth` for Codex device pairing
+  on exe.dev: no credential is staged, the guest's pairing request is relayed
+  once into a private `<result-file>.handoff`, and the runner installs the
+  tested skill's exact `@openai/codex` pin on the host when the payload has no
+  CLI fallback. Under Iron the Codex proof uses the adapter's `has('codex')`
+  and its broker/secret metadata instead of a OneCLI listing; OpenCode runs
+  record whether the agent container carried the read-only `gateway-trust`
+  CA mount.
+- The wizard driver binds a branch-owned payload to the commit selected before
+  provisioning (`--expected-payload-commit`, `payload_commit` in the result,
+  `collect-wizard.py --payload-commit`), and stops waiting on the guest SSH
+  session once the wizard has written its terminal result.
+- Provider discovery accepts skills with several `nc:copy` blocks (a
+  `from-branch:` registry payload plus a bundled auth hook, as `add-codex`
+  declares on nanoclaw `290aa683`): `payload_kind: mixed`, every source with
+  its commit under `payload_sources`, per-file commits, and the auth source
+  taken from the block carrying the provider's setup registration. Payload
+  verification and the Proxmox transport follow the per-source commits;
+  single-block reports are unchanged.
+
 - OpenCode public-wizard E2E for OpenRouter, DeepSeek, and custom/self-hosted
   API-key endpoints across exe.dev, Proxmox and Windows WSL2. Select the model
   with `--opencode-model`, the endpoint with `--opencode-base-url`, and its API
