@@ -21,7 +21,8 @@
 #   --interactive  drive the real public wizard (fresh VM, requires --result-file)
 #   --provider  provider value selected from provider-options.py
 #   --auth-method  provider-owned auth method value
-#   --gateway   onecli (default) or iron-proxy on gateway-seam refs (NANOCLAW_E2E_GATEWAY)
+#   --gateway   onecli (default) or iron-proxy; headless only, needs a gateway-seam ref
+#               (env NANOCLAW_E2E_GATEWAY); recorded in the result and evidence
 #   --opencode-model  full backend/model ID for OpenCode wizard runs
 #   --opencode-base-url  custom HTTP(S) API endpoint
 #   --opencode-provider  API scheme for a custom endpoint (default: openai)
@@ -40,6 +41,7 @@ REF=HEAD REPO="" KEY_FILE="${NANOCLAW_E2E_KEY_FILE:-$HOME/.nanoclaw-e2e/anthropi
 NAME="" BASE="" SNAPSHOT="" RM=0 CPU=4 MEMORY=8GB DISK=40GB
 RESULT_FILE="" INTERACTIVE=0 ARTIFACTS_DIR="" WIZARD_TIMEOUT=1200
 PROVIDER="" AUTH_METHOD="" PAYLOAD_REF="" OPENCODE_MODEL="" OPENCODE_BASE_URL="" OPENCODE_PROVIDER=""
+GATEWAY="${NANOCLAW_E2E_GATEWAY:-onecli}" GATEWAY_SELECTED=0
 MODEL_ARGS=()
 KEY_SELECTED=0
 WIZARD_DIR="$HERE/../../e2e-wizard"
@@ -68,14 +70,14 @@ while [ $# -gt 0 ]; do
     --interactive) INTERACTIVE=1; shift ;;
     --provider) PROVIDER="$2"; shift 2 ;;
     --auth-method) AUTH_METHOD="$2"; shift 2 ;;
-    --gateway) export NANOCLAW_E2E_GATEWAY="$2"; shift 2 ;;
+    --gateway) GATEWAY="$2"; GATEWAY_SELECTED=1; shift 2 ;;
     --payload-ref) PAYLOAD_REF="$2"; shift 2 ;;
     --opencode-model) OPENCODE_MODEL="$2"; shift 2 ;;
     --opencode-base-url) OPENCODE_BASE_URL="$2"; shift 2 ;;
     --opencode-provider) OPENCODE_PROVIDER="$2"; shift 2 ;;
     --artifacts-dir) ARTIFACTS_DIR="$2"; shift 2 ;;
     --wizard-timeout) WIZARD_TIMEOUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) fail "unknown flag: $1" ;;
   esac
 done
@@ -85,9 +87,10 @@ RUN_ID="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 COMMIT="" PHASE=preflight RESULT_EXPORTED=0
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_driver_result() {
-  python3 - "$RESULT_FILE" "$1" "$2" "$REF" "$COMMIT" "$PHASE" "$STARTED_AT" "$PROVIDER" "$AUTH_METHOD" "$AUTH_SOURCE_COMMIT" "$RUN_ID" <<'PY'
+  python3 - "$RESULT_FILE" "$1" "$2" "$REF" "$COMMIT" "$PHASE" "$STARTED_AT" "$PROVIDER" "$AUTH_METHOD" "$AUTH_SOURCE_COMMIT" "$RUN_ID" "$GATEWAY" "$INTERACTIVE" <<'PY'
 import datetime, json, os, sys, tempfile
-path, status, rc, ref, commit, phase, started, provider, auth_method, auth_source_commit, run_id = sys.argv[1:]
+(path, status, rc, ref, commit, phase, started, provider, auth_method, auth_source_commit,
+ run_id, gateway, interactive) = sys.argv[1:]
 result = {
     "schema_version": 1,
     "status": status,
@@ -101,6 +104,8 @@ result = {
     "provider": provider or None,
     "auth_method": auth_method or None,
     "auth_source_commit": auth_source_commit or None,
+    "gateway": None,
+    "requested_gateway": None if interactive == "1" else gateway,
     "run_id": run_id,
 }
 fd, temporary = tempfile.mkstemp(prefix=".e2e-result-", dir=os.path.dirname(os.path.abspath(path)))
@@ -164,6 +169,13 @@ fi
   || fail "--provider and --auth-method are required"
 [[ "$PROVIDER" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid provider value"
 [[ "$AUTH_METHOD" =~ ^[a-z0-9]+([a-z0-9-]*[a-z0-9])?$ ]] || fail "invalid auth method value"
+[[ "$GATEWAY" =~ ^(onecli|iron-proxy)$ ]] || fail "invalid gateway: $GATEWAY (onecli or iron-proxy)"
+if [ "$INTERACTIVE" -eq 1 ] && { [ "$GATEWAY_SELECTED" -eq 1 ] || [ "$GATEWAY" != onecli ]; }; then
+  # The public wizard chooses its gateway through its own flow; the PTY driver
+  # does not select one yet, so a non-default request would silently not apply.
+  fail "--gateway/NANOCLAW_E2E_GATEWAY apply to headless runs; the wizard driver does not select a gateway yet"
+fi
+export NANOCLAW_E2E_GATEWAY="$GATEWAY"
 if [ "$PROVIDER" = opencode ] && [[ "$AUTH_METHOD" =~ ^(custom|local)$ ]]; then
   [ "$KEY_SELECTED" = 1 ] || fail "custom/local OpenCode requires explicit --credential-file" 66
 fi
@@ -312,7 +324,7 @@ print(dest)
 ' "$1" "$2"
 }
 
-echo "[exe-run] vm=$NAME ref=$REF commit=$COMMIT repo=$REPO"
+echo "[exe-run] vm=$NAME ref=$REF commit=$COMMIT repo=$REPO gateway=$([ "$INTERACTIVE" -eq 1 ] && echo wizard || echo "$GATEWAY")"
 PHASE=create
 if [ -n "$BASE" ]; then
   CREATED="$(ssh -o BatchMode=yes exe.dev cp "$BASE" "$NAME" --cpu="$CPU" --memory="$MEMORY" --disk="$DISK" --json)" \
@@ -439,14 +451,16 @@ elif [ -n "$RESULT_FILE" ]; then
       --root \$HOME/nanoclaw --destination $REMOTE_EVIDENCE \
       --credential-file \$HOME/.nanoclaw-e2e/credential \
       --run-id '$RUN_ID' --provider '$PROVIDER' --auth-method '$AUTH_METHOD' \
-      --auth-source-commit '$AUTH_SOURCE_COMMIT' --dev-tools-commit '$DEV_TOOLS_COMMIT' \
+      --auth-source-commit '$AUTH_SOURCE_COMMIT' --gateway '$GATEWAY' \
+      --dev-tools-commit '$DEV_TOOLS_COMMIT' \
       --harness-sha256 '$HARNESS_SHA256'"; then
     if "${VM[@]}" "COPYFILE_DISABLE=1 tar -C $REMOTE_EVIDENCE -cf - ." | \
       python3 "$HERE/e2e-evidence.py" collect \
         --artifacts-dir "$ARTIFACTS_DIR" --result-file "$RESULT_FILE" \
         --credential-file "$KEY_FILE" --commit "$COMMIT" --run-id "$RUN_ID" \
         --exit-code "$RC" --provider "$PROVIDER" --auth-method "$AUTH_METHOD" \
-        --auth-source-commit "$AUTH_SOURCE_COMMIT" --dev-tools-commit "$DEV_TOOLS_COMMIT" \
+        --auth-source-commit "$AUTH_SOURCE_COMMIT" --gateway "$GATEWAY" \
+        --dev-tools-commit "$DEV_TOOLS_COMMIT" \
         --harness-sha256 "$HARNESS_SHA256"; then
       RESULT_EXPORTED=1
       echo "[exe-run] saved sanitized evidence: $ARTIFACTS_DIR"

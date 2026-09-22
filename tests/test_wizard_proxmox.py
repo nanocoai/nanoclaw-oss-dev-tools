@@ -196,6 +196,20 @@ elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exi
         self.assertIn('wizard-install.sh', installer)
         self.assertNotIn('--step', installer)
 
+    def test_gateway_selection_is_refused_rather_than_ignored(self):
+        for extra, env in ((('--gateway', 'iron-proxy'), {}), ((), {'NANOCLAW_E2E_GATEWAY': 'iron-proxy'}),
+                           (('--gateway', 'vault-of-doom'), {})):
+            with self.subTest(extra=extra, env=env):
+                self.env.pop('NANOCLAW_E2E_GATEWAY', None)
+                self.env.update(env)
+                self.report.write_text('{"status":"pass","run_id":"old"}')
+                run = self.run_driver(*extra, '--dry-run')
+                self.assertEqual(run.returncode, 64, run.stderr)
+                self.assertIn('does not select a gateway', run.stderr)
+                self.assertEqual(self.commands(), [])
+                self.assertEqual(json.loads(self.report.read_text())['status'], 'failed')
+        self.env.pop('NANOCLAW_E2E_GATEWAY', None)
+
     def test_invalid_artifact_destination_replaces_stale_pass(self):
         artifact = Path(str(self.report) + '.artifacts')
         artifact.mkdir()

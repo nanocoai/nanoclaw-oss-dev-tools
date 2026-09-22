@@ -24,6 +24,13 @@ FORWARDED = (
     "NANOCLAW_ONECLI_API_HOST", "NANOCLAW_ONECLI_API_TOKEN",
     "NANOCLAW_DISPLAY_NAME", "NANOCLAW_E2E_TZ", "NANOCLAW_E2E_FORCE_AUTH",
 )
+# Credential-gateway kinds the shared installer accepts. Only refs on the gateway
+# seam (setup/gateways/, nanocoai/nanoclaw#3815 onward) can select iron-proxy;
+# the installer refuses it before any step on an older ref.
+GATEWAYS = ("onecli", "iron-proxy")
+# The headless installer takes the gateway from this driver. The wizard adapter
+# reuses this lifecycle and lets the public wizard choose, so it turns this off.
+HEADLESS_GATEWAY = True
 CHECKOUT = "/opt/nanoclaw"
 PRIVATE = "/home/nanoclaw/.nanoclaw-e2e"
 DEFAULT_INSTALLER = Path(__file__).resolve().parents[2] / "e2e-exe-dev/scripts/e2e-install.sh"
@@ -97,6 +104,8 @@ def parse_args(argv=None):
                         default=Path(os.environ.get("NANOCLAW_E2E_KEY_FILE", "~/.nanoclaw-e2e/anthropic_key")).expanduser())
     parser.add_argument("--provider", help="provider selected after inspecting the exact NanoClaw revision")
     parser.add_argument("--auth-method", help="provider-owned authentication method value")
+    parser.add_argument("--gateway", help="credential gateway kind: onecli (default) or iron-proxy on a gateway-seam ref; "
+                                          "defaults to NANOCLAW_E2E_GATEWAY when set")
     parser.add_argument("--installer", type=Path, help="e2e-exe-dev/scripts/e2e-install.sh; default: sibling installed skill")
     parser.add_argument("--result-file", type=Path, required=True, help="local JSON report; its parent directory must exist")
     parser.add_argument("--dry-run", action="store_true", help="print the resolved plan without SSH or reading credentials")
@@ -110,6 +119,7 @@ class Run:
         self.owned = False
         self.commit = None
         self.run_id = uuid.uuid4().hex
+        self.gateway = (args.gateway or os.environ.get("NANOCLAW_E2E_GATEWAY") or "onecli") if HEADLESS_GATEWAY else None
         self.marker = "nanoclaw-e2e-" + self.run_id
         self.report = {
             "schema_version": 1, "provider": "proxmox", "status": "running",
@@ -117,6 +127,7 @@ class Run:
             "requested_commit": None, "phase": "preflight", "run_id": self.run_id,
             "started_at": now(), "finished_at": None,
             "agent_provider": args.provider, "auth_method": args.auth_method,
+            "gateway": None, "requested_gateway": self.gateway,
             "guest": {"host": args.host, "ctid": self.ctid, "creation_confirmed": False},
         }
         self.ssh = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
@@ -181,6 +192,8 @@ class Run:
             raise Failure("--ctid must be between 100 and 999999999", 64)
         if args.provider != "claude" or args.auth_method not in ("api", "oauth"):
             raise Failure("headless Proxmox supports claude api/oauth; use e2e-wizard for another offered provider", 64)
+        if HEADLESS_GATEWAY and self.gateway not in GATEWAYS:
+            raise Failure("--gateway must be onecli or iron-proxy", 64)
         try:
             if json.loads(Path("package.json").read_text()).get("name") != "nanoclaw":
                 raise ValueError()
@@ -266,6 +279,10 @@ class Run:
             self.upload(PRIVATE + "/anthropic_key", key)
         self.upload(PRIVATE + "/e2e-install.sh", self.installer.read_bytes())
         settings = "\n".join("export " + name + "=" + shlex.quote(os.environ[name]) for name in FORWARDED if name in os.environ)
+        if HEADLESS_GATEWAY:
+            # The gateway is a driver choice, not an inherited setting: send the
+            # resolved value so the guest cannot see a different NANOCLAW_E2E_GATEWAY.
+            settings += "\nexport NANOCLAW_E2E_GATEWAY=" + shlex.quote(self.gateway)
         self.upload(PRIVATE + "/run-env.sh", settings.encode())
         # All application setup runs as the same developer account/session as
         # the proven helper. The test key and forwarded settings use SSH stdin.
@@ -300,14 +317,31 @@ exec runuser -u nanoclaw -- env HOME=/home/nanoclaw USER=nanoclaw LOGNAME=nanocl
                 or report.get("provider") != self.args.provider
                 or report.get("auth_method") != self.args.auth_method
                 or report.get("auth_source_commit") != self.report["auth_source_commit"]
+                or (HEADLESS_GATEWAY and not self.gateway_matches(report))
                 or (result.returncode == 0 and (report.get("ping") != "ok" or report.get("phase") != "complete"))):
             raise Failure("installer result does not match this run; refusing to report a pass", 74)
         self.report["installer"] = report
         self.report["commit"] = report["commit"]
+        if HEADLESS_GATEWAY:
+            self.report["gateway"] = report.get("gateway")
         if result.returncode:
             raise Failure("NanoClaw E2E installer failed; inspect the retained container", result.returncode)
         self.report["status"] = "pass"
         self.report["phase"] = "complete"
+
+    def gateway_matches(self, report):
+        # The run must have asked for this gateway; a pass must have installed it,
+        # and a passing Iron install can only have come through the seam step. A
+        # failure may name the other gateway the installer found before stopping.
+        seam = report.get("gateway_seam")
+        if report.get("requested_gateway") != self.gateway or not isinstance(seam, bool):
+            return False
+        found = report.get("gateway")
+        if found is not None and not isinstance(found, str):
+            return False
+        if report.get("status") != "pass":
+            return True  # a failure may name whatever the installer found
+        return found == self.gateway and not (self.gateway == "iron-proxy" and not seam)
 
     def execute(self):
         # Do not replace credentials/source if the caller accidentally chooses
@@ -329,6 +363,7 @@ exec runuser -u nanoclaw -- env HOME=/home/nanoclaw USER=nanoclaw LOGNAME=nanocl
                     "bridge": self.args.bridge, "cores": self.args.cores, "memory_mib": self.args.memory,
                     "disk_gib": self.args.disk, "unprivileged": True,
                     "features": "nesting=1,keyctl=1", "retained": True,
+                    "gateway": self.gateway,
                 }
                 print(json.dumps(self.report["plan"], indent=2))
             else:

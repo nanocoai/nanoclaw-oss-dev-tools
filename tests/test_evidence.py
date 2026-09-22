@@ -56,6 +56,7 @@ class EvidenceTests(unittest.TestCase):
         self.run_id = "headlessrun1234"
         self.harness = "b" * 64
         self.devtools = "c" * 40
+        self.gateway = "onecli"
         self.write_result("pass", 0)
 
     def write_result(self, status, code):
@@ -64,13 +65,16 @@ class EvidenceTests(unittest.TestCase):
             "commit": self.commit, "provider": "claude", "auth_method": "api",
             "auth_source_commit": self.commit, "phase": "complete" if not code else "ping",
             "ping": "ok" if not code else "auth_error", "service_type": "nohup",
+            "gateway": self.gateway, "requested_gateway": self.gateway,
+            "gateway_seam": self.gateway == "iron-proxy",
         }))
 
     def export(self):
         destination = Path(self.temporary.name) / "remote-sanitized"
         with patch.object(evidence, "safe_command", return_value={"status": "ok", "exit_code": 0, "stdout": "fixture\n"}):
             evidence.export_bundle(self.root, destination, self.credential, self.run_id,
-                                   "claude", "api", self.commit, self.devtools, self.harness)
+                                   "claude", "api", self.commit, self.devtools, self.harness,
+                                   self.gateway)
         return destination
 
     @staticmethod
@@ -88,7 +92,7 @@ class EvidenceTests(unittest.TestCase):
         result = Path(self.temporary.name) / "local-result.json"
         evidence.collect(self.archive(destination), local, result, self.credential,
                          self.commit, self.run_id, code, "claude", "api",
-                         self.commit, self.devtools, self.harness)
+                         self.commit, self.devtools, self.harness, self.gateway)
         return local, json.loads(result.read_text())
 
     def test_export_redacts_logs_and_collects_checksum_bound_evidence(self):
@@ -104,6 +108,74 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result["harness_sha256"], self.harness)
         self.assertTrue((local / "runtime-state.json").is_file())
         self.assertEqual(json.loads((local / "triage.json").read_text())["status"], "not-required")
+        self.assertEqual(result["gateway"], "onecli")
+        self.assertEqual(json.loads((local / "runtime-state.json").read_text())["gateway"], "onecli")
+
+    def test_iron_proxy_evidence_binds_the_selected_gateway(self):
+        self.gateway = "iron-proxy"
+        self.write_result("pass", 0)
+        remote = self.export()
+        local, result = self.collect(remote)
+        self.assertEqual(result["gateway"], "iron-proxy")
+        self.assertIs(result["gateway_seam"], True)
+        state = json.loads((local / "runtime-state.json").read_text())
+        self.assertEqual((state["gateway"], state["gateway_seam"]), ("iron-proxy", True))
+
+    def test_gateway_mismatch_is_rejected_at_export_and_collect(self):
+        self.gateway = "iron-proxy"
+        with self.assertRaises(evidence.EvidenceError) as caught:
+            self.export()  # result.json still says onecli
+        self.assertEqual(caught.exception.code, "result-identity-mismatch")
+        self.gateway = "onecli"
+        remote = self.export()
+        self.gateway = "iron-proxy"
+        with self.assertRaises(evidence.EvidenceError) as caught:
+            self.collect(remote)
+        self.assertEqual(caught.exception.code, "invocation-mismatch")
+        self.gateway = "onecli"
+        result_json = json.loads((remote / "result.json").read_text())
+        del result_json["gateway_seam"]
+        content = json.dumps(result_json, indent=2) + "\n"
+        (remote / "result.json").write_text(content)
+        manifest = json.loads((remote / "manifest.json").read_text())
+        manifest["files"]["result.json"] = hashlib.sha256(content.encode()).hexdigest()
+        (remote / "manifest.json").write_text(json.dumps(manifest))
+        with self.assertRaises(evidence.EvidenceError) as caught:
+            self.collect(remote)
+        self.assertEqual(caught.exception.code, "invocation-mismatch")
+
+    def test_passing_iron_result_without_the_seam_is_rejected(self):
+        self.gateway = "iron-proxy"
+        (self.logs / "result.json").write_text(json.dumps({
+            "schema_version": 1, "status": "pass", "exit_code": 0, "commit": self.commit,
+            "provider": "claude", "auth_method": "api", "auth_source_commit": self.commit,
+            "phase": "complete", "ping": "ok", "service_type": "nohup",
+            "gateway": "iron-proxy", "requested_gateway": "iron-proxy", "gateway_seam": False,
+        }))
+        with self.assertRaises(evidence.EvidenceError) as caught:
+            self.export()
+        self.assertEqual(caught.exception.code, "result-identity-mismatch")
+        # A failed Iron request may report whatever the installer actually found.
+        self.write_result("failed", 1)
+        mismatch = json.loads((self.logs / "result.json").read_text())
+        mismatch["gateway"] = "typo-from-a-service-override"
+        (self.logs / "result.json").write_text(json.dumps(mismatch))
+        local, result = self.collect(self.export(), code=1)
+        self.assertEqual((result["gateway"], result["requested_gateway"]),
+                         ("typo-from-a-service-override", "iron-proxy"))
+        shutil.rmtree(Path(self.temporary.name) / "remote-sanitized")
+        shutil.rmtree(local)
+        mismatch.update(status="pass", exit_code=0, gateway_seam=True)
+        (self.logs / "result.json").write_text(json.dumps(mismatch))
+        with self.assertRaises(evidence.EvidenceError) as caught:
+            self.export()
+        self.assertEqual(caught.exception.code, "result-identity-mismatch")
+        # A failed Iron run may legitimately have stopped before the seam step.
+        self.write_result("failed", 1)
+        (self.logs / "result.json").write_text((self.logs / "result.json").read_text().replace('"gateway_seam": true', '"gateway_seam": false'))
+        remote = self.export()
+        local, result = self.collect(remote, code=1)
+        self.assertEqual((result["gateway"], result["gateway_seam"]), ("iron-proxy", False))
 
     def test_failed_run_is_preserved_with_pending_triage(self):
         self.write_result("failed", 2)

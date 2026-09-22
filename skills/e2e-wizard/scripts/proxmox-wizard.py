@@ -10,6 +10,7 @@ import importlib.util
 import ipaddress
 import io
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -147,8 +148,10 @@ def main(argv=None):
     if any(flag in remaining for flag in ('-h', '--help')):
         print(own.format_help())
     base = module('wizard_proxmox_lifecycle', LIFECYCLE)
-    # Product choices and credential configuration must come from the prompts.
+    # Product choices and credential configuration must come from the prompts,
+    # including the gateway: the headless gateway selection stays off.
     base.FORWARDED = ()
+    base.HEADLESS_GATEWAY = False
     args = base.parse_args(remaining)
     if not options.provider or not options.auth_method:
         print('[e2e-wizard] --provider and --auth-method are required', file=sys.stderr)
@@ -170,6 +173,13 @@ def main(argv=None):
     class WizardRun(base.Run):
         def preflight(self):
             self.report['mode'] = 'wizard'
+            # The public wizard chooses its gateway through its own flow; this
+            # adapter cannot drive that choice yet, so a request here would
+            # silently not apply. Raised here, after execute() invalidated any
+            # earlier report, like every other preflight failure.
+            if self.args.gateway is not None or os.environ.get('NANOCLAW_E2E_GATEWAY', 'onecli') != 'onecli':
+                raise base.Failure('--gateway/NANOCLAW_E2E_GATEWAY apply to the headless driver; '
+                                   'the wizard adapter does not select a gateway yet', 64)
             self.report['agent_provider'] = options.provider
             self.report['auth_method'] = options.auth_method
             self.report['require_codex_cli_fallback'] = options.require_codex_cli_fallback

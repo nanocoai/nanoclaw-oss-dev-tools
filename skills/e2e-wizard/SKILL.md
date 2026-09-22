@@ -300,6 +300,22 @@ host reboot, or gateway-file recovery after temporary storage disappears. A
 passing wizard run cannot qualify those paths; pair their focused regressions
 with a live scenario that triggers the actual lifecycle being changed.
 
+## Gateway seam limitation
+
+On refs with NanoClaw's credential-gateway seam (`setup/gateways/`,
+[nanocoai/nanoclaw#3815](https://github.com/nanocoai/nanoclaw/pull/3815)
+onward) the public wizard installs the gateway through `/add-<gateway>` and
+takes the kind from the Advanced screen or `NANOCLAW_GATEWAY_PROVIDER`, and its
+progression log no longer contains the `onecli` and `auth` steps the bundled
+scenario requires. This driver has not been run against such a ref: it does not
+forward a gateway choice into the wizard's environment, its scenario's
+`required_steps` and OneCLI vault checks predate the seam, and both the
+exe.dev driver (`--gateway` with `--interactive`) and the Proxmox wizard
+adapter refuse a gateway selection rather than ignore it. Use the headless
+[e2e-exe-dev](../e2e-exe-dev/SKILL.md#refs-on-the-gateway-seam) or
+[e2e-proxmox](../e2e-proxmox/SKILL.md#choose-the-credential-gateway) drivers
+for Iron Proxy until the wizard scenario is qualified on a seam ref.
+
 ## Evidence and privacy
 
 [The runner](scripts/wizard-run.py) retains rendered terminal text in memory

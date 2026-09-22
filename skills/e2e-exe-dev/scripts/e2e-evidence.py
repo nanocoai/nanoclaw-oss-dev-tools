@@ -110,6 +110,26 @@ def safe_command(args, timeout=5):
     }
 
 
+GATEWAYS = ("onecli", "iron-proxy")
+
+
+def gateway_identity_ok(result, gateway):
+    """The run asked for the selected gateway; a pass installed it and, for Iron, used the seam.
+
+    A failed result may name a different installed gateway (the installer
+    records what it found before stopping), so only the request must match.
+    """
+    seam = result.get("gateway_seam")
+    if gateway not in GATEWAYS or result.get("requested_gateway") != gateway or not isinstance(seam, bool):
+        return False
+    found = result.get("gateway")
+    if found is not None and not isinstance(found, str):
+        return False
+    if result.get("status") != "pass":
+        return True  # a failure may name whatever the installer found, even a typo
+    return found == gateway and not (gateway == "iron-proxy" and not seam)
+
+
 def runtime_state(root, result, dev_tools_commit, harness_sha256):
     sock = root / "data/cli.sock"
     socket_ready = False
@@ -140,6 +160,8 @@ def runtime_state(root, result, dev_tools_commit, harness_sha256):
         "captured_at": now(),
         "nanoclaw_commit": result.get("commit"),
         "auth_source_commit": result.get("auth_source_commit"),
+        "gateway": result.get("gateway"),
+        "gateway_seam": result.get("gateway_seam"),
         "dev_tools_commit": dev_tools_commit or None,
         "harness_sha256": harness_sha256,
         "service_type": result.get("service_type"),
@@ -151,7 +173,7 @@ def runtime_state(root, result, dev_tools_commit, harness_sha256):
 
 
 def export_bundle(root, destination, credential_file, run_id, provider, auth_method,
-                  auth_source_commit, dev_tools_commit, harness_sha256):
+                  auth_source_commit, dev_tools_commit, harness_sha256, gateway="onecli"):
     root, destination = Path(root).resolve(), Path(destination)
     if destination.exists() or destination.is_symlink():
         reject("destination-exists")
@@ -173,7 +195,8 @@ def export_bundle(root, destination, credential_file, run_id, provider, auth_met
     if (not isinstance(result, dict) or result.get("schema_version") != 1
             or result.get("commit") != head or result.get("provider") != provider
             or result.get("auth_method") != auth_method
-            or result.get("auth_source_commit") != auth_source_commit):
+            or result.get("auth_source_commit") != auth_source_commit
+            or not gateway_identity_ok(result, gateway)):
         reject("result-identity-mismatch")
     if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", run_id):
         reject("invalid-run-id")
@@ -246,7 +269,7 @@ def json_file(files, name, code):
 
 def collect(source, destination, result_path, credential_file, commit, run_id,
             exit_code, provider, auth_method, auth_source_commit,
-            dev_tools_commit, harness_sha256):
+            dev_tools_commit, harness_sha256, gateway="onecli"):
     destination, result_path = Path(destination), Path(result_path)
     if destination.exists() or destination.is_symlink():
         reject("destination-exists")
@@ -308,12 +331,15 @@ def collect(source, destination, result_path, credential_file, commit, run_id,
             or result.get("exit_code") != exit_code or result.get("provider") != provider
             or result.get("auth_method") != auth_method
             or result.get("auth_source_commit") != auth_source_commit
+            or not gateway_identity_ok(result, gateway)
             or result.get("dev_tools_commit") != (dev_tools_commit or None)
             or result.get("harness_sha256") != harness_sha256):
         reject("invocation-mismatch")
     state = json_file(files, "runtime-state.json", "invalid-runtime-state")
     if (state.get("nanoclaw_commit") != commit
             or state.get("auth_source_commit") != auth_source_commit
+            or state.get("gateway") != result.get("gateway")
+            or state.get("gateway_seam") != result.get("gateway_seam")
             or state.get("dev_tools_commit") != (dev_tools_commit or None)
             or state.get("harness_sha256") != harness_sha256):
         reject("runtime-identity-mismatch")
@@ -354,6 +380,7 @@ def main(argv=None):
     export.add_argument("--provider", required=True)
     export.add_argument("--auth-method", required=True)
     export.add_argument("--auth-source-commit", required=True)
+    export.add_argument("--gateway", default="onecli", choices=GATEWAYS)
     export.add_argument("--dev-tools-commit", default="")
     export.add_argument("--harness-sha256", required=True)
     collect_parser = sub.add_parser("collect")
@@ -366,6 +393,7 @@ def main(argv=None):
     collect_parser.add_argument("--provider", required=True)
     collect_parser.add_argument("--auth-method", required=True)
     collect_parser.add_argument("--auth-source-commit", required=True)
+    collect_parser.add_argument("--gateway", default="onecli", choices=GATEWAYS)
     collect_parser.add_argument("--dev-tools-commit", default="")
     collect_parser.add_argument("--harness-sha256", required=True)
     args = parser.parse_args(argv)
@@ -374,14 +402,14 @@ def main(argv=None):
             export_bundle(args.root, args.destination, args.credential_file, args.run_id,
                           args.provider, args.auth_method, args.auth_source_commit,
                           args.dev_tools_commit,
-                          args.harness_sha256)
+                          args.harness_sha256, args.gateway)
             print("[e2e-evidence] sanitized headless evidence prepared")
         else:
             collect(sys.stdin.buffer, args.artifacts_dir, args.result_file,
                     args.credential_file, args.commit, args.run_id, args.exit_code,
                     args.provider, args.auth_method, args.auth_source_commit,
                     args.dev_tools_commit,
-                    args.harness_sha256)
+                    args.harness_sha256, args.gateway)
             print("[e2e-evidence] sanitized headless evidence saved")
         return 0
     except EvidenceError as error:
