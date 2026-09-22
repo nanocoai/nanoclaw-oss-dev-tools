@@ -1441,7 +1441,10 @@ def main(argv=None):
         )
         # On a seam ref the public wizard takes the gateway from its own
         # --gateway-provider flag (the Advanced screen sets the same value).
-        terminal.run(root, ['bash', 'nanoclaw.sh', '--gateway-provider', args.gateway] if seam else None)
+        if seam:
+            terminal.run(root, ['bash', 'nanoclaw.sh', '--gateway-provider', args.gateway])
+        else:
+            terminal.run(root)
         if installable:
             if terminal.payload_receipt is None:
                 raise Failure('payload', 'Provider payload was not verified before authentication', 65)
