@@ -353,10 +353,11 @@ driver covers Iron there.
 
 Cells C and D of the 2026-09-22 gateway-stack e2e (nanoclaw `290aa683`,
 #3825) ran through this route; their evidence is recorded in the compatibility
-section below. Neither passed yet: C needs a real API key (the shared
-`anthropic_key` is a Claude Code OAuth token, which Iron swapped into
-`X-Api-Key` correctly and Anthropic rejected), and D needs a person at the
-browser within the pairing window.
+section below: C passed on its second attempt (an OpenAI-compatible HTTPS
+endpoint with an API key; the first attempt used the shared `anthropic_key`,
+a Claude Code OAuth token, which Iron swapped into `X-Api-Key` correctly and
+Anthropic rejected), and D needs a person at the browser within the pairing
+window.
 
 ## Evidence and privacy
 
@@ -474,6 +475,14 @@ gateway-stack e2e on fresh exe.dev VMs against nanoclaw
   wizard's own ping accepted the "agent run failed" reply; the retained-agent
   arithmetic check caught it (`phase: reply`, exit 2). Failed, VM
   `nc-stack-c-iron-opencode` retained, sanitized evidence collected.
+- **C, second attempt: OpenCode `custom` on an OpenAI-compatible endpoint
+  (`https://api.nan.builders/v1`, `openai/glm5.3`, API key file)**: all
+  eleven steps `success` in 8 min 15 s on a fresh VM, `gateway: iron-proxy`
+  bound from the `.env` stamp, `gateway_trust_mount_observed: true`, the
+  retained OpenCode agent answered the arithmetic challenge, the collector
+  accepted the archive and `--rm` deleted the VM with a teardown receipt.
+  **Pass**: OpenCode through Iron's front proxy to an HTTPS-on-443 model host
+  ([nanocoai/nanoclaw#3825](https://github.com/nanocoai/nanoclaw/pull/3825)).
 - **D, Codex `device` with `--supervised-human-auth`**: Iron installed, the
   Codex payload (19 files from `providers` @ `a1148a8f`, 3 bundled) installed
   and the image rebuilt, the login reached the device prompt and the driver
