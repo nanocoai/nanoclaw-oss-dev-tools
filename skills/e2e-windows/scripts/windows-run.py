@@ -155,7 +155,7 @@ def require_fresh(root):
 
 def validate_export(source, artifacts, result_file, commit, run_id, code, key_file,
                     provider=None, auth_method=None, auth_source_commit=None, opencode_model=None,
-                    opencode_base_url=None, opencode_provider=None):
+                    opencode_base_url=None, opencode_provider=None, payload_commit=None):
     # Reuse the wizard's archive, identity, acceptance and credential checks.
     spec = importlib.util.spec_from_file_location('windows_wizard_collector', WIZARD / 'collect-wizard.py')
     module = importlib.util.module_from_spec(spec)
@@ -177,7 +177,8 @@ def validate_export(source, artifacts, result_file, commit, run_id, code, key_fi
     data.seek(0)
     module.collect(data, artifacts, result_file, commit, run_id, code, key_file,
                    provider, auth_method, auth_source_commit, opencode_model=opencode_model,
-                   opencode_base_url=opencode_base_url, opencode_provider=opencode_provider)
+                   opencode_base_url=opencode_base_url, opencode_provider=opencode_provider,
+                   payload_commit=payload_commit)
 
 
 def run_wizard(command, root):
@@ -280,6 +281,12 @@ def main(argv=None):
                     or methods[0]['automation'] != 'credential-file'):
                 raise Failure('Selected provider auth is unavailable to the unattended wizard')
             report['auth_source_commit'] = selected['auth_source_commit']
+            # A branch-owned payload (alone or beside a bundled auth hook) is
+            # pinned by its own commit, which can differ from the auth source.
+            kind = selected.get('payload_kind')
+            report['payload_commit'] = selected['auth_source_commit'] if kind == 'branch' else next(
+                (source['commit'] for source in selected.get('payload_sources', []) if source['kind'] == 'branch'),
+                None)
             key = args.key_file.lstat()
             if not stat.S_ISREG(key.st_mode) or key.st_mode & 0o077 or key.st_uid != os.getuid():
                 raise Failure('Credential must be a private regular file owned by the Linux user')
@@ -302,6 +309,7 @@ def main(argv=None):
                        '--artifacts-dir', str(source), '--run-id', run_id,
                        '--timeout', str(args.wizard_timeout)]
                        + (['--payload-ref', args.payload_ref] if args.payload_ref else [])
+                       + (['--expected-payload-commit', report['payload_commit']] if report.get('payload_commit') else [])
                        + (['--opencode-model', args.opencode_model] if args.opencode_model else [])
                        + (['--opencode-base-url', args.opencode_base_url] if args.opencode_base_url else [])
                        + (['--opencode-provider', args.opencode_provider] if args.opencode_provider else []), root)
@@ -311,7 +319,8 @@ def main(argv=None):
             validated = work / 'validated.json'
             validate_export(source, artifacts, validated, report['commit'], run_id, code,
                             args.key_file, args.provider, args.auth_method,
-                            report['auth_source_commit'], args.opencode_model, args.opencode_base_url, args.opencode_provider)
+                            report['auth_source_commit'], args.opencode_model, args.opencode_base_url, args.opencode_provider,
+                            report.get('payload_commit'))
             report['wizard'] = json.loads(validated.read_text())
             report.update(status='pass' if code == 0 else 'failed', phase='complete' if code == 0 else 'wizard', exit_code=code)
     except KeyboardInterrupt:

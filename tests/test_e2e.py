@@ -539,16 +539,6 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.assertIsNone(result["gateway"])
         self.assertEqual(result["requested_gateway"], "iron-proxy")
 
-    def test_wizard_mode_refuses_a_gateway_selection(self):
-        for args, env in ((("--gateway", "onecli"), {}), ((), {"NANOCLAW_E2E_GATEWAY": "iron-proxy"})):
-            with self.subTest(args=args, env=env):
-                self.env.pop("NANOCLAW_E2E_GATEWAY", None)
-                self.env.update(env)
-                run = self.run_driver("--interactive", "--result-file", str(self.root / "wizard.json"), *args)
-                self.assertEqual(run.returncode, 64, run.stderr)
-                self.assertIn("does not select a gateway", run.stderr)
-                self.assertEqual(self.calls(), [])
-
     def test_gateway_is_forwarded_and_bound_into_result_and_evidence(self):
         result_file = self.root / "iron.json"
         run = self.run_driver("--gateway", "iron-proxy", "--result-file", str(result_file))

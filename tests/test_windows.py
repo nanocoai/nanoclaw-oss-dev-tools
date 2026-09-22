@@ -145,6 +145,8 @@ setupLog.userInput('codex_auth_method', method);
                   'retained_reply_verified': not failed, 'provider': options['--provider'],
                   'auth_method': options['--auth-method'],
                   'auth_source_commit': options['--expected-auth-source-commit'],
+                  'requested_gateway': 'onecli', 'gateway': 'onecli', 'gateway_seam': False,
+                  'payload_commit': options.get('--expected-payload-commit'),
                   'service': {'checkout_verified': True, 'socket_connected': True}}
         if result['provider'] == 'codex':
             payload = {'commit': result['auth_source_commit'], 'paths': {'setup/providers/codex.ts': 'fixture'},
@@ -191,6 +193,9 @@ setupLog.userInput('codex_auth_method', method);
         self.assertEqual(result['auth_method'], 'api')
         self.assertEqual(result['auth_source_commit'], self.payload_commit)
         self.assertEqual(result['wizard']['auth_source_commit'], self.payload_commit)
+        # The branch-owned payload is pinned by its own commit, forwarded to the runner and the collector.
+        self.assertEqual(result['payload_commit'], self.payload_commit)
+        self.assertEqual(result['wizard']['payload_commit'], self.payload_commit)
 
     def test_environment_only_does_not_read_key_or_launch_wizard(self):
         self.key.unlink()

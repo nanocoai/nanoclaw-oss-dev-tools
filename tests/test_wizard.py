@@ -219,6 +219,7 @@ class EvidenceTests(unittest.TestCase):
         self.result = {'schema_version': 1, 'mode': 'wizard', 'run_id': 'regression123', 'commit': 'a'*40,
                        'status': 'pass', 'exit_code': 0, 'wizard_completed': True, 'retained_reply_verified': True,
                        'provider': 'claude', 'auth_method': 'api', 'auth_source_commit': 'a'*40,
+                       'requested_gateway': 'onecli', 'gateway': 'onecli', 'gateway_seam': False,
                        'service': {'type': 'systemd-user', 'checkout_verified': True, 'socket_connected': True}}
         self.progress = self.root / 'logs/setup.log'
         lines = ['## today · setup:auto started', '  invocation: nanoclaw.sh']
@@ -548,6 +549,185 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(json.loads(result.read_text())['status'], 'failed')
 
 
+    def test_collector_binds_the_requested_gateway(self):
+        self.result.update(requested_gateway='iron-proxy', gateway='iron-proxy', gateway_seam=True)
+        destination = self.export()
+        for gateway, expected in (('onecli', 'gateway-mismatch'), ('iron-proxy', None)):
+            with self.subTest(gateway=gateway):
+                local, result = self.root / ('local-' + gateway), self.root / ('result-' + gateway + '.json')
+                if expected:
+                    with self.assertRaises(collector.ValidationError) as caught:
+                        collector.collect(self.archive(destination), local, result, 'a'*40, 'regression123', 0,
+                                          self.key, gateway=gateway)
+                    self.assertEqual(caught.exception.code, expected)
+                    self.assertFalse(local.exists())
+                else:
+                    collector.collect(self.archive(destination), local, result, 'a'*40, 'regression123', 0,
+                                      self.key, gateway=gateway)
+                    self.assertEqual(json.loads(result.read_text())['gateway'], 'iron-proxy')
+        # A pass that never proved the installed kind, or Iron without the seam, is not a pass.
+        for broken in ({'gateway': None}, {'gateway_seam': False}):
+            with self.subTest(broken=broken):
+                self.result.update({'requested_gateway': 'iron-proxy', 'gateway': 'iron-proxy', 'gateway_seam': True, **broken})
+                shutil.rmtree(self.root / 'sanitized')
+                destination = self.export()
+                with self.assertRaises(collector.ValidationError) as caught:
+                    collector.collect(self.archive(destination), self.root / 'broken-local',
+                                      self.root / 'broken-result.json', 'a'*40, 'regression123', 0,
+                                      self.key, gateway='iron-proxy')
+                self.assertEqual(caught.exception.code, 'gateway-mismatch')
+
+    def test_collector_accepts_the_runner_retained_agent_receipt_for_codex(self):
+        receipt = {'auth_method': 'device', 'personal_auth_absent_before_wizard': True,
+                   'personal_auth_absent_after_wizard': True, 'device_handoff_observed': True,
+                   'retained_agent': wizard_like_retained('codex'), 'vault': {'gateway': 'onecli'}}
+        self.result.update(provider='codex', auth_method='device', codex_target_receipt=receipt,
+                           provider_payload_receipt={'commit': 'a'*40, 'paths': {'setup/providers/codex.ts': 'x'},
+                                                     'file_count': 1, 'combined_sha256': 'x'})
+        destination = self.export()
+        local, result = self.root / 'codex-local', self.root / 'codex-result.json'
+        collector.collect(self.archive(destination), local, result, 'a'*40, 'regression123', 0, None,
+                          'codex', 'device', 'a'*40)
+        self.assertEqual(json.loads(result.read_text())['status'], 'pass')
+        for broken in ({'provider': 'claude'}, {'group_count': 2}, {'effective_providers': ['claude']},
+                       {'verified_via': 'guess'}):
+            with self.subTest(broken=broken):
+                receipt['retained_agent'] = {**wizard_like_retained('codex'), **broken}
+                shutil.rmtree(self.root / 'sanitized')
+                destination = self.export()
+                with self.assertRaises(collector.ValidationError) as caught:
+                    collector.collect(self.archive(destination), self.root / 'broken', self.root / 'broken.json',
+                                      'a'*40, 'regression123', 0, None, 'codex', 'device', 'a'*40)
+                self.assertEqual(caught.exception.code, 'acceptance-evidence-missing')
+
+    def test_iron_control_environment_values_are_private(self):
+        iron = self.root / 'data/session-materials/iron-control'
+        iron.mkdir(parents=True)
+        (iron / 'control.env').write_text('IRON_CONTROL_INITIAL_API_KEY=synthetic-iron-control-key-9876\n'
+                                          'IRON_CONTROL_AR_ENCRYPTION_PRIMARY_KEY=synthetic-encryption-key-5432\n'
+                                          'SECRET_KEY_BASE=synthetic-key-base-2468\nPORT=10257\n')
+        values = wizard.private_values(self.root, self.secret)
+        for private in ('synthetic-iron-control-key-9876', 'synthetic-encryption-key-5432', 'synthetic-key-base-2468'):
+            self.assertIn(private, values)
+        self.assertNotIn('10257', values)
+
+
+def wizard_like_retained(provider):
+    return {'group_count': 1, 'provider': provider, 'configured_provider': provider, 'session_providers': [None],
+            'effective_providers': [provider], 'verified_via': 'ncl and exact installed resolveProviderName'}
+
+
+class GatewaySeamTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='nc-wizard-seam-', dir='/tmp')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.scenario = json.loads((SKILL / 'scenarios/fresh-cli.json').read_text())
+
+    def test_seam_scenario_drops_the_onecli_step_and_claude_auth_only(self):
+        claude = wizard.seam_scenario(json.loads(json.dumps(self.scenario)), 'claude')
+        self.assertNotIn('onecli', claude['required_steps'])
+        self.assertNotIn('auth', claude['required_steps'])
+        for provider in ('opencode', 'codex'):
+            adapted = wizard.seam_scenario(json.loads(json.dumps(self.scenario)), provider)
+            self.assertNotIn('onecli', adapted['required_steps'])
+            self.assertIn('auth', adapted['required_steps'])
+        self.assertIn('verify', claude['required_steps'])
+        subscription = json.loads(json.dumps(self.scenario))
+        subscription['required_step_statuses'] = {'auth': 'interactive'}
+        self.assertEqual(wizard.seam_scenario(subscription, 'claude')['required_step_statuses'], {})
+
+    def test_inspect_gateway_binds_the_stamp_and_reports_mismatches(self):
+        self.assertEqual(wizard.inspect_gateway(self.root, 'onecli', False), ('onecli', None))
+        installed, problem = wizard.inspect_gateway(self.root, 'iron-proxy', False)
+        self.assertEqual(installed, 'onecli')
+        self.assertTrue(problem)
+        (self.root / '.env').write_text('TZ=UTC\nNANOCLAW_GATEWAY_PROVIDER="iron-proxy"\n')
+        self.assertEqual(wizard.inspect_gateway(self.root, 'iron-proxy', True), ('iron-proxy', None))
+        installed, problem = wizard.inspect_gateway(self.root, 'onecli', True)
+        self.assertEqual(installed, 'iron-proxy')
+        self.assertIn('not the requested onecli', problem)
+        (self.root / '.env').write_text('TZ=UTC\n')
+        installed, problem = wizard.inspect_gateway(self.root, 'iron-proxy', True)
+        self.assertIsNone(installed)
+        self.assertIn('none', problem)
+
+    def test_pinned_codex_cli_comes_from_the_tested_skill(self):
+        skill = self.root / '.claude/skills/add-codex'
+        skill.mkdir(parents=True)
+        (skill / 'SKILL.md').write_text('# Codex\n\n```nc:json-merge into:container/cli-tools.json key:name\n'
+                                        '{ "name": "@openai/codex", "version": "0.146.0" }\n```\n')
+        self.assertEqual(wizard.pinned_codex_cli(self.root), '0.146.0')
+        (skill / 'SKILL.md').write_text('# Codex without a pin\n')
+        with self.assertRaises(wizard.Failure):
+            wizard.pinned_codex_cli(self.root)
+
+    def test_seam_ref_runs_the_wizard_with_the_gateway_flag(self):
+        # Discovery is mocked: on a seam ref Claude's picker lives in the
+        # gateway's own auth script, which provider-options.py cannot read yet
+        # (documented; Claude under the seam stays on the headless driver).
+        from unittest.mock import patch
+        (self.root / 'nanoclaw.sh').write_text('# fixture')
+        (self.root / 'package.json').write_text('{"name":"nanoclaw"}')
+        (self.root / 'setup/gateways').mkdir(parents=True)
+        (self.root / 'setup/gateways/step.ts').write_text('// seam')
+        key = self.root / 'key'
+        key.write_text('sk-ant-api03-FAKE_CREDENTIAL_abcdefghijklmnopqrstuvwxyz012345')
+        key.chmod(0o600)
+        commands, scenarios = [], []
+
+        class FakeTerminal:
+            def __init__(self, scenario, values, *args, **kwargs):
+                scenarios.append(scenario)
+                self.private_values, self.choices, self.pre_auth_receipt = [], [], None
+                self.handoff_nonce = 'fixture'
+
+            def text(self):
+                return ''
+
+            def run(self, root, command=None):
+                commands.append(command)
+                raise wizard.Failure('wizard', 'stopped after launch', 3)
+
+        result = self.root / 'result.json'
+        response = subprocess.CompletedProcess([], 0)
+        with patch.object(wizard.os, 'getuid', return_value=1000), \
+                patch.object(wizard.subprocess, 'run', return_value=response), \
+                patch.object(wizard.subprocess, 'check_output', return_value='a'*40), \
+                patch.object(wizard, 'selected_auth', return_value=(CLAUDE_SELECTED, CLAUDE_API)), \
+                patch.object(wizard, 'WizardTerminal', FakeTerminal):
+            rc = wizard.main(['--root', str(self.root), '--provider', 'claude', '--auth-method', 'api',
+                              '--credential-file', str(key), '--gateway', 'iron-proxy',
+                              '--result-file', str(result), '--artifacts-dir', str(self.root / 'artifacts')])
+        self.assertEqual(rc, 3)
+        self.assertEqual(commands, [['bash', 'nanoclaw.sh', '--gateway-provider', 'iron-proxy']])
+        self.assertNotIn('onecli', scenarios[0]['required_steps'])
+        report = json.loads(result.read_text())
+        self.assertEqual((report['requested_gateway'], report['gateway'], report['gateway_seam']),
+                         ('iron-proxy', None, True))
+        # Without the seam, Iron cannot be requested and OneCLI runs the plain wizard.
+        (self.root / 'setup/gateways/step.ts').unlink()
+        shutil.rmtree(self.root / 'artifacts')
+        with patch.object(wizard.os, 'getuid', return_value=1000), \
+                patch.object(wizard.subprocess, 'run', return_value=response), \
+                patch.object(wizard.subprocess, 'check_output', return_value='a'*40), \
+                patch.object(wizard, 'selected_auth', return_value=(CLAUDE_SELECTED, CLAUDE_API)), \
+                patch.object(wizard, 'WizardTerminal', FakeTerminal):
+            rc = wizard.main(['--root', str(self.root), '--provider', 'claude', '--auth-method', 'api',
+                              '--credential-file', str(key), '--gateway', 'iron-proxy',
+                              '--result-file', str(result), '--artifacts-dir', str(self.root / 'artifacts')])
+            self.assertEqual(rc, 64)
+            self.assertIn('credential-gateway seam', json.loads(result.read_text())['error'])
+            shutil.rmtree(self.root / 'artifacts')
+            rc = wizard.main(['--root', str(self.root), '--provider', 'claude', '--auth-method', 'api',
+                              '--credential-file', str(key),
+                              '--result-file', str(result), '--artifacts-dir', str(self.root / 'artifacts')])
+        self.assertEqual(rc, 3)
+        self.assertEqual(commands[-1], None)
+        self.assertIn('onecli', scenarios[-1]['required_steps'])
+        self.assertEqual(json.loads(result.read_text())['gateway_seam'], False)
+
+
 class WizardDriverTests(unittest.TestCase):
     def setUp(self):
         self.fixture = test_e2e.DriverTests()
@@ -584,6 +764,7 @@ setup/providers/codex.ts
         self.fixture.git('switch', '-c', 'providers')
         (providers/'codex.ts').write_text("""
 const method = await brightSelect({message:'How would you like to connect Codex?',options:[
+{value:'device',label:'ChatGPT device pairing',hint:'URL and code'},
 {value:'api',label:'Paste an OpenAI API key',hint:'pay per use'},
 {value:'skip',label:"Skip — I'll connect later",hint:'no replies'},
 ]});
@@ -607,18 +788,34 @@ set -euo pipefail
 python3 - "$@" <<'PY'
 import hashlib,json,os,pathlib,subprocess,sys
 root=pathlib.Path.cwd();dest=root/'logs/e2e-wizard';dest.mkdir(parents=True)
-options=dict(zip(sys.argv[1::2],sys.argv[2::2]))
+flags=[a for a in sys.argv[1:] if a in ('--supervised-human-auth',)]
+pairs=[a for a in sys.argv[1:] if a not in flags]
+options=dict(zip(pairs[::2],pairs[1::2]))
 rc=int(os.environ.get('MOCK_INSTALL_RC','0'))
+gateway=options.get('--gateway','onecli')
+observed={'gateway':gateway,'supervised':'--supervised-human-auth' in flags,'credential':options.get('--credential-file')}
+(pathlib.Path.home()/'wizard-observed.json').write_text(json.dumps(observed))
+if observed['supervised']:
+ import time
+ handoff=pathlib.Path.home()/'.nanoclaw-e2e/auth-handoffs'/options['--run-id']
+ handoff.mkdir(parents=True,mode=0o700)
+ (handoff/'request.json').write_text(json.dumps({'run_id':options['--run-id'],'nonce':'fixture','user_code':'ABCD-EFGH','verification_url':'https://auth.openai.com/codex/device'}))
+ time.sleep(1.5)
 result={'schema_version':1,'mode':'wizard','run_id':options['--run-id'],
  'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
  'status':'failed' if rc else 'pass','exit_code':rc,'wizard_completed':True,
  'retained_reply_verified':True,'provider':options['--provider'],'auth_method':options['--auth-method'],
  'auth_source_commit':options['--expected-auth-source-commit'],
+ 'requested_gateway':gateway,'gateway':os.environ.get('MOCK_WRONG_GATEWAY') or gateway,'gateway_seam':gateway=='iron-proxy',
  'service':{'checkout_verified':True,'socket_connected':True}}
 if result['provider']=='codex':
  result['provider_payload_receipt']={'commit':result['auth_source_commit'],'paths':{'setup/providers/codex.ts':'fixture'},'file_count':1,'combined_sha256':'fixture'}
+if (result['provider'],result['auth_method'])==('codex','device'):
+ result['codex_target_receipt']={'auth_method':'device','personal_auth_absent_before_wizard':True,'personal_auth_absent_after_wizard':True,'device_handoff_observed':True,'retained_agent':{'group_count':1,'provider':'codex','configured_provider':'codex','session_providers':[None],'effective_providers':['codex'],'verified_via':'ncl and exact installed resolveProviderName'},'vault':{'gateway':gateway}}
+if result['provider']=='codex': result['payload_kind']='branch'; result['payload_commit']=options.get('--expected-payload-commit')
 files={'terminal.txt':'sanitized output','choices.json':'[]','setup-logs/setup.log':'completed', 'result.json':json.dumps(result)}
 if result['provider']=='codex': files['provider-payload-receipt.json']=json.dumps(result['provider_payload_receipt'])
+if result.get('codex_target_receipt'): files['codex-target-receipt.json']=json.dumps(result['codex_target_receipt'])
 manifest={'schema_version':1,'run_id':options['--run-id'],'sanitized':True,'files':{}}
 for name,content in files.items():
  path=dest/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content)
@@ -645,6 +842,73 @@ exit "${MOCK_INSTALL_RC:-0}"
         removal=next(i for i,c in enumerate(calls) if c[:2]==['exe.dev','rm'])
         self.assertLess(export,removal)
         self.assertFalse((self.fixture.vm/'observed.json').exists(), 'headless installer ran')
+
+    def test_gateway_is_forwarded_to_the_wizard_and_bound_into_result(self):
+        run = self.run_driver('--gateway', 'iron-proxy', '--rm')
+        self.assertEqual(run.returncode, 0, run.stderr)
+        observed = json.loads((self.fixture.vm / 'wizard-observed.json').read_text())
+        self.assertEqual(observed['gateway'], 'iron-proxy')
+        self.assertFalse(observed['supervised'])
+        result = json.loads(self.result.read_text())
+        self.assertEqual((result['requested_gateway'], result['gateway'], result['gateway_seam']),
+                         ('iron-proxy', 'iron-proxy', True))
+        self.assertIn('gateway=iron-proxy (wizard)', run.stdout)
+        # Default runs still bind OneCLI without any flag.
+        shutil.rmtree(str(self.result) + '.artifacts')
+        shutil.rmtree(self.fixture.vm / 'nanoclaw')  # a real run gets a fresh VM
+        run = self.run_driver()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(self.result.read_text())['gateway'], 'onecli')
+
+    def test_wizard_gateway_mismatch_blocks_export_and_keeps_the_vm(self):
+        self.fixture.env['MOCK_WRONG_GATEWAY'] = 'onecli'
+        run = self.run_driver('--gateway', 'iron-proxy', '--rm')
+        self.assertEqual(run.returncode, 74, run.stderr)
+        self.assertEqual(json.loads(self.result.read_text())['status'], 'failed')
+        self.fixture.assert_retained()
+
+    def test_supervised_codex_device_pairing_relays_the_request_privately(self):
+        run = self.fixture.run_script(
+            self.fixture.driver, '--name', 'test-vm', '--interactive', '--result-file', str(self.result),
+            '--provider', 'codex', '--auth-method', 'device', '--payload-ref', 'origin/providers',
+            '--gateway', 'iron-proxy', '--supervised-human-auth', '--rm',
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        observed = json.loads((self.fixture.vm / 'wizard-observed.json').read_text())
+        self.assertTrue(observed['supervised'])
+        self.assertIsNone(observed['credential'])
+        self.assertFalse((self.fixture.vm / '.nanoclaw-e2e/credential').exists())
+        self.assertFalse(any('cat > ~/.nanoclaw-e2e/credential' in ' '.join(call) for call in self.fixture.calls()))
+        handoff = Path(str(self.result) + '.handoff')
+        self.assertTrue(handoff.is_file())
+        self.assertEqual(handoff.stat().st_mode & 0o077, 0)
+        self.assertEqual(json.loads(handoff.read_text())['user_code'], 'ABCD-EFGH')
+        self.assertIn(str(handoff), run.stderr)
+        self.assertNotIn('ABCD-EFGH', run.stdout + run.stderr)
+        result = json.loads(self.result.read_text())
+        self.assertEqual(result['gateway'], 'iron-proxy')
+        # The branch-owned payload is pinned by the commit selected before provisioning.
+        self.assertEqual(result['payload_commit'], self.payload_commit)
+        self.assertIn("--expected-payload-commit '" + self.payload_commit + "'",
+                      ' '.join(' '.join(call) for call in self.fixture.calls()))
+        shutil.rmtree(str(self.result) + '.artifacts')
+        # A credential file contradicts a human handoff; Claude's code return is Proxmox/direct only.
+        for args in (('--credential-file', str(self.fixture.key)), ('--provider', 'claude', '--auth-method', 'subscription')):
+            with self.subTest(args=args):
+                run = self.fixture.run_script(
+                    self.fixture.driver, '--name', 'test-vm', '--interactive', '--result-file', str(self.result),
+                    '--provider', 'codex', '--auth-method', 'device', '--supervised-human-auth', *args,
+                )
+                self.assertNotEqual(run.returncode, 0)
+        # Without --supervised-human-auth a handoff method never reaches a VM.
+        calls_before = len(self.fixture.calls())
+        run = self.fixture.run_script(
+            self.fixture.driver, '--name', 'test-vm', '--interactive', '--result-file', str(self.result),
+            '--provider', 'codex', '--auth-method', 'device', '--payload-ref', 'origin/providers',
+        )
+        self.assertEqual(run.returncode, 64, run.stderr)
+        self.assertIn('supervised-human-auth', run.stderr)
+        self.assertEqual(len(self.fixture.calls()), calls_before)
 
     def test_installable_provider_uses_exact_payload_auth_source(self):
         self.fixture.key.write_text('sk-fake-openai-private-fixture')

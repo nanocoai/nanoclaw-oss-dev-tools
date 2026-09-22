@@ -3,8 +3,10 @@
 
 This is a read-only source inspection. It follows the same two sources as the
 public picker: setup provider registrations and offered provider descriptors.
-Installable providers may bundle their payload in the same Git tree or name a
-branch with ``nc:copy from-branch``. Report the exact auth source commit for both.
+Installable providers may bundle their payload in the same Git tree, name a
+branch with ``nc:copy from-branch``, or declare both (a registry payload plus a
+bundled auth hook). Report the exact commit of every payload source, and the
+auth source commit of the block that carries the provider's setup registration.
 """
 
 import argparse
@@ -229,7 +231,13 @@ def offered_descriptors(root, commit, installed):
 
 
 def copy_entries(markdown, skill_path):
-    """Read copy sources from Git, supporting bundled and branch-owned payloads."""
+    """Read copy sources from Git, supporting bundled and branch-owned payloads.
+
+    A skill may declare several ``nc:copy`` blocks, for example a
+    ``from-branch:`` registry payload plus a bundled auth hook. Every entry
+    carries its own ``branch`` (``None`` for a bundled file), so a caller can
+    resolve each payload source separately.
+    """
     entries = []
     for attrs, body in re.findall(r'```nc:copy([^\n]*)\n(.*?)\n```', markdown, re.S):
         branch = re.search(r'\bfrom-branch:([A-Za-z0-9._/-]+)', attrs)
@@ -247,11 +255,16 @@ def copy_entries(markdown, skill_path):
                 source = posixpath.join(posixpath.dirname(skill_path), source)
             entries.append({'source': source, 'destination': destination,
                             'branch': branch.group(1) if branch else None})
-    if not entries or len({item['branch'] for item in entries}) != 1:
-        raise DiscoveryError('provider skill must declare one bundled or branch-owned payload')
+    if not entries:
+        raise DiscoveryError('provider skill must declare a bundled or branch-owned payload')
     if len({item['destination'] for item in entries}) != len(entries):
         raise DiscoveryError('provider skill has duplicate payload destinations')
     return entries
+
+
+def payload_branches(entries):
+    """Distinct payload sources in declaration order (``None`` is the bundled tree)."""
+    return list(dict.fromkeys(item['branch'] for item in entries))
 
 
 def resolve_payload_ref(root, branch, explicit):
@@ -329,26 +342,55 @@ def discover(root, selected=None, payload_ref=None, revision="HEAD"):
     else:
         skill = tree_read(root, commit, provider["source"])
         entries = copy_entries(skill, provider['source'])
-        branch = entries[0]['branch']
-        if branch:
-            source_ref = resolve_payload_ref(root, branch, payload_ref)
-            source_commit = git(root, 'rev-parse', source_ref + '^{commit}')
+        branches = payload_branches(entries)
+        # Resolve every payload source once. A bundled block uses the NanoClaw
+        # revision; a from-branch block uses the fetched owning ref. The
+        # optional --payload-ref names the (single) branch-owned source.
+        resolved = {}
+        for branch in branches:
+            if branch:
+                ref = resolve_payload_ref(root, branch, payload_ref)
+                resolved[branch] = (ref, git(root, 'rev-parse', ref + '^{commit}'))
+            else:
+                if payload_ref and len(branches) == 1 \
+                        and git(root, 'rev-parse', payload_ref + '^{commit}') != commit:
+                    raise DiscoveryError('bundled provider payload must use the NanoClaw revision')
+                resolved[None] = (revision, commit)
+        if len([branch for branch in branches if branch]) > 1:
+            raise DiscoveryError('provider skill declares more than one branch-owned payload')
+        if len(branches) == 1:
+            branch = branches[0]
+            source_ref, source_commit = resolved[branch]
+            provider.update(payload_kind='branch' if branch else 'bundled', payload_files=entries)
         else:
-            if payload_ref and git(root, 'rev-parse', payload_ref + '^{commit}') != commit:
-                raise DiscoveryError('bundled provider payload must use the NanoClaw revision')
-            source_ref, source_commit = revision, commit
-        provider.update(payload_kind='branch' if branch else 'bundled', payload_files=entries)
+            # Several payload blocks: report every source with its commit and
+            # stamp each file with the commit it is copied from.
+            for item in entries:
+                item['ref'], item['commit'] = resolved[item['branch']]
+            provider.update(payload_kind='mixed', payload_files=entries, payload_sources=[
+                {'kind': 'branch' if branch else 'bundled', 'branch': branch,
+                 'ref': resolved[branch][0], 'commit': resolved[branch][1],
+                 'file_count': sum(1 for item in entries if item['branch'] == branch)}
+                for branch in branches
+            ])
         matches = [item for item in entries if item['destination'] == f'setup/providers/{selected}.ts']
         if len(matches) != 1:
             raise DiscoveryError('provider skill has no setup registration payload')
+        # The auth source commit is the one that carries the provider's setup
+        # registration (its auth hook), not necessarily the first payload block.
+        if len(branches) > 1:
+            source_ref, source_commit = resolved[matches[0]['branch']]
         source_path = matches[0]['source']
         source = tree_read(root, source_commit, source_path)
     if selected == 'opencode':
         # OpenCode's registry entry delegates auth to this skill-owned helper.
         if 'runOpenCodeSetupAuth' not in source:
             raise DiscoveryError('unsupported OpenCode setup auth contract')
-        source_path = next((item['source'] for item in provider.get('payload_files', [])
-                            if item['destination'] == 'scripts/opencode-auth.ts'), 'scripts/opencode-auth.ts')
+        helper = next((item for item in provider.get('payload_files', [])
+                       if item['destination'] == 'scripts/opencode-auth.ts'), None)
+        source_path = helper['source'] if helper else 'scripts/opencode-auth.ts'
+        if helper and helper.get('commit'):
+            source_ref, source_commit = helper['ref'], helper['commit']
         source = tree_read(root, source_commit, source_path)
     prompt, input_key, methods = auth_methods(source, selected)
     provider.update({

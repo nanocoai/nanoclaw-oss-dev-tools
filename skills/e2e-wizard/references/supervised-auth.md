@@ -2,8 +2,10 @@
 
 Use this mode when the operator selects live sign-in while testing NanoClaw's
 public wizard. It is available through `scripts/proxmox-wizard.py` and directly
-through `scripts/wizard-run.py`. The exe.dev, Windows and headless lifecycle
-entry points continue to require their supported credential-file methods.
+through `scripts/wizard-run.py`; the exe.dev driver (`exe-run.sh --interactive
+--supervised-human-auth`) supports Codex device pairing only, because that
+handoff needs no return channel. Claude subscription sign-in, the Windows and
+the headless lifecycle entry points keep their existing rules.
 
 Resolve the NanoClaw and provider-payload commits and show the source-discovered
 auth choices as described in the parent skill. Confirm the chosen method and
@@ -46,7 +48,22 @@ The runner creates a private directory for its run ID and writes
 Copy the request privately from the owned guest without printing its contents
 to a transcript or outer run log. Show it through a private file or the live
 terminal so the operator can complete the browser step. Do not include the
-handoff in exported artifacts, issue bodies or public comments.
+handoff in exported artifacts, issue bodies or public comments. The exe.dev
+driver does this itself: while the guest wizard runs it polls for the request
+and writes it once to `<result-file>.handoff` (mode `0600`), printing only
+that path. Tell the operator to open the link and enter the code from that
+file; the runner waits up to 10 minutes at the pairing prompt.
+
+The tested payload's `codex login` runs on the guest host, so the host needs
+the Codex CLI. Payloads with a manifest-pinned fallback start it themselves
+(`--require-codex-cli-fallback` proves that path); for a payload without one
+(nanoclaw `290aa683` bundles its auth hook and has no fallback), the runner
+installs the exact `@openai/codex` pin from the tested `add-codex` skill under
+`~/.local` when the wizard reaches the auth prompt, and records it as
+`host_codex_cli` in the Codex receipt (also on a failed run). A host that
+already has `codex` keeps it: exe.dev images ship one under
+`/usr/local/bin`. `--require-codex-cli-fallback` and that install are
+mutually exclusive.
 
 If Claude asks for a returned code, prepare a private response using that
 request's exact `run_id` and `nonce`, with the browser's value in
@@ -70,8 +87,9 @@ never permission to select another method or inject a saved credential.
 
 All normal wizard, retained-reply, service, socket, UTC, evidence and ownership
 checks still apply. Supervised auth additionally requires the selected provider's
-vault entry and an actual retained session whose effective provider matches that
-provider. The verifier reads the group configuration and every retained session
+vault entry (a OneCLI listing, or under Iron Proxy the adapter's own
+`has('codex')` plus its broker-and-two-secrets metadata) and an actual retained
+session whose effective provider matches that provider. The verifier reads the group configuration and every retained session
 through `ncl`, then calls the exact installed `resolveProviderName`. A null group
 provider and null session override correctly resolve to Claude; a non-null session
 override takes precedence and an effective mismatch fails verification.

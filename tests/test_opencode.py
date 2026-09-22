@@ -90,12 +90,16 @@ setupLog.userInput('opencode_chatgpt_auth_method', method);
         with self.assertRaises(wizard.Failure):
             wizard.verify_provider_payload(self.root, selected)
 
-    def test_unsafe_or_mixed_copy_sources_are_rejected(self):
+    def test_unsafe_copy_sources_are_rejected_and_mixed_blocks_keep_their_source(self):
         for declaration in ('payload/x -> ../escape', '/absolute -> safe'):
             with self.subTest(declaration=declaration), self.assertRaises(options.DiscoveryError):
                 options.copy_entries('```nc:copy\n' + declaration + '\n```', 'skill/SKILL.md')
+        entries = options.copy_entries('```nc:copy\na -> b\n```\n```nc:copy from-branch:foo\nx -> y\n```', 'skill/SKILL.md')
+        self.assertEqual([(item['source'], item['destination'], item['branch']) for item in entries],
+                         [('skill/a', 'b', None), ('x', 'y', 'foo')])
+        self.assertEqual(options.payload_branches(entries), [None, 'foo'])
         with self.assertRaises(options.DiscoveryError):
-            options.copy_entries('```nc:copy\na -> b\n```\n```nc:copy from-branch:foo\nx -> y\n```', 'skill/SKILL.md')
+            options.copy_entries('```nc:copy\na -> same\n```\n```nc:copy from-branch:foo\nx -> same\n```', 'skill/SKILL.md')
 
 
 class OpenCodeWizardTests(unittest.TestCase):

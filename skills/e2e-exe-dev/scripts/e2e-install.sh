@@ -179,7 +179,7 @@ trap write_result EXIT
 # Invalidate a previous pass before running bootstrap (including if killed).
 printf '{"schema_version":1,"status":"running","commit":"%s"}\n' "$SOURCE_COMMIT" > "$LOGS/result.json"
 if [ "$PROVIDER" != claude ]; then
-  die "the headless setup-step driver supports claude only; use e2e-wizard for another offered provider"
+  die "the headless setup-step driver supports claude only; use the wizard driver (exe-run.sh --interactive --gateway <kind>) for another offered provider"
 fi
 case "$AUTH_METHOD" in
   api|oauth) ;;

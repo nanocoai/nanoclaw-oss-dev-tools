@@ -47,6 +47,9 @@ CLAUDE_AUTH_PRIVATE = re.compile(
 )
 CLAUDE_OAUTH_CAPTURE = re.compile(r'sk-ant-oat(?:[A-Za-z0-9_-]|\s){80,700}AA')
 HANDOFF_ROOT = Path.home() / '.nanoclaw-e2e/auth-handoffs'
+GATEWAYS = ('onecli', 'iron-proxy')
+IRON_CONTROL_DIR = 'data/session-materials/iron-control'
+CODEX_CLI_PACKAGE = '@openai/codex'
 
 
 class Failure(Exception):
@@ -85,8 +88,18 @@ def provider_discovery():
     return module
 
 
+def branch_payload_commit(selected):
+    """The commit of a branch-owned payload (None for bundled or installed providers)."""
+    kind = selected.get('payload_kind')
+    if kind == 'branch':
+        return selected['auth_source_commit']
+    if kind == 'mixed':
+        return next(source['commit'] for source in selected['payload_sources'] if source['kind'] == 'branch')
+    return None
+
+
 def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source_commit=None,
-                  supervised_human_auth=False):
+                  supervised_human_auth=False, expected_payload_commit=None):
     module = provider_discovery()
     try:
         report = module.discover(root, provider, payload_ref)
@@ -96,6 +109,8 @@ def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source
     if (expected_auth_source_commit is not None
             and selected['auth_source_commit'] != expected_auth_source_commit):
         raise Failure('preflight', 'Provider authentication source changed after operator selection', 65)
+    if expected_payload_commit is not None and branch_payload_commit(selected) != expected_payload_commit:
+        raise Failure('preflight', 'Provider payload branch changed after operator selection', 65)
     methods = [item for item in selected['auth_methods'] if item['value'] == auth_method]
     if len(methods) != 1:
         raise Failure('preflight', f'Authentication method is not offered for {provider}: {auth_method}', 64)
@@ -196,22 +211,48 @@ def cleanup_handoff(run_dir, request_path, response_path, run_id, nonce=None):
         pass
 
 
+def payload_source_commits(selected):
+    """Map each payload branch (None = bundled) to the commit its files come from.
+
+    A single-block payload comes entirely from the auth source commit; a mixed
+    payload names one commit per block.
+    """
+    if selected.get('payload_kind') == 'mixed':
+        return {source['branch']: source['commit'] for source in selected['payload_sources']}
+    return None
+
+
 def verify_provider_payload(root, selected):
     module = provider_discovery()
+    commits = payload_source_commits(selected)
     try:
-        skill = module.tree_read(root, selected['auth_source_commit']
-                                 if selected.get('payload_kind') == 'bundled' else 'HEAD', selected['source'])
+        # The SKILL.md is read from the tree that bundles it: the NanoClaw
+        # revision when any block is bundled, else the checked-out HEAD.
+        if commits is not None:
+            skill_tree = commits[None] if None in commits else 'HEAD'
+        else:
+            skill_tree = selected['auth_source_commit'] if selected.get('payload_kind') == 'bundled' else 'HEAD'
+        skill = module.tree_read(root, skill_tree, selected['source'])
         entries = module.copy_entries(skill, selected['source'])
     except module.DiscoveryError as error:
         raise Failure('payload', str(error), 65)
     receipt = {'commit': selected['auth_source_commit'], 'paths': {}}
+    if commits is not None:
+        receipt['sources'] = {source['kind'] if not source['branch'] else source['branch']: source['commit']
+                              for source in selected['payload_sources']}
     for entry in entries:
         relative = entry['destination']
         installed = root / relative
         if installed.is_symlink() or not installed.is_file():
             raise Failure('payload', 'Installed provider payload is incomplete: ' + relative, 65)
+        if commits is None:
+            commit = selected['auth_source_commit']
+        elif entry['branch'] in commits:
+            commit = commits[entry['branch']]
+        else:
+            raise Failure('payload', 'Provider payload names a source the selection did not resolve: ' + relative, 65)
         expected = subprocess.run(
-            ['git', 'show', selected['auth_source_commit'] + ':' + entry['source']], cwd=root,
+            ['git', 'show', commit + ':' + entry['source']], cwd=root,
             capture_output=True, timeout=30,
         )
         if expected.returncode or installed.read_bytes() != expected.stdout:
@@ -254,7 +295,164 @@ def configure_opencode_scenario(scenario, values, backend, model, base_url=None,
         scenario['prompts'][index:index + 1] = connection_prompts + model_prompts + [credential]
 
 
-def verify_opencode_target(root, backend, model, base_url=None, model_provider=None):
+def gateway_seam_present(root):
+    """NanoClaw refs with the credential-gateway seam (setup/gateways/, nanocoai/nanoclaw#3815)."""
+    return (root / 'setup/gateways/step.ts').is_file()
+
+
+def seam_scenario(scenario, provider):
+    """Adapt the bundled scenario to a gateway-seam ref.
+
+    The seam wizard installs the gateway through its skill (no `onecli` runner
+    step) and hands authentication to the provider's own hook: OpenCode and
+    Codex log an `auth` step themselves, Claude's gateway auth script does not.
+    """
+    scenario['required_steps'] = [
+        step for step in scenario['required_steps']
+        if step != 'onecli' and not (step == 'auth' and provider == 'claude')
+    ]
+    statuses = scenario.get('required_step_statuses')
+    if provider == 'claude' and statuses:
+        statuses.pop('auth', None)
+    return scenario
+
+
+def env_gateway(text):
+    stamped = None
+    for line in text.splitlines():
+        key, separator, value = line.partition('=')
+        if separator and key.strip() == 'NANOCLAW_GATEWAY_PROVIDER':
+            stamped = value.strip().strip('"\'').lower()
+    return stamped
+
+
+def inspect_gateway(root, requested, seam, service_pid=None):
+    """Return (installed kind or None, problem or None) for the finished wizard.
+
+    On a seam ref the installed kind is the NANOCLAW_GATEWAY_PROVIDER stamp
+    installGateway writes to .env; the running service must not select
+    another kind through its environment. Older refs only ever install OneCLI
+    (the scenario requires its `onecli` step).
+    """
+    if not seam:
+        return 'onecli', None if requested == 'onecli' else 'This ref installs OneCLI only'
+    stamped = env_gateway(read_limited(root / '.env')) if (root / '.env').is_file() else None
+    if stamped != requested:
+        return stamped, 'Wizard stamped gateway %s, not the requested %s' % (stamped or 'none', requested)
+    environ = Path('/proc') / str(service_pid) / 'environ'
+    if service_pid and environ.exists():
+        for entry in environ.read_bytes().split(b'\0'):
+            key, separator, value = entry.partition(b'=')
+            if separator and key == b'NANOCLAW_GATEWAY_PROVIDER':
+                selected = value.decode('utf-8', 'replace').strip().strip('"\'').lower()
+                if selected != requested:
+                    return selected, 'Service environment selects gateway %s, not %s' % (selected, requested)
+    return requested, None
+
+
+def pinned_codex_cli(root):
+    """The exact Codex CLI pin the tested add-codex skill merges into container/cli-tools.json."""
+    skill = root / '.claude/skills/add-codex/SKILL.md'
+    if skill.is_symlink() or not skill.is_file():
+        raise Failure('preflight', 'The tested ref has no add-codex skill to read the Codex CLI pin from', 65)
+    for body in re.findall(r'```nc:json-merge into:container/cli-tools\.json[^\n]*\n(.*?)\n```', read_limited(skill), re.S):
+        try:
+            entry = json.loads(body)
+        except ValueError:
+            continue
+        version = entry.get('version') if isinstance(entry, dict) and entry.get('name') == CODEX_CLI_PACKAGE else None
+        if isinstance(version, str) and re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version):
+            return version
+    raise Failure('preflight', 'Could not read an exact Codex CLI pin from the add-codex skill', 65)
+
+
+def install_host_codex_cli(version):
+    """Install the pinned Codex CLI for the login the tested payload spawns on the host.
+
+    Runs when the wizard reaches the provider auth prompt (Node and npm exist
+    by then). The payload at this ref has no pinned-CLI fallback of its own,
+    so a host without `codex` would fail sign-in with codex_cli_missing.
+    """
+    environment = verification_environment()
+    if shutil.which('codex', path=environment['PATH']):
+        return {'installed_by_driver': False, 'version_requested': version}
+    prefix = Path.home() / '.local'
+    try:
+        subprocess.run(
+            ['npm', 'install', '-g', '--prefix', str(prefix), '--no-fund', '--no-audit',
+             CODEX_CLI_PACKAGE + '@' + version],
+            env=environment, capture_output=True, text=True, timeout=900, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise Failure('auth', 'Could not install the pinned Codex CLI on the host for device pairing', 1)
+    if not shutil.which('codex', path=environment['PATH']):
+        raise Failure('auth', 'Pinned Codex CLI install left no codex on PATH', 1)
+    return {'installed_by_driver': True, 'version_requested': version, 'prefix': str(prefix)}
+
+
+def verify_iron_codex_credential(root):
+    """The Iron equivalent of the OneCLI vault listing: the adapter's own has('codex').
+
+    Iron stores a ChatGPT session as a token broker plus two static secrets
+    and records their ids in its metadata file. Values are never read; the
+    adapter's `has` re-checks isolation and broker health through Iron Control.
+    """
+    metadata = root / IRON_CONTROL_DIR / 'codex.json'
+    if metadata.is_symlink() or not metadata.is_file():
+        raise Failure('auth', 'Iron Proxy holds no Codex credential metadata', 1)
+    try:
+        state = json.loads(read_limited(metadata))
+    except ValueError:
+        raise Failure('auth', 'Iron Proxy Codex credential metadata is unreadable', 1)
+    secret_ids = state.get('secretIds') if isinstance(state, dict) else None
+    if not isinstance(secret_ids, list) or len(secret_ids) != 2 or not state.get('brokerId'):
+        raise Failure('auth', 'Iron Proxy does not hold one dedicated Codex ChatGPT session', 1)
+    check = root / 'logs' / 'e2e-wizard-iron-codex-check.mts'
+    check.write_text(
+        "import { createCredentialStore } from '../.claude/skills/add-iron-proxy/scripts/credential-store.ts';\n"
+        "const has = await createCredentialStore(process.argv[2]).has('codex');\n"
+        "process.stdout.write(JSON.stringify({ has }));\n"
+    )
+    try:
+        report = json.loads(subprocess.check_output(
+            ['pnpm', 'exec', 'tsx', str(check), str(root)], cwd=root, text=True, timeout=120,
+            env=verification_environment(), stderr=subprocess.DEVNULL,
+        ))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise Failure('auth', 'Could not verify the Iron Proxy Codex credential through the adapter', 1)
+    finally:
+        check.unlink(missing_ok=True)
+    if report.get('has') is not True:
+        raise Failure('auth', 'Iron Proxy adapter reports no usable Codex credential', 1)
+    # Key names must not look like credentials to the redactor (no 'secret').
+    return {'gateway': 'iron-proxy', 'has_codex': True, 'static_entries': 2, 'broker': True,
+            'verified_via': "add-iron-proxy credential-store has('codex')"}
+
+
+def gateway_trust_mount_observed(root):
+    """Whether one of this install's agent containers carried the read-only gateway-trust CA mount (Iron)."""
+    trust_root = str((root / 'data' / 'gateway-trust').resolve()) + os.sep
+    try:
+        ids = subprocess.run(['docker', 'ps', '-aq', '--filter', 'name=^ncl-'], capture_output=True, text=True,
+                             timeout=10, env=child_environment()).stdout.split()
+        if not ids:
+            return False
+        mounts = subprocess.run(['docker', 'inspect', '--format', '{{json .Mounts}}', *ids],
+                                capture_output=True, text=True, timeout=15, env=child_environment()).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in mounts.splitlines():
+        try:
+            entries = json.loads(line)
+        except ValueError:
+            continue
+        for mount in entries if isinstance(entries, list) else []:
+            if str(mount.get('Source', '')).startswith(trust_root) and mount.get('RW') is False:
+                return True
+    return False
+
+
+def verify_opencode_target(root, backend, model, base_url=None, model_provider=None, gateway='onecli'):
     # Read only provider-owned non-secret defaults; never export the .env file.
     runtime_provider = provider_discovery().validate_model('opencode', backend, model, base_url, model_provider)
     expected = {'OPENCODE_PROVIDER': runtime_provider, 'OPENCODE_MODEL': model,
@@ -266,11 +464,15 @@ def verify_opencode_target(root, backend, model, base_url=None, model_provider=N
             actual[key] = value.strip().strip('"\'')
     if any(actual.get(key) != value for key, value in expected.items()) or actual.get('OPENCODE_AUTH_MODE'):
         raise Failure('verify', 'OpenCode backend/model defaults do not match the selected run', 1)
-    return {'backend': backend, 'model': model, 'model_provider': runtime_provider, 'base_url': base_url or 'native',
-            'retained_agent': verify_retained_provider_group(root, 'opencode')}
+    receipt = {'backend': backend, 'model': model, 'model_provider': runtime_provider, 'base_url': base_url or 'native',
+               'retained_agent': verify_retained_provider_group(root, 'opencode')}
+    if gateway == 'iron-proxy':
+        receipt['gateway_trust_mount_observed'] = gateway_trust_mount_observed(root)
+    return receipt
 
 
-def verify_codex_target(root, terminal, method, require_fallback=False):
+def verify_codex_target(root, terminal, method, require_fallback=False, gateway='onecli',
+                        host_codex_absent_before=None, host_codex_cli=None):
     if method['value'] != 'device':
         raise Failure('preflight', 'This supervised adapter supports only Codex device pairing', 64)
     manifest = json.loads(read_limited(root / 'container/cli-tools.json'))
@@ -285,21 +487,29 @@ def verify_codex_target(root, terminal, method, require_fallback=False):
         raise Failure('auth', 'Device handoff was never observed', 1)
     if (Path.home() / '.codex/auth.json').exists():
         raise Failure('auth', 'Isolated Codex login left a personal auth file behind', 1)
-    try:
-        secrets_report = json.loads(subprocess.check_output(
-            ['onecli', 'secrets', 'list'], text=True, timeout=30, env=verification_environment(),
-        ))
-    except (OSError, subprocess.SubprocessError, ValueError):
-        raise Failure('auth', 'Could not verify the OneCLI Codex vault entry', 1)
-    entries = secrets_report.get('data', [])
-    matching = [item for item in entries if (
-        str(item.get('name', '')).lower() == 'codex'
-        and str(item.get('hostPattern', '')).lower() == 'chatgpt.com'
-    )]
-    if len(matching) != 1:
-        raise Failure('auth', 'OneCLI does not contain exactly one dedicated Codex session', 1)
+    if gateway == 'iron-proxy':
+        vault = verify_iron_codex_credential(root)
+    else:
+        try:
+            secrets_report = json.loads(subprocess.check_output(
+                ['onecli', 'secrets', 'list'], text=True, timeout=30, env=verification_environment(),
+            ))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            raise Failure('auth', 'Could not verify the OneCLI Codex vault entry', 1)
+        entries = secrets_report.get('data', [])
+        matching = [item for item in entries if (
+            str(item.get('name', '')).lower() == 'codex'
+            and str(item.get('hostPattern', '')).lower() == 'chatgpt.com'
+        )]
+        if len(matching) != 1:
+            raise Failure('auth', 'OneCLI does not contain exactly one dedicated Codex session', 1)
+        vault = {'name': 'Codex', 'host_pattern': 'chatgpt.com', 'entry_count': 1}
+    if host_codex_absent_before is None:
+        host_codex_absent_before = shutil.which('codex') is None
     return {
-        'host_codex_absent_before_wizard': shutil.which('codex') is None,
+        'host_codex_absent_before_wizard': host_codex_absent_before,
+        'host_codex_cli': host_codex_cli,
+        'gateway': gateway,
         'personal_auth_absent_before_wizard': True,
         'personal_auth_absent_after_wizard': True,
         'cli_package': '@openai/codex',
@@ -308,7 +518,7 @@ def verify_codex_target(root, terminal, method, require_fallback=False):
         'fallback_proof': fallback_proof,
         'auth_method': 'device',
         'device_handoff_observed': True,
-        'vault': {'name': 'Codex', 'host_pattern': 'chatgpt.com', 'entry_count': 1},
+        'vault': vault,
     }
 
 
@@ -472,7 +682,9 @@ def private_values(root, credential, extra=()):
     values = [credential, *extra]
     # Generated gateway credentials may appear in raw step output. Read only
     # known local configuration; these files themselves are never exported.
-    for path in [root / '.env', Path.home() / '.config/onecli/config.json']:
+    iron = root / IRON_CONTROL_DIR
+    for path in [root / '.env', Path.home() / '.config/onecli/config.json',
+                 *(sorted(iron.glob('*.env')) if iron.is_dir() and not iron.is_symlink() else [])]:
         if not path.is_file() or path.is_symlink():
             continue
         text = read_limited(path)
@@ -492,9 +704,11 @@ def private_values(root, credential, extra=()):
             except ValueError:
                 raise Failure('redaction', 'Cannot parse gateway configuration', 74)
         else:
+            # Iron Control's files also carry encryption keys (*_ENCRYPTION_*_KEY).
+            pattern = r'TOKEN|SECRET|PASSWORD|KEY' if path.parent == iron else r'TOKEN|SECRET|PASSWORD|API_KEY'
             for line in text.splitlines():
                 key, sep, value = line.partition('=')
-                if sep and re.search(r'TOKEN|SECRET|PASSWORD|API_KEY', key):
+                if sep and re.search(pattern, key):
                     values.append(value.strip().strip('\"\x27'))
     return values
 
@@ -514,7 +728,7 @@ def child_environment():
 class WizardTerminal:
     def __init__(self, scenario, values, timeout=1200, idle_timeout=180, columns=160, rows=48,
                  handoff_method=None, payload_verifier=None, run_id=None,
-                 handoff_path=None, handoff_response_path=None):
+                 handoff_path=None, handoff_response_path=None, pre_auth_hook=None):
         import pyte
         self.scenario, self.values = scenario, values
         self.timeout, self.idle_timeout = timeout, idle_timeout
@@ -532,6 +746,9 @@ class WizardTerminal:
         self.handoff_idle_timeout = 600
         self.payload_verifier = payload_verifier
         self.payload_receipt = None
+        self.pre_auth_hook = pre_auth_hook
+        self.pre_auth_receipt = None
+        self.hook_finished_at = None
         self.handoff_response_submitted = False
         self.claude_command_submitted = False
         self.claude_setup_token_observed = False
@@ -697,6 +914,11 @@ class WizardTerminal:
         prompt_id = prompt['id']
         if prompt_id == 'auth' and self.payload_verifier and self.payload_receipt is None:
             self.payload_receipt = self.payload_verifier()
+        if prompt_id == 'auth' and self.pre_auth_hook and self.pre_auth_receipt is None:
+            # Host preparation the provider's login needs; it can take a while,
+            # so the run loop treats its completion like fresh output.
+            self.pre_auth_receipt = self.pre_auth_hook()
+            self.hook_finished_at = time.monotonic()
         if prompt_id in self.seen or index < self.last_prompt_index:
             raise Failure('prompt', 'Repeated or out-of-order prompt: ' + prompt_id)
         missing = [p['id'] for p in self.scenario['prompts'][:index]
@@ -797,6 +1019,8 @@ class WizardTerminal:
                     if self.answer(fd, active):
                         submitted = active[0]
                     last_action = clock
+                    if self.hook_finished_at and self.hook_finished_at > last_output:
+                        last_output = self.hook_finished_at
                 # A clack cancellation is a failure even if the process exits0.
                 if re.search(r'(?im)(?:^\s*■|Setup cancell?ed\.)', '\n'.join(self.screen.display)):
                     raise Failure('cancelled', 'Wizard cancelled', 130)
@@ -1067,10 +1291,14 @@ def main(argv=None):
     parser.add_argument('--opencode-provider', help='custom endpoint API scheme (default: openai)')
     parser.add_argument('--expected-auth-source-commit',
                         help='bind the run to the provider auth source inspected before provisioning')
+    parser.add_argument('--expected-payload-commit',
+                        help='bind a branch-owned provider payload to the commit selected before provisioning')
     parser.add_argument('--supervised-human-auth', action='store_true',
                         help='allow an explicitly supervised live provider sign-in')
     parser.add_argument('--require-codex-cli-fallback', action='store_true',
                         help='require the manifest-pinned Codex CLI fallback path')
+    parser.add_argument('--gateway', choices=GATEWAYS, default='onecli',
+                        help='credential gateway the wizard installs on a gateway-seam ref (default: onecli)')
     parser.add_argument('--credential-file', '--key-file', dest='credential_file', type=Path,
                         help='private credential for an automated paste method; --key-file is a compatibility alias')
     parser.add_argument('--result-file', type=Path)
@@ -1085,7 +1313,8 @@ def main(argv=None):
     result = {'schema_version': 1, 'mode': 'wizard', 'run_id': args.run_id, 'status': 'running',
               'phase': 'preflight', 'commit': None, 'exit_code': None, 'started_at': now(),
               'provider': args.provider, 'auth_method': args.auth_method,
-              'require_codex_cli_fallback': args.require_codex_cli_fallback}
+              'require_codex_cli_fallback': args.require_codex_cli_fallback,
+              'requested_gateway': args.gateway, 'gateway': None, 'gateway_seam': None}
     write_json(result_path, result)  # Invalidate stale success before any check.
     terminal, credential = None, ''
     handoff_dir = handoff_path = handoff_response_path = None
@@ -1108,6 +1337,11 @@ def main(argv=None):
                 raise Failure('preflight', 'Fresh scenario refuses prior product state: ' + path, 65)
         if subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=root).returncode:
             raise Failure('preflight', 'Checkout has tracked edits', 65)
+        seam = gateway_seam_present(root)
+        result['gateway_seam'] = seam
+        if args.gateway != 'onecli' and not seam:
+            raise Failure('preflight', '--gateway ' + args.gateway
+                          + ' needs a NanoClaw ref with the credential-gateway seam (setup/gateways/)', 64)
         if args.supervised_human_auth:
             handoff_dir, handoff_path, handoff_response_path = create_handoff_paths(args.run_id)
         if (args.provider, args.auth_method) == ('codex', 'device'):
@@ -1123,6 +1357,7 @@ def main(argv=None):
             if shutil.which('codex') is not None:
                 raise Failure('preflight', 'Codex CLI is globally available; fallback path would not run', 65)
         host_claude_absent_before = shutil.which('claude') is None
+        host_codex_absent_before = shutil.which('codex') is None
         discovery = provider_discovery()
         try:
             model_provider = discovery.validate_model(args.provider, args.auth_method, args.opencode_model,
@@ -1132,17 +1367,27 @@ def main(argv=None):
         result['commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
         selected, method = selected_auth(
             root, args.provider, args.auth_method, args.payload_ref,
-            args.expected_auth_source_commit, args.supervised_human_auth,
+            args.expected_auth_source_commit, args.supervised_human_auth, args.expected_payload_commit,
         )
         if (method['automation'] == 'human-handoff'
                 and (args.provider, args.auth_method) not in {
                     ('codex', 'device'), ('claude', 'subscription'),
                 }):
             raise Failure('preflight', 'This supervised adapter does not implement that live handoff', 64)
+        if (args.provider, args.auth_method) == ('claude', 'subscription') and args.gateway != 'onecli':
+            raise Failure('preflight', 'Claude subscription proof reads the OneCLI vault; '
+                          'Iron Proxy is supported for Codex device pairing and credential-file methods', 64)
+        pre_auth_hook = None
+        if (args.provider, args.auth_method) == ('codex', 'device') and not args.require_codex_cli_fallback:
+            # The payload's host-side `codex login` needs the CLI on this
+            # machine; install the skill's exact pin once the wizard has Node.
+            codex_pin = pinned_codex_cli(root)
+            pre_auth_hook = lambda: install_host_codex_cli(codex_pin)
         credential = credential_for(args.credential_file, method['credential_kind'])
         result.update(provider_label=selected['label'], auth_method_label=method['label'],
                       auth_source=selected['auth_source'], auth_source_ref=selected['auth_source_ref'],
-                      auth_source_commit=selected['auth_source_commit'])
+                      auth_source_commit=selected['auth_source_commit'],
+                      payload_kind=selected.get('payload_kind'), payload_commit=branch_payload_commit(selected))
         if args.provider == 'opencode':
             result['opencode_model'] = args.opencode_model
             result['opencode_provider'] = model_provider
@@ -1170,6 +1415,8 @@ def main(argv=None):
             scenario['prompts'] = [prompt for prompt in scenario['prompts'] if prompt['id'] != 'credential']
         if (args.provider, args.auth_method) == ('claude', 'subscription'):
             scenario['required_step_statuses'] = {'auth': 'interactive'}
+        if seam:
+            scenario = seam_scenario(scenario, args.provider)
         scenario['required_inputs'].update(
             agent_provider=args.provider,
             **{selected['auth_input_key']: args.auth_method},
@@ -1190,8 +1437,14 @@ def main(argv=None):
             run_id=args.run_id,
             handoff_path=handoff_path,
             handoff_response_path=handoff_response_path,
+            pre_auth_hook=pre_auth_hook,
         )
-        terminal.run(root)
+        # On a seam ref the public wizard takes the gateway from its own
+        # --gateway-provider flag (the Advanced screen sets the same value).
+        if seam:
+            terminal.run(root, ['bash', 'nanoclaw.sh', '--gateway-provider', args.gateway])
+        else:
+            terminal.run(root)
         if installable:
             if terminal.payload_receipt is None:
                 raise Failure('payload', 'Provider payload was not verified before authentication', 65)
@@ -1200,15 +1453,22 @@ def main(argv=None):
             result['provider_payload_receipt'] = terminal.payload_receipt
         if (args.provider, args.auth_method) == ('codex', 'device'):
             result['codex_target_receipt'] = verify_codex_target(
-                root, terminal, method, args.require_codex_cli_fallback,
+                root, terminal, method, args.require_codex_cli_fallback, args.gateway,
+                host_codex_absent_before, terminal.pre_auth_receipt,
             )
         if (args.provider, args.auth_method) == ('claude', 'subscription'):
             result['claude_target_receipt'] = verify_claude_target(terminal, host_claude_absent_before)
         verify, service = check_progress(root, scenario)
         live = verify_live_service(root, service)
+        # Bind the gateway the wizard actually installed, never the request alone.
+        installed, problem = inspect_gateway(root, args.gateway, seam, live['pid'])
+        result['gateway'] = installed
+        if problem:
+            raise Failure('verify', problem, 1)
         if args.provider == 'opencode':
             result['opencode_target_receipt'] = verify_opencode_target(root, args.auth_method, args.opencode_model,
-                                                                      args.opencode_base_url, args.opencode_provider)
+                                                                      args.opencode_base_url, args.opencode_provider,
+                                                                      args.gateway)
         if (args.provider, args.auth_method) == ('codex', 'device'):
             result['codex_target_receipt']['retained_agent'] = verify_retained_provider_group(root, 'codex')
         if (args.provider, args.auth_method) == ('claude', 'subscription'):
@@ -1223,6 +1483,15 @@ def main(argv=None):
     except Exception as error:
         # Exception strings can contain subprocess arguments or configuration.
         result.update(status='failed', phase=result['phase'], exit_code=1, error='Driver error: ' + type(error).__name__)
+    if terminal is not None and getattr(terminal, 'pre_auth_receipt', None) and 'codex_target_receipt' not in result:
+        result['host_codex_cli'] = terminal.pre_auth_receipt  # a failed pairing still says which CLI ran
+    if result['status'] != 'pass' and result.get('gateway') is None and result.get('gateway_seam'):
+        # Like the headless installer, a failure names the kind the wizard
+        # stamped so far (if any); only a pass requires it to match.
+        try:
+            result['gateway'] = env_gateway(read_limited(root / '.env')) if (root / '.env').is_file() else None
+        except Failure:
+            pass
     result['finished_at'] = now()
     result_redactor = Redactor([credential])
     try:

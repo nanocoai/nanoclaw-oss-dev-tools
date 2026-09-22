@@ -92,7 +92,11 @@ export NANOCLAW_CHANNELS_REMOTE=e2e-payload
 
 def wrapper(run_id, timeout, provider, auth_method, payload_ref, expected_auth_source_commit='',
             supervised_human_auth=False, require_codex_cli_fallback=False,
-            payload_transport_spec=None, opencode_model=None, opencode_base_url=None, opencode_provider=None):
+            payload_transport_spec=None, opencode_model=None, opencode_base_url=None, opencode_provider=None,
+            payload_commit=None):
+    # A branch-owned payload is fetched on the guest and pinned by its own
+    # commit; for a mixed payload that differs from the (bundled) auth source.
+    payload_commit = payload_commit or (expected_auth_source_commit if payload_transport_spec else None)
     # Only public harness code travels in this bundle. The lifecycle separately
     # uploads the credential over SSH stdin with its existing private-file rules.
     files = {name: base64.b64encode((HERE.parent / name).read_bytes()).decode()
@@ -121,8 +125,8 @@ WIZARD_BUNDLE
 """ % (json.dumps(files), payload_commands, shlex.quote(run_id), timeout,
          shlex.quote(provider), shlex.quote(auth_method),
          credential_arg, supervised_arg, fallback_arg,
-         (' --payload-ref ' + shlex.quote(expected_auth_source_commit))
-         if expected_auth_source_commit else '',
+         (' --payload-ref ' + shlex.quote(payload_commit) + ' --expected-payload-commit ' + shlex.quote(payload_commit))
+         if payload_commit else '',
          (' --expected-auth-source-commit ' + shlex.quote(expected_auth_source_commit))
          if expected_auth_source_commit else '')
 
@@ -179,7 +183,8 @@ def main(argv=None):
             # earlier report, like every other preflight failure.
             if self.args.gateway is not None or os.environ.get('NANOCLAW_E2E_GATEWAY', 'onecli') != 'onecli':
                 raise base.Failure('--gateway/NANOCLAW_E2E_GATEWAY apply to the headless driver; '
-                                   'the wizard adapter does not select a gateway yet', 64)
+                                   'the Proxmox wizard adapter does not forward a gateway yet '
+                                   '(the exe.dev wizard driver does: exe-run.sh --interactive --gateway)', 64)
             self.report['agent_provider'] = options.provider
             self.report['auth_method'] = options.auth_method
             self.report['require_codex_cli_fallback'] = options.require_codex_cli_fallback
@@ -224,10 +229,16 @@ def main(argv=None):
             self.args.auth_method = options.auth_method
             self.report['auth_source_commit'] = selected['auth_source_commit']
             try:
+                kind = selected.get('payload_kind', 'branch')
+                branch_commit = selected['auth_source_commit']
+                if kind == 'mixed':
+                    # Only the branch-owned block travels; bundled files ride the
+                    # NanoClaw commit the guest already checks out.
+                    branch_commit = next(source['commit'] for source in selected['payload_sources']
+                                         if source['kind'] == 'branch')
                 transport = payload_transport(
-                    Path.cwd(), options.payload_ref, selected['auth_source_commit'],
-                ) if (selected['source'].endswith('/SKILL.md')
-                      and selected.get('payload_kind', 'branch') == 'branch') else None
+                    Path.cwd(), options.payload_ref, branch_commit,
+                ) if (selected['source'].endswith('/SKILL.md') and kind in ('branch', 'mixed')) else None
             except (OSError, subprocess.SubprocessError, ValueError) as error:
                 raise base.Failure(str(error), 65)
             if human:
@@ -239,6 +250,7 @@ def main(argv=None):
                 human,
                 options.require_codex_cli_fallback,
                 transport, options.opencode_model, options.opencode_base_url, options.opencode_provider,
+                branch_commit if transport else None,
             ))
             if not 1 <= options.wizard_timeout <= 2100:
                 raise base.Failure('--wizard-timeout must be between 1 and 2100 seconds', 64)

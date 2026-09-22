@@ -89,6 +89,7 @@ elif args[:2] == ['pct', 'exec']:
                   'wizard_completed': not failed, 'retained_reply_verified': not failed,
                   'provider': os.environ['MOCK_PROVIDER'], 'auth_method': os.environ['MOCK_AUTH_METHOD'],
                   'auth_source_commit': os.environ['MOCK_AUTH_SOURCE_COMMIT'],
+                  'requested_gateway': 'onecli', 'gateway': 'onecli', 'gateway_seam': False,
                   'service': {'checkout_verified': True, 'socket_connected': True}}
         if result['provider'] == 'codex':
             payload = {'commit': result['auth_source_commit'], 'paths': {'setup/providers/codex.ts': 'fixture'},
@@ -205,7 +206,8 @@ elif args[:2] not in (['test', '-r'], ['ip', 'link'], ['pct', 'start']): sys.exi
                 self.report.write_text('{"status":"pass","run_id":"old"}')
                 run = self.run_driver(*extra, '--dry-run')
                 self.assertEqual(run.returncode, 64, run.stderr)
-                self.assertIn('does not select a gateway', run.stderr)
+                self.assertIn('does not forward a gateway', run.stderr)
+                self.assertIn('exe-run.sh --interactive --gateway', run.stderr)
                 self.assertEqual(self.commands(), [])
                 self.assertEqual(json.loads(self.report.read_text())['status'], 'failed')
         self.env.pop('NANOCLAW_E2E_GATEWAY', None)

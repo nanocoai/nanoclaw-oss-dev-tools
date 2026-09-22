@@ -88,9 +88,19 @@ transport, snapshot confirmation and failure retention.
 The live run provisions a cloud VM and sends the selected provider credential
 to its private file over SSH stdin. Use an existing credential file, normally
 `~/.nanoclaw-e2e/anthropic_key` for Claude, with mode `0600`;
-`--credential-file` selects another (`--key-file` remains an alias). Keep the test VM and credential transfer within
-the operator's authorized scope. This unattended exe.dev scenario never opens
-browser sign-in or creates an account.
+`--credential-file` selects another (`--key-file` remains an alias). Key
+files follow `~/.nanoclaw-e2e/<provider>_key`: `openrouter_key`,
+`deepseek_key`, `openai_key` (Codex `api`), and `anthropic_key` for Claude or
+an OpenCode `custom` endpoint with `--opencode-provider anthropic`. The drivers
+carry the path only and never print a key. Keep the test VM and credential
+transfer within the operator's authorized scope. The unattended exe.dev
+scenario never opens browser sign-in or creates an account; the one supervised
+exception is Codex device pairing (`--supervised-human-auth`, see
+[Supervised authentication](references/supervised-auth.md)).
+
+On a NanoClaw ref with the credential-gateway seam, `--gateway onecli|iron-proxy`
+selects the gateway the wizard installs (default `onecli`); see
+[Gateway seam](#gateway-seam).
 
 `--interactive` requires `--result-file`. Sanitized evidence goes to
 `<result-file>.artifacts`; `--artifacts-dir` chooses another new directory.
@@ -300,21 +310,54 @@ host reboot, or gateway-file recovery after temporary storage disappears. A
 passing wizard run cannot qualify those paths; pair their focused regressions
 with a live scenario that triggers the actual lifecycle being changed.
 
-## Gateway seam limitation
+## Gateway seam
 
 On refs with NanoClaw's credential-gateway seam (`setup/gateways/`,
 [nanocoai/nanoclaw#3815](https://github.com/nanocoai/nanoclaw/pull/3815)
 onward) the public wizard installs the gateway through `/add-<gateway>` and
-takes the kind from the Advanced screen or `NANOCLAW_GATEWAY_PROVIDER`, and its
-progression log no longer contains the `onecli` and `auth` steps the bundled
-scenario requires. This driver has not been run against such a ref: it does not
-forward a gateway choice into the wizard's environment, its scenario's
-`required_steps` and OneCLI vault checks predate the seam, and both the
-exe.dev driver (`--gateway` with `--interactive`) and the Proxmox wizard
-adapter refuse a gateway selection rather than ignore it. Use the headless
-[e2e-exe-dev](../e2e-exe-dev/SKILL.md#refs-on-the-gateway-seam) or
-[e2e-proxmox](../e2e-proxmox/SKILL.md#choose-the-credential-gateway) drivers
-for Iron Proxy until the wizard scenario is qualified on a seam ref.
+takes the kind from its own `--gateway-provider` flag, the Advanced screen or
+`NANOCLAW_GATEWAY_PROVIDER`. `wizard-run.py --gateway onecli|iron-proxy`
+(forwarded by `exe-run.sh --interactive --gateway`) detects the seam by
+`setup/gateways/step.ts`, runs `bash nanoclaw.sh --gateway-provider <kind>`,
+and adapts the bundled scenario: the `onecli` runner step no longer exists, and
+`auth` is required only for providers whose own hook logs it (OpenCode and
+Codex do; Claude's gateway auth script does not). Requesting `iron-proxy` on a
+ref without the seam fails preflight; older refs only ever install OneCLI.
+Claude itself is not yet discoverable on a seam ref (its picker moved into
+the gateway skills' own `scripts/auth.ts`, which `provider-options.py` does
+not read), so `--provider claude` with `--gateway` stays on the headless
+[e2e-exe-dev](../e2e-exe-dev/SKILL.md#refs-on-the-gateway-seam) driver; the
+wizard route covers the providers that expose their own picker (OpenCode,
+Codex).
+
+After the wizard, the runner binds the gateway the way the headless installer
+does: `gateway` is the `NANOCLAW_GATEWAY_PROVIDER` stamp `installGateway` wrote
+to `.env` (null until proven), `requested_gateway` the request, `gateway_seam`
+whether the seam was present, and the running service's environment must not
+select another kind. A mismatch fails the run with the found kind recorded, and
+the collector rejects a pass whose `gateway` differs from the driver's
+`--gateway` (or Iron without the seam) with `gateway-mismatch`. Iron Control's
+environment files join the redaction set.
+
+Under Iron, Codex device pairing is proven through the Iron adapter instead of
+a OneCLI listing: the runner reads the adapter's non-secret metadata (one
+token broker plus two static secrets) and runs the installed
+`add-iron-proxy` credential store's `has('codex')`, which re-checks isolation
+and broker health through Iron Control; values are never read. OpenCode runs
+under Iron also record whether an agent container carried the read-only
+`gateway-trust` CA mount. Claude subscription proof still reads the OneCLI
+vault, so that method is refused with `--gateway iron-proxy`. The Proxmox
+wizard adapter does not forward a gateway yet and refuses one rather than
+ignoring it; the headless [e2e-proxmox](../e2e-proxmox/SKILL.md#choose-the-credential-gateway)
+driver covers Iron there.
+
+Cells C and D of the 2026-09-22 gateway-stack e2e (nanoclaw `290aa683`,
+#3825) ran through this route; their evidence is recorded in the compatibility
+section below: C passed on its second attempt (an OpenAI-compatible HTTPS
+endpoint with an API key; the first attempt used the shared `anthropic_key`,
+a Claude Code OAuth token, which Iron swapped into `X-Api-Key` correctly and
+Anthropic rejected), and D needs a person at the browser within the pairing
+window.
 
 ## Evidence and privacy
 
@@ -415,6 +458,43 @@ That run used a task-only adapter for nohup proof. This harness now performs the
 same owned launcher, PID, exact-entrypoint and socket checks directly, with
 offline regression coverage. The merged PR later added post-install restart
 handling for channel skills; that separate path was not part of the live run.
+
+On **2026-09-22** the gateway-forwarding route ran cells C and D of the
+gateway-stack e2e on fresh exe.dev VMs against nanoclaw
+`290aa68358f7813e2505d48bcc132f50720f2cca` (#3825) with `--gateway iron-proxy`:
+
+- **C, OpenCode `custom` (`--opencode-provider anthropic`,
+  `https://api.anthropic.com/v1`, `anthropic/claude-haiku-4-5-20251001`)**:
+  the seam scenario held (`bootstrap → environment → container → auth → mounts
+  → service → cli-agent → cleanup-cli-agent → create-terminal-agent` all
+  `success`, `.env` stamped `NANOCLAW_GATEWAY_PROVIDER=iron-proxy`, the agent
+  container carried `data/gateway-trust/iron-proxy/ca.crt` read-only), Iron's
+  audit shows the secrets transform swapping `header:X-Api-Key` on
+  `POST /v1/messages`, and Anthropic answered `401 API key is invalid`: the
+  shared credential file is a Claude Code OAuth token, not an API key. The
+  wizard's own ping accepted the "agent run failed" reply; the retained-agent
+  arithmetic check caught it (`phase: reply`, exit 2). Failed, VM
+  `nc-stack-c-iron-opencode` retained, sanitized evidence collected.
+- **C, second attempt: OpenCode `custom` on an OpenAI-compatible endpoint
+  (`https://api.nan.builders/v1`, `openai/glm5.3`, API key file)**: all
+  eleven steps `success` in 8 min 15 s on a fresh VM, `gateway: iron-proxy`
+  bound from the `.env` stamp, `gateway_trust_mount_observed: true`, the
+  retained OpenCode agent answered the arithmetic challenge, the collector
+  accepted the archive and `--rm` deleted the VM with a teardown receipt.
+  **Pass**: OpenCode through Iron's front proxy to an HTTPS-on-443 model host
+  ([nanocoai/nanoclaw#3825](https://github.com/nanocoai/nanoclaw/pull/3825)).
+- **D, Codex `device` with `--supervised-human-auth`**: Iron installed, the
+  Codex payload (19 files from `providers` @ `a1148a8f`, 3 bundled) installed
+  and the image rebuilt, the login reached the device prompt and the driver
+  relayed the request privately; nobody was at the browser and the runner
+  stopped after its 10-minute handoff window (`phase: timeout`, exit 124).
+  exe.dev images already ship a Codex CLI (`/usr/local/bin/codex` 0.155.1),
+  so the pinned-CLI install did not run. Failed, VM `nc-stack-d-iron-codex`
+  retained.
+
+Both drivers' SSH sessions stayed open after the guest wizard had exited,
+with nothing on the VM holding them; the driver now stops waiting once the
+guest's terminal result exists (see `wait_for_wizard` in `exe-run.sh`).
 
 The offline suite runs on Linux and macOS. Those checks qualify
 terminal behavior, acceptance rules and simulated lifecycle boundaries. The

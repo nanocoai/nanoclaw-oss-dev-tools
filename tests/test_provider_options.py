@@ -155,6 +155,80 @@ class ProviderOptionsTests(unittest.TestCase):
             self.main_commit,
         )
 
+    def mixed_skill(self):
+        """Mirror .claude/skills/add-codex/SKILL.md at nanoclaw 290aa683: a
+        from-branch registry payload plus a bundled auth hook."""
+        path = self.root / ".claude/skills/add-mixed"
+        (path / "payload/setup/providers").mkdir(parents=True)
+        (path / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: add-mixed
+            metadata:
+              nanoclaw-provider: mixed
+              nanoclaw-provider-label: Mixed
+              nanoclaw-provider-hint: registry payload plus bundled auth hook
+              nanoclaw-provider-offered: 'true'
+              nanoclaw-provider-image: local-required
+            ---
+            ```nc:copy from-branch:provider-payload
+            src/providers/mixed.ts
+            container/agent-runner/src/providers/mixed.ts
+            ```
+
+            ```nc:copy
+            payload/setup/providers/mixed.ts -> setup/providers/mixed.ts
+            payload/setup/providers/mixed.test.ts -> setup/providers/mixed.test.ts
+            ```
+        """))
+        (path / "payload/setup/providers/mixed.ts").write_text(textwrap.dedent("""
+            registerSetupProvider({ value: 'mixed', label: 'Mixed', hint: 'x', runAuth: runMixedAuthStep });
+            const method = await brightSelect({
+              message: 'How would you like to connect Mixed?',
+              options: [
+                { value: 'device', label: 'Device pairing', hint: 'URL and code' },
+                { value: 'api', label: 'Paste an OpenAI API key', hint: 'pay per use' },
+                { value: 'skip', label: "Skip — I'll connect later", hint: 'no replies' },
+              ],
+            });
+            setupLog.userInput('mixed_auth_method', method);
+        """))
+        (path / "payload/setup/providers/mixed.test.ts").write_text("test\n")
+        self.git("add", ".")
+        self.git("commit", "-m", "mixed skill")
+        return self.git("rev-parse", "HEAD")
+
+    def test_multi_payload_skill_reports_every_source_and_picks_the_auth_hook_commit(self):
+        mixed_commit = self.mixed_skill()
+        selected = provider_options.discover(self.root, "mixed", payload_ref="provider-payload")["selected"]
+        self.assertEqual(selected["payload_kind"], "mixed")
+        self.assertEqual(
+            [(source["kind"], source["branch"], source["commit"], source["file_count"])
+             for source in selected["payload_sources"]],
+            [("branch", "provider-payload", self.payload_commit, 2), ("bundled", None, mixed_commit, 2)],
+        )
+        # The auth hook is bundled, so the auth source is the NanoClaw commit,
+        # not the registry branch that the first block names.
+        self.assertEqual(selected["auth_source_commit"], mixed_commit)
+        self.assertEqual(selected["auth_source"], ".claude/skills/add-mixed/payload/setup/providers/mixed.ts")
+        self.assertEqual(selected["auth_input_key"], "mixed_auth_method")
+        self.assertEqual([item["automation"] for item in selected["auth_methods"]],
+                         ["human-handoff", "credential-file", "unsupported"])
+        by_destination = {item["destination"]: item for item in selected["payload_files"]}
+        self.assertEqual(by_destination["src/providers/mixed.ts"]["commit"], self.payload_commit)
+        self.assertEqual(by_destination["setup/providers/mixed.ts"]["commit"], mixed_commit)
+        self.assertEqual(by_destination["setup/providers/mixed.ts"]["source"],
+                         ".claude/skills/add-mixed/payload/setup/providers/mixed.ts")
+        # Without the branch fetched, discovery still refuses to guess.
+        self.git("branch", "-m", "provider-payload", "elsewhere")
+        with self.assertRaises(provider_options.DiscoveryError):
+            provider_options.discover(self.root, "mixed")
+
+    def test_single_block_skills_keep_their_report_shape(self):
+        selected = provider_options.discover(self.root, "codex", payload_ref="provider-payload")["selected"]
+        self.assertEqual(selected["payload_kind"], "branch")
+        self.assertNotIn("payload_sources", selected)
+        self.assertEqual(set(selected["payload_files"][0]), {"source", "destination", "branch"})
+
     def test_cli_emits_json_and_rejects_unoffered_provider(self):
         run = subprocess.run(
             [sys.executable, str(SCRIPT), "--root", str(self.root)],
