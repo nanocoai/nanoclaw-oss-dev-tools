@@ -30,6 +30,10 @@ Development milestone (plugin 0.11.0); not yet released.
   and its broker/secret metadata instead of a OneCLI listing; OpenCode runs
   record whether the agent container carried the read-only `gateway-trust`
   CA mount.
+- Codex device pairing uses the tested skill's exact `@openai/codex` pin on the
+  host even when another version is installed (`~/.local/bin` first on the
+  wizard's PATH; `host_codex_cli` records both versions), so the login file the
+  payload parses always comes from the CLI it pins.
 - The wizard driver binds a branch-owned payload to the commit selected before
   provisioning (`--expected-payload-commit`, `payload_commit` in the result,
   `collect-wizard.py --payload-commit`), and stops waiting on the guest SSH

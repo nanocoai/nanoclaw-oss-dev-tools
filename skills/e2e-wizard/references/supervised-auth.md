@@ -59,11 +59,13 @@ the Codex CLI. Payloads with a manifest-pinned fallback start it themselves
 (`--require-codex-cli-fallback` proves that path); for a payload without one
 (nanoclaw `290aa683` bundles its auth hook and has no fallback), the runner
 installs the exact `@openai/codex` pin from the tested `add-codex` skill under
-`~/.local` when the wizard reaches the auth prompt, and records it as
-`host_codex_cli` in the Codex receipt (also on a failed run). A host that
-already has `codex` keeps it: exe.dev images ship one under
-`/usr/local/bin`. `--require-codex-cli-fallback` and that install are
-mutually exclusive.
+`~/.local` when the wizard reaches the auth prompt, puts `~/.local/bin`
+first on the wizard's PATH, and records it as `host_codex_cli` (with the
+host's own version) in the Codex receipt, also on a failed run. A host copy
+of another version is not used for the login, so the file the payload's
+adapter parses always comes from the CLI the payload itself pins (exe.dev
+images ship a newer `/usr/local/bin/codex`). `--require-codex-cli-fallback`
+and that install are mutually exclusive.
 
 If Claude asks for a returned code, prepare a private response using that
 request's exact `run_id` and `nonce`, with the browser's value in

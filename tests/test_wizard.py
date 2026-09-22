@@ -652,6 +652,43 @@ class GatewaySeamTests(unittest.TestCase):
         self.assertIsNone(installed)
         self.assertIn('none', problem)
 
+    def test_local_bin_is_preferred_only_for_pinned_codex_pairing(self):
+        from unittest.mock import patch
+        local_bin = str(Path.home() / '.local/bin')
+        with patch.dict(os.environ, {'PATH': '/usr/bin:/bin:' + local_bin}):
+            self.assertEqual(wizard.child_environment()['PATH'], '/usr/bin:/bin:' + local_bin)
+            with patch.object(wizard, 'PREFER_LOCAL_BIN', True):
+                self.assertEqual(wizard.child_environment()['PATH'], local_bin + ':/usr/bin:/bin')
+
+    def test_pinned_codex_install_checks_the_copy_the_wizard_will_run(self):
+        from unittest.mock import patch
+        home = self.root / 'home'
+        (home / '.local/bin').mkdir(parents=True)
+        (home / 'sys').mkdir()
+        def fake_cli(path, version):
+            path.write_text('#!/bin/sh\necho codex-cli ' + version + '\n')
+            path.chmod(0o755)
+        fake_cli(home / 'sys/codex', '0.146.0')
+        fake_cli(home / '.local/bin/codex', '0.155.1')
+        env = {'PATH': str(home / 'sys') + os.pathsep + '/usr/bin:/bin', 'HOME': str(home)}
+        calls, real_run = [], subprocess.run
+        def fake_run(command, **kwargs):
+            if command[:3] == ['npm', 'install', '-g']:
+                calls.append(command)
+                fake_cli(home / '.local/bin/codex', '0.146.0')
+                return subprocess.CompletedProcess(command, 0, '', '')
+            return real_run(command, **kwargs)
+        with patch.dict(os.environ, env, clear=False), patch.object(wizard.Path, 'home', return_value=home), \
+                patch.object(wizard.subprocess, 'run', side_effect=fake_run):
+            # A matching copy elsewhere on PATH does not excuse a mismatching ~/.local/bin one.
+            receipt = wizard.install_host_codex_cli('0.146.0')
+            self.assertTrue(receipt['installed_by_driver'])
+            self.assertEqual(receipt['executable'], str(home / '.local/bin/codex'))
+            self.assertEqual(len(calls), 1)
+            # Once ~/.local/bin holds the pin, nothing is installed again.
+            self.assertFalse(wizard.install_host_codex_cli('0.146.0')['installed_by_driver'])
+            self.assertEqual(len(calls), 1)
+
     def test_pinned_codex_cli_comes_from_the_tested_skill(self):
         skill = self.root / '.claude/skills/add-codex'
         skill.mkdir(parents=True)
