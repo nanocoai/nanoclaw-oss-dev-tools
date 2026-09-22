@@ -489,8 +489,23 @@ gateway-stack e2e on fresh exe.dev VMs against nanoclaw
   relayed the request privately; nobody was at the browser and the runner
   stopped after its 10-minute handoff window (`phase: timeout`, exit 124).
   exe.dev images already ship a Codex CLI (`/usr/local/bin/codex` 0.155.1),
-  so the pinned-CLI install did not run. Failed, VM `nc-stack-d-iron-codex`
-  retained.
+  so the pinned-CLI install did not run. Failed, VM retained.
+- **D, second and third attempts, paired**: the code was entered in time
+  (host Codex 0.155.1, then the driver-installed 0.146.0 pin), Codex printed
+  `Successfully logged in`, and the payload's `store.save('codex')` failed
+  before any Iron Control request ("Couldn't save your Codex credentials to
+  the vault"). Root cause, reproduced in one process on the VM: the wizard
+  loads `src/provider-contracts` before the Codex payload appends
+  `import './codex.js'` to that barrel, so the ESM-cached registry never
+  gains Codex's `modelEndpoints` and Iron's adapter throws `Provider codex
+  does not declare its subscription endpoint` (the payload swallows the
+  message). The same adapter saved both a synthetic and the real 0.146.0
+  login file from a fresh process. This is a nanoclaw defect at `290aa683`
+  for "install Codex and pair under Iron in one public-wizard run"; OneCLI
+  stores the login verbatim and never asks for the endpoint, which is why
+  the 09-13 Proxmox pass did not see it. **Failed, product**, VM
+  `nc-stack-d-iron-codex` retained. The runner now always pairs with the
+  skill's pinned CLI so the login file matches the payload.
 
 Both drivers' SSH sessions stayed open after the guest wizard had exited,
 with nothing on the VM holding them; the driver now stops waiting once the

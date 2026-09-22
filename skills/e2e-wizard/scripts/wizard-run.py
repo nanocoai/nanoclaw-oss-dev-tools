@@ -50,6 +50,9 @@ HANDOFF_ROOT = Path.home() / '.nanoclaw-e2e/auth-handoffs'
 GATEWAYS = ('onecli', 'iron-proxy')
 IRON_CONTROL_DIR = 'data/session-materials/iron-control'
 CODEX_CLI_PACKAGE = '@openai/codex'
+# Set for Codex device pairing: the wizard child sees ~/.local/bin first so the
+# skill's pinned CLI (installed there by the driver) wins over a host copy.
+PREFER_LOCAL_BIN = False
 
 
 class Failure(Exception):
@@ -366,17 +369,36 @@ def pinned_codex_cli(root):
     raise Failure('preflight', 'Could not read an exact Codex CLI pin from the add-codex skill', 65)
 
 
+def codex_cli_version(executable, environment):
+    try:
+        output = subprocess.run([executable, '--version'], env=environment, capture_output=True, text=True,
+                                timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r'(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)', output or '')
+    return match[1] if match else None
+
+
 def install_host_codex_cli(version):
     """Install the pinned Codex CLI for the login the tested payload spawns on the host.
 
     Runs when the wizard reaches the provider auth prompt (Node and npm exist
     by then). The payload at this ref has no pinned-CLI fallback of its own,
-    so a host without `codex` would fail sign-in with codex_cli_missing.
+    and a host copy of another version writes a login file the payload's
+    adapter may not understand (exe.dev's 0.155.1 vs the 0.146.0 pin on
+    2026-09-22), so the exact pin is installed under ~/.local and preferred
+    unless the host already has that very version.
     """
     environment = verification_environment()
-    if shutil.which('codex', path=environment['PATH']):
-        return {'installed_by_driver': False, 'version_requested': version}
     prefix = Path.home() / '.local'
+    pinned = prefix / 'bin' / 'codex'
+    # The wizard resolves `codex` with ~/.local/bin first (child_environment),
+    # so the copy that matters is the one at that path, not any other on PATH.
+    host = shutil.which('codex', path=environment['PATH'])
+    host_version = codex_cli_version(host, environment) if host else None
+    if os.access(pinned, os.X_OK) and codex_cli_version(str(pinned), environment) == version:
+        return {'installed_by_driver': False, 'version_requested': version, 'host_version': host_version,
+                'executable': str(pinned)}
     try:
         subprocess.run(
             ['npm', 'install', '-g', '--prefix', str(prefix), '--no-fund', '--no-audit',
@@ -385,9 +407,17 @@ def install_host_codex_cli(version):
         )
     except (OSError, subprocess.SubprocessError):
         raise Failure('auth', 'Could not install the pinned Codex CLI on the host for device pairing', 1)
-    if not shutil.which('codex', path=environment['PATH']):
-        raise Failure('auth', 'Pinned Codex CLI install left no codex on PATH', 1)
-    return {'installed_by_driver': True, 'version_requested': version, 'prefix': str(prefix)}
+    if not os.access(pinned, os.X_OK) or codex_cli_version(str(pinned), environment) != version:
+        raise Failure('auth', 'Pinned Codex CLI install did not produce the requested version', 1)
+    # nanoclaw.sh may put npm's global prefix ahead of ~/.local/bin when it has
+    # to recover pnpm; verification_environment() mirrors that order, so a copy
+    # it resolves elsewhere would shadow the pin inside the wizard.
+    resolved = shutil.which('codex', path=verification_environment()['PATH'])
+    if resolved and Path(resolved).resolve() != pinned.resolve() \
+            and codex_cli_version(resolved, environment) != version:
+        raise Failure('auth', 'Another Codex CLI on the wizard PATH would shadow the pinned one: ' + resolved, 1)
+    return {'installed_by_driver': True, 'version_requested': version, 'prefix': str(prefix),
+            'host_version': host_version, 'executable': str(pinned)}
 
 
 def verify_iron_codex_credential(root):
@@ -722,6 +752,10 @@ def child_environment():
                'NANOCLAW_CHANNELS_REMOTE')
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     env.update(TERM='xterm-256color', COLORTERM='truecolor', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC')
+    if PREFER_LOCAL_BIN:
+        local_bin = str(Path.home() / '.local/bin')
+        paths = [p for p in env.get('PATH', os.defpath).split(os.pathsep) if p != local_bin]
+        env['PATH'] = os.pathsep.join([local_bin, *paths])
     return env
 
 
@@ -1380,9 +1414,12 @@ def main(argv=None):
         pre_auth_hook = None
         if (args.provider, args.auth_method) == ('codex', 'device') and not args.require_codex_cli_fallback:
             # The payload's host-side `codex login` needs the CLI on this
-            # machine; install the skill's exact pin once the wizard has Node.
+            # machine; install the skill's exact pin once the wizard has Node
+            # and let the wizard find it before any host copy.
             codex_pin = pinned_codex_cli(root)
             pre_auth_hook = lambda: install_host_codex_cli(codex_pin)
+            global PREFER_LOCAL_BIN
+            PREFER_LOCAL_BIN = True
         credential = credential_for(args.credential_file, method['credential_kind'])
         result.update(provider_label=selected['label'], auth_method_label=method['label'],
                       auth_source=selected['auth_source'], auth_source_ref=selected['auth_source_ref'],
