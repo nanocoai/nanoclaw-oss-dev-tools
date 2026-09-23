@@ -35,10 +35,16 @@ class SharedTerminalTests(unittest.TestCase):
             [sys.executable, str(SERVER), '--cwd', str(self.root), '--state-file', str(self.state_path)],
             stdout=self.output, stderr=subprocess.STDOUT, start_new_session=True,
         )
+        # The server creates the state file (O_EXCL) before its body is flushed, so wait for
+        # parseable JSON rather than for the path to exist, or a fast reader sees an empty file.
         deadline = time.monotonic() + 8
-        while not self.state_path.exists() and self.process.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.025)
-        if not self.state_path.exists():
+        self.state = None
+        while self.state is None and self.process.poll() is None and time.monotonic() < deadline:
+            try:
+                self.state = json.loads(self.state_path.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                time.sleep(0.025)
+        if self.state is None:
             startup_status = self.process.poll()
             self.process.terminate()
             try:
@@ -52,7 +58,6 @@ class SharedTerminalTests(unittest.TestCase):
             self.temp.cleanup()
             self.fail(f'Shared terminal did not create its private state file '
                       f'(startup exit={startup_status}): {diagnostic}')
-        self.state = json.loads(self.state_path.read_text())
         self.url = self.state['url']
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self.wait_text('shared-terminal$')
