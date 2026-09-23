@@ -815,7 +815,7 @@ class PipelineTests(TempDirs):
         for text in (out, err, saved):
             self.assertNotIn(sentinel, text)
 
-    def test_partial_failure_keeps_completed_pairs_and_exits_nonzero(self):
+    def test_partial_failure_keeps_completed_pairs_and_exits_zero(self):
         fixture = json.loads(FIXTURE.read_text())
         original = drift.FixtureTransport(fixture["responses"])
 
@@ -826,7 +826,7 @@ class PipelineTests(TempDirs):
 
         with patch.object(drift, "FixtureTransport", return_value=flaky):
             code, out, err = self.run_main(["--fixture", str(FIXTURE), "--output-dir", str(self.output), "--json"])
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertIn("keeping 5 completed pair(s)", err)
         payload = json.loads(out)
         self.assertIn("env:CONTAINER_PIDS_LIMIT|", payload["partial"])
@@ -836,6 +836,26 @@ class PipelineTests(TempDirs):
         self.assertEqual((pids["verdict"], pids["pairs"], pids["failed_pairs"]), ("UNSURE", [], 1))
         self.assertIn("request(s) failed", pids["note"])
         self.assertEqual(len(list(self.output.glob("drift-*.json"))), 1)
+
+    def test_strict_makes_a_partial_run_exit_nonzero_and_the_table_names_it(self):
+        fixture = json.loads(FIXTURE.read_text())
+        original = drift.FixtureTransport(fixture["responses"])
+
+        def flaky(payload):
+            if payload["_key"].startswith("env:CONTAINER_PIDS_LIMIT|"):
+                raise drift.DriftError("HTTP 403 from TypeSafe: HTML error page: Access denied")
+            return original(payload)
+
+        with patch.object(drift, "FixtureTransport", return_value=flaky):
+            code, out, err = self.run_main(["--fixture", str(FIXTURE), "--output-dir", str(self.output), "--strict"])
+        self.assertEqual(code, 1)
+        self.assertIn("partial: 1 request(s) failed after retries: env:CONTAINER_PIDS_LIMIT|", out)
+        self.assertIn("HTML error page: Access denied", out)
+
+    def test_html_error_bodies_are_collapsed_to_text(self):
+        body = "<!DOCTYPE html><html><head><title>403</title><style>p{}</style></head><body><h1>Access denied</h1><p>Request blocked.</p></body></html>"
+        self.assertEqual(drift.summarize_error_body(body), "HTML error page: 403 Access denied Request blocked.")
+        self.assertEqual(drift.summarize_error_body('{"error": "bad"}'), '{"error": "bad"}')
 
     def test_output_files_never_overwrite_each_other(self):
         with patch.object(drift, "stamp", return_value="fixed"):
@@ -864,7 +884,7 @@ class PipelineTests(TempDirs):
                 ["--code", str(self.code()), "--docs", str(self.docs()), "--output-dir", str(self.output),
                  "--areas", "container-config,env", "--top-k", "1", "--record", str(record), "--json"],
                 environ={"TYPESAFE_API_KEY": "ts-FAKE-KEY-0123456789"})
-        self.assertEqual(code, 1, err)
+        self.assertEqual(code, 0, err)
         payload = json.loads(out)
         self.assertEqual(payload["mode"], "live")
         self.assertIn("[1/", err)

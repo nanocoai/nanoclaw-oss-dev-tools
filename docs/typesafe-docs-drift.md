@@ -104,8 +104,11 @@ python3 skills/typesafe-docs-drift/scripts/typesafe-docs-drift.py \
 Requests run with `--concurrency` 4 workers by default; 429 and 529 are
 retried with backoff. A pair that fails after retries is reported in `partial`
 and counted in its fact's `failed_pairs`; the fact is judged on the pairs that
-completed and is never called `MISSING` on that basis, and the exit status
-is 1. With `--concurrency 1` the run stops after three consecutive failures.
+completed and is never called `MISSING` on that basis. The summary ends with a
+`partial:` line naming the failed pairs (an HTML error body, such as a proxy or
+WAF page, is collapsed to its text), and the exit status stays 0 so a mostly
+complete run is still usable; pass `--strict` to exit 1 on any failed pair.
+With `--concurrency 1` the run stops after three consecutive failures.
 `--record` writes facts, sections, candidates, lexical scores and raw
 responses in the fixture format, dropping pairs that failed so the record
 replays cleanly. Raw answers for every run are saved as
@@ -201,7 +204,14 @@ section without looking at any contender's answer. No human has verified them;
 three are marked `borderline`. Two biases to keep in mind: the sample was
 stratified by TypeSafe's own verdicts, so most positives are pairs TypeSafe
 already flagged, which favors its recall; and the labeler is a Claude model,
-which may favor the Claude contenders' reading of borderline cases.
+which may favor the Claude contenders' reading of borderline cases. A third
+caveat: the gold answers the benchmark's question (does the section contradict
+the extracted fact?), not "is the doc wrong?". Both `enum` positives in the set
+(`ncl approvals` `status`, `ncl dropped-messages` `reason`) are cases where the
+doc lists a value the database really uses and the CLI column `enum` is the
+stale side, so a contender scores a hit for flagging a code bug as doc drift.
+A human spot check of 10 seeded pairs on 2026-09-23 agreed with all 10
+`contradicts` and `covers` labels and disagreed with one `borderline` flag.
 
 **Results.** One run on 2026-09-17 10:12 to 10:34 UTC from one macOS machine,
 60 pairs, two passes per live contender, `claude` CLI 2.1.273, `jev-latest`:

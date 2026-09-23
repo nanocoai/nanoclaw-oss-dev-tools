@@ -786,6 +786,17 @@ def pair_key(fact_id, section_id):
 # Transports
 # ---------------------------------------------------------------------------
 
+
+def summarize_error_body(body):
+    """Keep an error body readable: an HTML page (a proxy or WAF answer) is collapsed to its text."""
+    text = body.strip()
+    if text[:1] == "<" or "<html" in text[:200].lower():
+        text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.S | re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = "HTML error page: " + " ".join(text.split())
+    return text[:300]
+
+
 class HttpTransport:
     """POST to the TypeSafe API with exponential backoff on 429/529."""
 
@@ -828,7 +839,7 @@ class HttpTransport:
                 detail = ""
                 try:
                     # Redact before truncating: a cut through the key would defeat the replacement.
-                    detail = self.redact(error.read().decode("utf-8", "replace"))[:300]
+                    detail = summarize_error_body(self.redact(error.read().decode("utf-8", "replace")))
                 except Exception:  # pragma: no cover - best effort
                     detail = ""
                 finally:
@@ -1145,7 +1156,7 @@ def render_table(results):
     return table(("Verdict", "Area", "Fact", "Doc section", "Contra", "Covers", "Stale", "Evidence"), rows)
 
 
-def render_summary(summary, usage, wall_seconds, thresholds, output_path, notes=()):
+def render_summary(summary, usage, wall_seconds, thresholds, output_path, notes=(), partial=None):
     lines = ["", "Summary"]
     verdicts = summary["verdicts"]
     lines.append("  facts: %d, pairs: %d, requests: %d" % (summary["facts"], summary["pairs"], summary["requests"]))
@@ -1158,6 +1169,8 @@ def render_summary(summary, usage, wall_seconds, thresholds, output_path, notes=
     lines.append("  wall time: %.1fs" % wall_seconds)
     for note in notes:
         lines.append("  note: %s" % note)
+    if partial:
+        lines.append("  partial: %d request(s) failed after retries: %s" % (summary["pairs"] - summary["requests"], partial))
     if output_path:
         lines.append("  raw answers: %s" % output_path)
     return "\n".join(lines)
@@ -1241,6 +1254,7 @@ def parse_args(argv):
     parser.add_argument("--covers-threshold", type=float, default=0.7, help="yes probability needed to call a section covering (default 0.7)")
     parser.add_argument("--staleness-threshold", type=float, default=0.5, help="score confidence below which the staleness label is marked '?' (default 0.5)")
     parser.add_argument("--json", action="store_true", help="print the full result JSON to stdout instead of the table")
+    parser.add_argument("--strict", action="store_true", help="exit 1 when any pair failed after retries (default: exit 0 and report the failures under `partial`)")
     args = parser.parse_args(argv)
     for name in ("contradicts_threshold", "covers_threshold"):
         if not 0.5 <= getattr(args, name) <= 1:
@@ -1385,8 +1399,8 @@ def main(argv=None, environ=None, stdout=None, stderr=None):
             mode, len(facts), len(jobs)), file=stdout)
         print("", file=stdout)
         print(render_table(results), file=stdout)
-        print(render_summary(summary, usage, wall, thresholds, output_path, notes), file=stdout)
-    return 1 if error_text else 0
+        print(render_summary(summary, usage, wall, thresholds, output_path, notes, error_text), file=stdout)
+    return 1 if error_text and args.strict else 0
 
 
 def redact_env(text, environ):

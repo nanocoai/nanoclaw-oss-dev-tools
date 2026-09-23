@@ -83,7 +83,8 @@ Flags: `--areas` (comma-separated subset of `ncl,env,container-config,skills,
 gateway,timestamps`), `--limit-facts`, `--top-k` (3), `--include-changelog`,
 `--contradicts-threshold` (0.7), `--covers-threshold` (0.7),
 `--staleness-threshold` (0.5, score confidence), `--concurrency` (4),
-`--model`, `--timeout`, `--json`.
+`--model`, `--timeout`, `--json`, `--strict` (exit 1 when any pair failed after
+retries; by default failures are listed under `partial` and the exit status is 0).
 
 ## Benchmark
 
