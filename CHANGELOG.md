@@ -11,7 +11,7 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0 and
+Development milestone (plugin 0.13.1); supersedes the unreleased 0.11.0 and
 0.12.0 milestones and is not yet released.
 
 ### Added
@@ -63,6 +63,35 @@ Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0 and
   wall time, per-pair latency with startup overhead separated, tokens, cost,
   parse failures, run-to-run flips, agreement, and precision/recall on
   `contradicts` against a 30-pair gold file labeled by an LLM-assisted reviewer.
+- `typesafe-triage` `--apply` flag: adds only the two label questions that
+  measured 100% agreement on a live run. The ungated `kind/*` proposal is added
+  when the item has no existing `kind/*` label; on issues, `triage/needs-repro`
+  is added when `needs_repro` resolved yes (p >= the noul threshold) and the
+  label is not already present. Never removes a label, never touches
+  `area/*`/`priority/*`/`pr_ready`, never comments. Labels are added through
+  `gh issue edit --add-label` / `gh pr edit --add-label` via the same mockable
+  subprocess helper pattern as the read-only `gh api` calls, with a live label
+  recheck immediately before each write so a label a human added between fetch
+  and write is respected instead of duplicated; a failed write stops the run
+  as `PartialFailure`, keeping earlier items' results and applied labels.
+  Refused together with `--fixture` (a frozen snapshot, never live state). The
+  table gains an `Applied` column and the summary an applied count; `--json`
+  includes an `applied` list per item.
+- `typesafe-triage` `--since <ISO timestamp>` (only consider items created
+  strictly after it) and `--only-unlabeled` (skip items that already carry a
+  `kind/*` label), so a scheduled run can triage only what is new and
+  unlabeled.
+- `.github/workflows/typesafe-triage.yml`: runs the skill against
+  `nanocoai/nanoclaw` (overridable) on `workflow_dispatch` (with an `apply`
+  input) and every 6 hours on a schedule. The scheduled run always passes
+  `--only-unlabeled` and only adds `--apply` when the `TYPESAFE_TRIAGE_APPLY`
+  repository variable is `"true"`; otherwise every run's table is uploaded as a
+  workflow artifact. Requires the `TYPESAFE_API_KEY` and `TRIAGE_GH_TOKEN`
+  secrets (the latter a token scoped to the target repo with `issues:write` and
+  `pull-requests:write`, not the default `GITHUB_TOKEN`, since triage usually
+  targets a different repo than the one the workflow runs in). Rollback: unset
+  `TYPESAFE_TRIAGE_APPLY`; already-applied labels are additive and are not
+  undone by turning it off.
 - `typesafe-triage` skill: a dry-run label triage of open nanocoai/nanoclaw
   issues and PRs through the TypeSafe System One API. One fan-out request per
   item (area, kind, priority, needs-repro or PR readiness), a confidence gate
