@@ -10,3 +10,6 @@ __pycache__/
 # typesafe-docs-drift raw answers (doc excerpts and code snippets) and this clone's worktrees.
 /skills/typesafe-docs-drift/output/
 /.worktrees/
+
+# typesafe-triage raw answers (may contain issue bodies).
+/skills/typesafe-triage/output/
