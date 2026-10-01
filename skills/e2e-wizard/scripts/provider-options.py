@@ -109,11 +109,11 @@ def option_objects(array):
     return objects
 
 
-def auth_methods(source, provider):
+def logged_choice(source, provider):
     key = 'opencode_backend' if provider == 'opencode' else '[a-z0-9_-]*auth_method'
     markers = list(re.finditer(r"setupLog\.userInput\(\s*['\"](" + key + r")['\"]", source))
     if not markers:
-        raise DiscoveryError("provider auth source does not expose an auth-method choice")
+        return None
     marker = markers[0]
     options_at = source.rfind("options:", 0, marker.start())
     if options_at < 0:
@@ -123,7 +123,29 @@ def auth_methods(source, provider):
     if not prompt:
         raise DiscoveryError("provider auth source has no readable prompt")
     start = source.find("[", options_at, marker.start())
-    body = balanced(source, start, "[", "]")
+    return prompt, marker.group(1), balanced(source, start, "[", "]")
+
+
+def gateway_choice(source):
+    """The single unlogged ``select({...})`` picker in a gateway skill's auth.ts."""
+    calls = list(re.finditer(r"\bselect\s*\(\s*(?=\{)", source))
+    if len(calls) != 1:
+        raise DiscoveryError("gateway auth source does not expose exactly one auth-method choice")
+    call = balanced(source, calls[0].end(), "{", "}")
+    prompt = field(call, "message")
+    if not prompt:
+        raise DiscoveryError("gateway auth source has no readable prompt")
+    options_at = call.find("options:")
+    if options_at < 0:
+        raise DiscoveryError("gateway auth source has no option list")
+    return prompt, None, balanced(call, call.find("[", options_at), "[", "]")
+
+
+def auth_methods(source, provider, gateway=False):
+    choice = gateway_choice(source) if gateway else logged_choice(source, provider)
+    if choice is None:
+        raise DiscoveryError("provider auth source does not expose an auth-method choice")
+    prompt, input_key, body = choice
     methods = []
     for option in option_objects(body):
         value, label = field(option, "value"), field(option, "label")
@@ -152,7 +174,7 @@ def auth_methods(source, provider):
         })
     if not methods:
         raise DiscoveryError("provider auth source has no readable choices")
-    return prompt, marker.group(1), methods
+    return prompt, input_key, methods
 
 
 def frontmatter(markdown, directory):
@@ -206,6 +228,22 @@ def registered_providers(root, commit):
             "installed": True, "source": path,
         })
     return entries
+
+
+def gateway_skill(root, commit, kind=None):
+    """Resolve a gateway kind (default: the catalog default) to its skill directory."""
+    gateways = []
+    for path in tree_paths(root, commit, ".claude/skills"):
+        if re.fullmatch(r"\.claude/skills/[^/]+/gateway\.json", path):
+            try:
+                manifest = json.loads(tree_read(root, commit, path))
+            except ValueError:
+                raise DiscoveryError(f"gateway manifest is unreadable: {path}")
+            gateways.append((manifest.get("kind"), manifest.get("default") is True, posixpath.dirname(path)))
+    matches = [item for item in gateways if (item[0] == kind if kind else item[1])]
+    if len(matches) != 1:
+        raise DiscoveryError(f"gateway is not offered by this revision: {kind or 'default'}")
+    return matches[0][0], matches[0][2]
 
 
 def offered_descriptors(root, commit, installed):
@@ -310,7 +348,7 @@ def validate_model(provider, backend, model, base_url=None, model_provider=None)
     return runtime_provider
 
 
-def discover(root, selected=None, payload_ref=None, revision="HEAD"):
+def discover(root, selected=None, payload_ref=None, revision="HEAD", gateway=None):
     root = Path(root).resolve()
     if not (root / ".git").exists():
         raise DiscoveryError("run from a NanoClaw checkout")
@@ -334,10 +372,17 @@ def discover(root, selected=None, payload_ref=None, revision="HEAD"):
     if provider["installed"]:
         source_path = provider["source"]
         source = tree_read(root, commit, source_path)
-        # Claude deliberately owns the standard auth implementation in auto.ts.
+        # A provider without runAuth uses the standard auth step: auto.ts on
+        # older refs, the selected gateway skill's scripts/auth.ts since the
+        # gateway seam (nanocoai/nanoclaw d5c7cccc).
         if "runAuth" not in source:
             source_path = "setup/auto.ts"
             source = tree_read(root, commit, source_path)
+            if logged_choice(source, selected) is None and tree_paths(root, commit, "setup/gateways"):
+                kind, directory = gateway_skill(root, commit, gateway)
+                source_path = f"{directory}/scripts/auth.ts"
+                source = tree_read(root, commit, source_path)
+                provider["auth_gateway"] = kind
         source_ref, source_commit = revision, commit
     else:
         skill = tree_read(root, commit, provider["source"])
@@ -392,7 +437,7 @@ def discover(root, selected=None, payload_ref=None, revision="HEAD"):
         if helper and helper.get('commit'):
             source_ref, source_commit = helper['ref'], helper['commit']
         source = tree_read(root, source_commit, source_path)
-    prompt, input_key, methods = auth_methods(source, selected)
+    prompt, input_key, methods = auth_methods(source, selected, "auth_gateway" in provider)
     provider.update({
         "auth_prompt": prompt,
         "auth_input_key": input_key,
@@ -411,9 +456,12 @@ def main(argv=None):
     parser.add_argument("--provider", help="include auth choices for this offered provider")
     parser.add_argument("--payload-ref", help="already-fetched ref for an installable provider payload")
     parser.add_argument("--revision", default="HEAD", help="exact NanoClaw revision to inspect (default: HEAD)")
+    parser.add_argument("--gateway", help="gateway kind whose auth script owns Claude's picker on a seam ref "
+                                          "(default: the revision's default gateway)")
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(discover(args.root, args.provider, args.payload_ref, args.revision), indent=2))
+        print(json.dumps(discover(args.root, args.provider, args.payload_ref, args.revision,
+                                  args.gateway), indent=2))
         return 0
     except (DiscoveryError, OSError) as error:
         print("[e2e-provider] " + str(error), file=sys.stderr)

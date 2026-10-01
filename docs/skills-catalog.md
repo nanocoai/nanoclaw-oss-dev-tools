@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
 Verified: **2026-09-17**. This checkout contains **8 skills**, with plugin
-manifest version **0.12.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
+manifest version **0.12.1** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`

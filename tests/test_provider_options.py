@@ -229,6 +229,67 @@ class ProviderOptionsTests(unittest.TestCase):
         self.assertNotIn("payload_sources", selected)
         self.assertEqual(set(selected["payload_files"][0]), {"source", "destination", "branch"})
 
+    def gateway_seam(self):
+        """Mirror nanoclaw 1778edc0: Claude's picker lives in each gateway
+        skill's scripts/auth.ts, unlogged, and auto.ts no longer has one."""
+        (self.root / "setup/auto.ts").write_text("runGatewayAuth(gatewayKind, agentProvider);\n")
+        (self.root / "setup/gateways").mkdir()
+        (self.root / "setup/gateways/step.ts").write_text("// seam\n")
+        for kind, default in (("onecli", True), ("iron-proxy", False)):
+            path = self.root / f".claude/skills/add-{kind}"
+            (path / "scripts").mkdir(parents=True)
+            (path / "SKILL.md").write_text(f"# add-{kind}\n")
+            (path / "gateway.json").write_text(json.dumps(
+                {"kind": kind, "label": kind, "description": "x", "default": default}))
+            (path / "scripts/auth.ts").write_text(textwrap.dedent(f"""
+                if (provider !== 'claude') {{ await entry.runAuth(); return; }}
+                const method = answer<Method>(
+                  await p.select({{
+                    message: 'How would you like to connect to Claude via {kind}?',
+                    options: [
+                      {{ value: 'subscription', label: 'Claude subscription', hint: 'recommended for Pro or Max' }},
+                      {{ value: 'oauth', label: 'Paste an OAuth token' }},
+                      {{ value: 'api', label: 'Paste an Anthropic API key' }},
+                      {{ value: 'skip', label: 'Skip for now' }},
+                    ],
+                  }}),
+                );
+                const token = await p.password({{ message: 'Paste your API key' }});
+            """))
+        self.git("add", ".")
+        self.git("commit", "-m", "gateway seam")
+        return self.git("rev-parse", "HEAD")
+
+    def test_claude_auth_on_a_gateway_seam_comes_from_the_gateway_skill(self):
+        seam_commit = self.gateway_seam()
+        selected = provider_options.discover(self.root, "claude")["selected"]
+        self.assertEqual(selected["auth_gateway"], "onecli")
+        self.assertEqual(selected["auth_source"], ".claude/skills/add-onecli/scripts/auth.ts")
+        self.assertEqual(selected["auth_source_commit"], seam_commit)
+        self.assertIsNone(selected["auth_input_key"])
+        self.assertEqual(selected["auth_prompt"], "How would you like to connect to Claude via onecli?")
+        self.assertEqual([(item["value"], item["automation"], item["credential_kind"])
+                          for item in selected["auth_methods"]],
+                         [("subscription", "human-handoff", None),
+                          ("oauth", "credential-file", "anthropic-oauth"),
+                          ("api", "credential-file", "anthropic-api-key"),
+                          ("skip", "unsupported", None)])
+        iron = provider_options.discover(self.root, "claude", gateway="iron-proxy")["selected"]
+        self.assertEqual(iron["auth_source"], ".claude/skills/add-iron-proxy/scripts/auth.ts")
+        with self.assertRaises(provider_options.DiscoveryError):
+            provider_options.discover(self.root, "claude", gateway="missing")
+        # The pre-seam revision still reads its logged auto.ts picker.
+        old = provider_options.discover(self.root, "claude", revision=self.main_commit)["selected"]
+        self.assertEqual((old["auth_source"], old["auth_input_key"]), ("setup/auto.ts", "auth_method"))
+
+    def test_gateway_auth_with_an_ambiguous_picker_fails(self):
+        self.gateway_seam()
+        script = self.root / ".claude/skills/add-onecli/scripts/auth.ts"
+        script.write_text(script.read_text() + "await p.select({ message: 'Again?', options: [] });\n")
+        self.git("commit", "-am", "second picker")
+        with self.assertRaises(provider_options.DiscoveryError):
+            provider_options.discover(self.root, "claude")
+
     def test_cli_emits_json_and_rejects_unoffered_provider(self):
         run = subprocess.run(
             [sys.executable, str(SCRIPT), "--root", str(self.root)],

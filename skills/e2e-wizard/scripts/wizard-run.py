@@ -102,10 +102,10 @@ def branch_payload_commit(selected):
 
 
 def selected_auth(root, provider, auth_method, payload_ref, expected_auth_source_commit=None,
-                  supervised_human_auth=False, expected_payload_commit=None):
+                  supervised_human_auth=False, expected_payload_commit=None, gateway=None):
     module = provider_discovery()
     try:
-        report = module.discover(root, provider, payload_ref)
+        report = module.discover(root, provider, payload_ref, gateway=gateway)
     except module.DiscoveryError as error:
         raise Failure('preflight', str(error), 65)
     selected = report['selected']
@@ -1402,6 +1402,7 @@ def main(argv=None):
         selected, method = selected_auth(
             root, args.provider, args.auth_method, args.payload_ref,
             args.expected_auth_source_commit, args.supervised_human_auth, args.expected_payload_commit,
+            args.gateway if seam else None,
         )
         if (method['automation'] == 'human-handoff'
                 and (args.provider, args.auth_method) not in {
@@ -1454,10 +1455,10 @@ def main(argv=None):
             scenario['required_step_statuses'] = {'auth': 'interactive'}
         if seam:
             scenario = seam_scenario(scenario, args.provider)
-        scenario['required_inputs'].update(
-            agent_provider=args.provider,
-            **{selected['auth_input_key']: args.auth_method},
-        )
+        scenario['required_inputs']['agent_provider'] = args.provider
+        # A gateway auth script logs no choice; its picker is proven by the PTY.
+        if selected['auth_input_key']:
+            scenario['required_inputs'][selected['auth_input_key']] = args.auth_method
         result['scenario'] = scenario['name']
         result['scenario_source_commit'] = scenario['source_commit']
         result['phase'] = 'wizard'
