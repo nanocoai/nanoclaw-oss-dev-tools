@@ -302,7 +302,13 @@ same vars `setup/auto.ts` reads),
 `NANOCLAW_DISPLAY_NAME`, `NANOCLAW_E2E_TZ` (default `UTC`),
 `NANOCLAW_E2E_KEEP_AGENT` (default `1`), `NANOCLAW_E2E_FORCE_AUTH` (`1`
 replaces an existing vault secret with the key file — token rotation on a
-`--base` VM whose snapshot still holds the old one).
+`--base` VM whose snapshot still holds the old one, or a rerun after a
+bad-key test). The installer creates the new secret, then deletes every older
+`anthropic` secret for `api.anthropic.com`, on both the gateway seam and the
+legacy `auth` step; neither replaces on its own, and OneCLI keeps using an
+older duplicate. It also stops any running container that mounts this
+checkout's `groups/e2e-agent`, which would otherwise keep its old session for
+the ping.
 
 The driver forwards the remote gateway settings, display name, timezone,
 keep-agent and force-auth settings over stdin into a private environment
