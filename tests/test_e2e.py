@@ -1214,12 +1214,15 @@ sys.exit(0)
 
     def test_oversized_key_file_is_refused(self):
         key = self.root / "credential"
-        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG" + "\n" * 70000)
         self.env.update(NANOCLAW_E2E_KEY_FILE=str(key), MOCK_AUTH_STATUS="missing")
-        run = self.run_installer()
-        self.assertEqual(run.returncode, 1, run.stderr)
-        self.assertIn("expected sk-ant-", run.stderr)
-        self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
+        # The bound counts bytes, so CRLF padding cannot halve the file's size.
+        for padding in (b"\n" * 70000, b"\r\n" * 35000):
+            with self.subTest(crlf=padding.startswith(b"\r")):
+                key.write_bytes(b"sk-ant-api03-FAKE_SECRET_DO_NOT_LOG" + padding)
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 1, run.stderr)
+                self.assertIn("expected sk-ant-", run.stderr)
+                self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
 
     def test_gateway_seam_force_auth_keeps_the_old_secret_when_create_adds_none(self):
         self.gateway_seam()

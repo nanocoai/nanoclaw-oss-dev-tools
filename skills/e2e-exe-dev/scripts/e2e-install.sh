@@ -199,10 +199,10 @@ check_key_file() {
   local shape=0
   python3 - "$KEY_FILE" <<'PY' || shape=$?
 import re, sys
-raw = open(sys.argv[1], errors="replace").read(65537)
+raw = open(sys.argv[1], "rb").read(65537)
 if len(raw) > 65536:
     sys.exit(4)
-value = raw.replace("\r", "").replace("\n", "")
+value = raw.decode("utf-8", "replace").replace("\r", "").replace("\n", "")
 if re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{9,1017}", value):
     sys.exit(0)
 sys.exit(3 if re.fullmatch(r"[A-Z0-9_.<>\s-]*", value) or "PASTE" in value.upper() else 4)
