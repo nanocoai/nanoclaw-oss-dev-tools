@@ -295,6 +295,26 @@ if (not stat.S_ISREG(key.st_mode) or key.st_mode & 0o077
 PY
 [ "$KEY_CHECK" -eq 0 ] \
   || fail "credential must be a nonempty private regular file owned by this user (0600): $KEY_FILE" 66
+# A fresh VM always hands the Anthropic credential to its gateway; one that
+# cannot work would only fail at the ping, after the VM and install. A --base
+# VM or a remote OneCLI vault may already hold the secret, so e2e-install.sh
+# checks the file there when it reads it. Checks the value as sent; never
+# prints it.
+if [ -n "$KEY_FILE" ] && [ "$PROVIDER" = claude ] && [[ "$AUTH_METHOD" =~ ^(api|oauth)$ ]] \
+  && [ -z "$BASE" ] && { [ "$GATEWAY" != onecli ] || [ -z "${NANOCLAW_ONECLI_API_HOST:-}" ]; }; then
+  python3 - "$KEY_FILE" <<'PY' || KEY_CHECK=$?
+import re, sys
+value = open(sys.argv[1], errors="replace").read(4096).replace("\r", "").replace("\n", "")
+if re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{9,1017}", value):
+    sys.exit(0)
+sys.exit(3 if re.fullmatch(r"[A-Z0-9_.<>\s-]*", value) or "PASTE" in value.upper() else 4)
+PY
+  case "$KEY_CHECK" in
+    0) ;;
+    3) fail "credential file is empty or an unfilled placeholder, not an Anthropic credential: $KEY_FILE" 66 ;;
+    *) fail "credential file does not hold an Anthropic API key or OAuth token (expected sk-ant-...): $KEY_FILE" 66 ;;
+  esac
+fi
 [ -n "$NAME" ] || NAME="nanoclaw-e2e-${COMMIT:0:7}-$(python3 -c 'import secrets; print(secrets.token_hex(3))')"
 # SSH joins lobby arguments into a command string. Permit only literal names
 # and resource values here; repository URLs are shell-quoted separately below.

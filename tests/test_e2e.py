@@ -10,6 +10,7 @@ import signal
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -83,7 +84,7 @@ class DriverTests(Sandbox):
         self.vm = self.root / "vm"
         self.vm.mkdir()
         self.key = self.root / "fake-key"
-        self.key.write_text("FAKE_ANTHROPIC_TOKEN")
+        self.key.write_text("sk-ant-api03-FAKE_ANTHROPIC_TOKEN")
         self.key.chmod(0o600)
         self.skill = self.root / "installed skill"
         self.skill.mkdir()
@@ -220,6 +221,23 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.assertIn("private regular file", run.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_placeholder_or_foreign_credential_allocates_nothing(self):
+        cases = (
+            ("PASTE_ANTHROPIC_KEY_HERE", "unfilled placeholder"),
+            ("", "unfilled placeholder"),
+            ("not-an-anthropic-credential-value", "expected sk-ant-"),
+            ("sk-ant-api03-FAKE SECRET_VALUE", "expected sk-ant-"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.key.write_text(value + "\n")
+                run = self.run_driver()
+                self.assertEqual(run.returncode, 66, run.stderr)
+                self.assertIn(message, run.stderr)
+                if value:
+                    self.assertNotIn(value, run.stdout + run.stderr)
+                self.assertEqual(self.calls(), [])
+
     def test_invalid_input_allocates_nothing(self):
         for args in (("--ref",), ("--ref", "does-not-exist"), ("--cpu", "1; echo nope")):
             with self.subTest(args=args):
@@ -332,6 +350,15 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.vm / "nanoclaw"), latest)
         self.assertEqual(json.loads((self.vm / "observed.json").read_text())["commit"], latest)
+
+    def test_base_leaves_the_credential_check_to_the_installer(self):
+        # A base VM's vault may already hold the secret; the installer checks
+        # the file only if it reads it.
+        self.git("clone", str(self.origin), str(self.vm / "nanoclaw"))
+        self.key.write_text("PASTE_ANTHROPIC_KEY_HERE\n")
+        run = self.run_driver("--base", "base-vm")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue((self.vm / "observed.json").exists())
 
     def test_base_uses_requested_repository(self):
         self.git("clone", str(self.origin), str(self.vm / "nanoclaw"))
@@ -634,9 +661,25 @@ if "--step" in args:
     print("=== END ===")
     sys.exit(int(os.environ.get("MOCK_STEP_RC", "0")))
 if "chat" in args:
+    if os.environ.get("MOCK_OUTBOUND"):
+        import json, sqlite3
+        from pathlib import Path
+        session = Path("data/v2-sessions") / os.environ.get("MOCK_OUTBOUND_GROUP", "ag-e2e") / "sess-e2e"
+        session.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(session / "outbound.db")
+        db.execute("CREATE TABLE IF NOT EXISTS messages_out"
+                   " (id TEXT PRIMARY KEY, channel_type TEXT, platform_id TEXT, content TEXT NOT NULL)")
+        for row in json.loads(os.environ["MOCK_OUTBOUND"]):
+            row_id, content, channel, platform = (row + ["cli", "local"][len(row) - 2:])[:4]
+            db.execute("INSERT INTO messages_out VALUES (?, ?, ?, ?)",
+                       (row_id, channel, platform, json.dumps(content)))
+        db.commit()
+        db.close()
     print(os.environ.get("MOCK_PING", "pong"))
     print(os.environ.get("MOCK_PING_ERR", ""), file=sys.stderr)
     sys.exit(int(os.environ.get("MOCK_PING_RC", "0")))
+if "scripts/init-cli-agent.ts" in args and os.environ.get("MOCK_INIT_OUT"):
+    print(os.environ["MOCK_INIT_OUT"])
 if "scripts/init-cli-agent.ts" in args and os.environ.get("MOCK_MIGRATIONS_READY"):
     from pathlib import Path
     if not Path(os.environ["MOCK_MIGRATIONS_READY"]).exists():
@@ -738,6 +781,123 @@ sys.exit(0)
                 self.assertEqual(self.result()["ping"], ping)
                 self.assertEqual(self.result()["status"], "failed")
 
+    def test_failure_notice_reply_never_passes(self):
+        notice = [["n1", {"text": "Your credit balance is too low.", "failureNotice": True}]]
+        cases = [
+            ({"MOCK_PING": "The agent run failed. Check the logs for details."}, "notice text"),
+            ({"MOCK_PING": "Sent before failure.\nThe agent run failed. Check the logs for details."}, "late notice"),
+            ({"MOCK_PING": "\nError: Query failed: 401"}, "pre-#3746 error reply"),
+            ({"MOCK_PING": "Your credit balance is too low.", "MOCK_OUTBOUND": json.dumps(notice)}, "marker"),
+        ]
+        for settings, label in cases:
+            with self.subTest(label):
+                shutil.rmtree(self.checkout / "data/v2-sessions", ignore_errors=True)
+                for name in ("MOCK_PING", "MOCK_OUTBOUND"):
+                    self.env.pop(name, None)
+                self.env.update(settings)
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertIn("failure notice", run.stderr)
+                self.assertEqual(self.result()["ping"], "agent_failure")
+                self.assertEqual(self.result()["status"], "failed")
+                self.assertNotIn("PING: ok", run.stdout)
+
+    def marker_core(self):
+        runner = self.checkout / "container/agent-runner/src"
+        runner.mkdir(parents=True)
+        (runner / "formatter.ts").write_text("export const FAILURE_NOTICE_FIELD = 'failureNotice';\n")
+
+    def test_real_reply_passes_beside_earlier_and_other_channel_notices(self):
+        # A notice left by an earlier run on a reused checkout, or sent to
+        # another channel by another agent during the ping, is not its reply.
+        session = self.checkout / "data/v2-sessions/ag-e2e/sess-e2e"
+        session.mkdir(parents=True)
+        db = sqlite3.connect(session / "outbound.db")
+        db.execute("CREATE TABLE messages_out"
+                   " (id TEXT PRIMARY KEY, channel_type TEXT, platform_id TEXT, content TEXT NOT NULL)")
+        db.execute("INSERT INTO messages_out VALUES ('old', 'cli', 'local', ?)",
+                   (json.dumps({"text": "The agent run failed.", "failureNotice": True}),))
+        db.commit()
+        db.close()
+        notice = {"text": "The agent run failed.", "failureNotice": True}
+        self.env["MOCK_OUTBOUND"] = json.dumps([["r1", {"text": "pong"}], ["other", notice, "slack", "C1"],
+                                                ["dm", notice, "cli", "discord:@me:1"]])
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["ping"], "ok")
+        self.assertIn("PING: ok", run.stdout)
+
+    def test_marker_core_trusts_the_marker_over_reply_text(self):
+        self.marker_core()
+        quoted = "pong. Earlier you saw: The agent run failed. Check the logs for details."
+        for text in (quoted, "Error: codes are fine, pong"):
+            with self.subTest(text=text):
+                shutil.rmtree(self.checkout / "data/v2-sessions", ignore_errors=True)
+                self.env.update(MOCK_PING=text, MOCK_OUTBOUND=json.dumps([["r1", {"text": text}]]))
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual(self.result()["ping"], "ok")
+
+    def test_marker_core_counts_any_agents_notice_on_cli_local(self):
+        # chat.ts prints every agent's cli/local text, so another agent's
+        # notice is part of what the ping received.
+        self.marker_core()
+        self.env.update(MOCK_PING="pong", MOCK_OUTBOUND_GROUP="ag-other",
+                        MOCK_OUTBOUND=json.dumps([["n1", {"text": "failed", "failureNotice": True}]]))
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertEqual(self.result()["ping"], "agent_failure")
+
+    def test_hardened_image_keeps_the_text_fallback(self):
+        # A pulled runner image can predate the marker the checkout has.
+        self.marker_core()
+        text = "The agent run failed. Check the logs for details."
+        for setting in ({"env_file": "NANOCLAW_HARDENED_IMAGE=TRUE\n"}, {"NANOCLAW_HARDENED_IMAGE": "True"}):
+            with self.subTest(setting=setting):
+                shutil.rmtree(self.checkout / "data/v2-sessions", ignore_errors=True)
+                (self.checkout / ".env").write_text(setting.pop("env_file", ""))
+                self.env.pop("NANOCLAW_HARDENED_IMAGE", None)
+                self.env.update(setting, MOCK_PING=text, MOCK_OUTBOUND=json.dumps([["r1", {"text": text}]]))
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertEqual(self.result()["ping"], "agent_failure")
+
+    def test_marker_core_without_readable_db_falls_back_to_text(self):
+        self.marker_core()
+        self.env["MOCK_PING"] = "The agent run failed. Check the logs for details."
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertEqual(self.result()["ping"], "agent_failure")
+
+    def test_placeholder_or_foreign_credential_is_never_seeded(self):
+        key = self.root / "credential"
+        calls = self.root / "step-calls"
+        self.env.update(NANOCLAW_E2E_KEY_FILE=str(key), MOCK_AUTH_STATUS="missing", MOCK_STEP_CALLS=str(calls))
+        cases = (
+            ("PASTE_ANTHROPIC_KEY_HERE", "unfilled placeholder"),
+            ("not-an-anthropic-credential-value", "expected sk-ant-"),
+            ("sk-ant-api03-FAKE SECRET_VALUE", "expected sk-ant-"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message, value_index=cases.index((value, message))):
+                calls.unlink(missing_ok=True)
+                key.write_text(value + "\n")
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 1, run.stderr)
+                self.assertIn(message, run.stderr)
+                self.assertNotIn(value, run.stdout + run.stderr)
+                self.assertEqual(self.result()["ping"], "not_run")
+                self.assertNotIn("--create", calls.read_text())
+                self.assertNotIn("'container'", calls.read_text())
+
+    def test_reused_vault_never_reads_a_placeholder_key_file(self):
+        key = self.root / "credential"
+        key.write_text("PASTE_ANTHROPIC_KEY_HERE\n")
+        self.env["NANOCLAW_E2E_KEY_FILE"] = str(key)
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["ping"], "ok")
+
     def test_large_auth_error_output_never_passes(self):
         for stream in ("MOCK_PING", "MOCK_PING_ERR"):
             with self.subTest(stream=stream):
@@ -759,7 +919,7 @@ sys.exit(0)
 
     def test_auth_create_redacts_key_and_accepts_missing_check(self):
         key = self.root / "fake-key"
-        key.write_text("FAKE_SECRET_DO_NOT_LOG")
+        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
         self.env.update({"MOCK_AUTH_STATUS": "missing", "NANOCLAW_E2E_KEY_FILE": str(key)})
         run = self.run_installer()
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -907,7 +1067,7 @@ elif "show" in args:
 sys.exit(0)
 ''')
         key = self.root / "credential"
-        key.write_text("FAKE_SECRET_DO_NOT_LOG")
+        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
         self.env["NANOCLAW_E2E_KEY_FILE"] = str(key)
         return calls, onecli_calls
 
