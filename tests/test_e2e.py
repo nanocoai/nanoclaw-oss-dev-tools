@@ -227,6 +227,8 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
             ("", "unfilled placeholder"),
             ("not-an-anthropic-credential-value", "expected sk-ant-"),
             ("sk-ant-api03-FAKE SECRET_VALUE", "expected sk-ant-"),
+            # Valid key, then junk past the first 4096 characters.
+            ("sk-ant-api03-FAKE_KEY" + "\n" * 5000 + "# old notes", "expected sk-ant-"),
         )
         for value, message in cases:
             with self.subTest(message=message):
@@ -887,6 +889,8 @@ sys.exit(0)
             ("PASTE_ANTHROPIC_KEY_HERE", "unfilled placeholder"),
             ("not-an-anthropic-credential-value", "expected sk-ant-"),
             ("sk-ant-api03-FAKE SECRET_VALUE", "expected sk-ant-"),
+            # Valid key, then junk past the first 4096 characters.
+            ("sk-ant-api03-FAKE_KEY" + "\n" * 5000 + "# old notes", "expected sk-ant-"),
         )
         for value, message in cases:
             with self.subTest(message=message, value_index=cases.index((value, message))):
@@ -1195,6 +1199,27 @@ sys.exit(0)
         self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
         self.assertEqual(self.result()["status"], "pass")
         self.assertEqual(self.result()["ping"], "ok")
+
+    def test_gateway_seam_force_auth_keeps_the_old_secret_when_the_key_file_has_a_junk_tail(self):
+        _, onecli_calls = self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        (self.root / "credential").write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG" + "\n" * 5000 + "# old notes\n")
+        self.env["NANOCLAW_E2E_FORCE_AUTH"] = "1"
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("expected sk-ant-", run.stderr)
+        self.assertNotIn("'secrets', 'create'", onecli_calls.read_text() if onecli_calls.exists() else "")
+        self.assertEqual([s["id"] for s in self.vault()], ["old1"])
+        self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
+
+    def test_oversized_key_file_is_refused(self):
+        key = self.root / "credential"
+        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG" + "\n" * 70000)
+        self.env.update(NANOCLAW_E2E_KEY_FILE=str(key), MOCK_AUTH_STATUS="missing")
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn("expected sk-ant-", run.stderr)
+        self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
 
     def test_gateway_seam_force_auth_keeps_the_old_secret_when_create_adds_none(self):
         self.gateway_seam()

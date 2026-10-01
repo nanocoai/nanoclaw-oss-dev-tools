@@ -193,12 +193,16 @@ case "$AUTH_METHOD" in
 esac
 # Refuse a credential that cannot work before handing it to the gateway, so
 # the run stops here instead of ending in a failure notice. Checks the value
-# exactly as sent (only CR/LF removed). Never prints it.
+# exactly as sent (only CR/LF removed); a file over 64 KiB is refused unread.
+# Never prints it.
 check_key_file() {
   local shape=0
   python3 - "$KEY_FILE" <<'PY' || shape=$?
 import re, sys
-value = open(sys.argv[1], errors="replace").read(4096).replace("\r", "").replace("\n", "")
+raw = open(sys.argv[1], errors="replace").read(65537)
+if len(raw) > 65536:
+    sys.exit(4)
+value = raw.replace("\r", "").replace("\n", "")
 if re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{9,1017}", value):
     sys.exit(0)
 sys.exit(3 if re.fullmatch(r"[A-Z0-9_.<>\s-]*", value) or "PASTE" in value.upper() else 4)
