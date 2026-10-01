@@ -11,7 +11,7 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.12.1); supersedes the unreleased 0.11.0
+Development milestone (plugin 0.12.2); supersedes the unreleased 0.11.0
 milestone and is not yet released.
 
 ### Added
@@ -103,6 +103,18 @@ milestone and is not yet released.
 
 ### Fixed
 
+- The headless installer (exe.dev, Proxmox and macOS runs) no longer scores
+  NanoClaw's failure notice as a ping reply. A bad credential used to end in
+  `PING: ok` with `REPLY: The agent run failed. Check the logs for details.`
+  The ping is now `agent_failure` (exit 2) when a session gets a new
+  `cli/local` row marked `failureNotice` (nanocoai/nanoclaw#3908), or when
+  `chat.ts` exits 4 for a flagged reply (nanocoai/nanoclaw#3980). Runners that
+  may predate the marker also match the notice text or a reply starting
+  `Error: ` (cores before #3746).
+- `exe-run.sh` and `proxmox-run.py` refuse an empty or placeholder Anthropic
+  credential file, or one without an `sk-ant-` value, before creating a VM or
+  guest; `e2e-install.sh` checks it before handing it to the gateway. The
+  value is never printed.
 - `provider-options.py --provider claude` works on gateway-seam refs again
   (nanocoai/nanoclaw `d5c7cccc` onward). Claude's auth picker moved from
   `setup/auto.ts` into each gateway skill's `scripts/auth.ts` and is no longer

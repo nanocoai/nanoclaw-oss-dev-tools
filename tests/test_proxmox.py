@@ -15,7 +15,7 @@ class ProxmoxTests(Sandbox):
     def setUp(self):
         super().setUp()
         self.key = self.root / "credential"
-        self.key.write_text("test-key-DO-NOT-PRINT")
+        self.key.write_text("sk-ant-api03-test-key-DO-NOT-PRINT")
         self.report = self.root / "report.json"
         self.calls = self.root / "calls.jsonl"
         self.state = self.root / "guest.json"
@@ -193,6 +193,19 @@ elif args[:2] not in (["test", "-r"], ["ip", "link"], ["pct", "start"]):
         self.assertEqual(self.commands(), [])
         self.assertEqual(self.result()["status"], "planned")
         self.assertIsNone(self.result()["commit"])
+
+    def test_placeholder_or_foreign_credential_creates_no_guest(self):
+        for value, message in (("PASTE_ANTHROPIC_KEY_HERE", "unfilled placeholder"),
+                               ("not-an-anthropic-credential-value", "expected sk-ant-")):
+            with self.subTest(message=message):
+                if self.calls.exists():
+                    self.calls.unlink()
+                self.key.write_text(value + "\n")
+                run = self.run_driver()
+                self.assertEqual(run.returncode, 66, run.stderr)
+                self.assertIn(message, run.stderr)
+                self.assertNotIn(value, run.stdout + run.stderr + self.report.read_text())
+                self.assertFalse(any(c["args"][0] == "pct" for c in self.commands()))
 
     def test_existing_guest_id_is_refused_without_guest_mutations(self):
         run = self.run_driver("--ctid", "101")

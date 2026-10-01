@@ -88,6 +88,11 @@ are involved. Use `/manage-channels` on the VM afterwards if you want more.
   `0600` file; the installer seeds it into the OneCLI vault exactly as
   `setup/auth.ts` does (`onecli secrets create --type anthropic
   --host-pattern api.anthropic.com`).
+  `exe-run.sh` and `proxmox-run.py` refuse an empty or placeholder file, or
+  one without an `sk-ant-` credential, before creating anything; with
+  `--base` or a remote OneCLI vault they leave it to the installer, which
+  checks the file only when it is about to hand it to the gateway (wizard
+  runs already check the exact shape per auth method).
 - Key files for every credential-file method follow one convention:
   `~/.nanoclaw-e2e/<provider>_key`, mode `0600`, owned by you, one key and
   nothing else. `anthropic_key` (Claude; also OpenCode `custom` with
@@ -355,7 +360,7 @@ installer adds sequencing and assertions only.
 | 8 | `--step timezone --tz <zone>` | `setup/timezone.ts` validates with `isValidTimezone` and writes `TZ` to `.env` |
 | 9 | `--step service`, then `./start-nanoclaw.sh` iff `SERVICE_TYPE: nohup` | `setup/service.ts`: builds, **stamps the upgrade marker** (so the host's tripwire passes), installs a system unit as root / user unit otherwise / nohup wrapper without user systemd |
 | 10 | Wait for `data/cli.sock`, then `scripts/init-cli-agent.ts --display-name … --agent-name "E2E Agent" --folder e2e-agent` | `src/index.ts` finishes host migrations before opening the CLI socket. Only then run the initializer, which also migrates the DB, to create the `cli:local` scratch user, agent group and wiring without racing fresh host migrations. |
-| 11 | `pnpm --silent run chat ping` | `scripts/chat.ts`: exit 0 + reply = ok, 2 = socket unreachable, 3 = no reply within its 120 s stop; the auth-error patterns are the ones `agent-ping.ts` classifies |
+| 11 | `pnpm --silent run chat ping` | `scripts/chat.ts`: exit 0 + reply = ok, 2 = socket unreachable, 3 = no reply within its 120 s stop; the auth-error patterns are the ones `agent-ping.ts` classifies. Stricter than `agent-ping.ts`: a failure notice is `agent_failure`, never ok — `chat.ts` exit 4 (it forwards the flag since nanocoai/nanoclaw#3980), or a new `messages_out` row to `cli/local` (what `chat.ts` prints) marked `failureNotice` (nanocoai/nanoclaw#3908) in any session `outbound.db`. When the runner may predate the marker (checkout without it, or `NANOCLAW_HARDENED_IMAGE=true`) or a DB cannot be read, the notice text "The agent run failed. Check the logs for details." or a first line starting `Error: ` (cores before #3746) also count |
 | 12 | `--step verify` | `setup/verify.ts`: `success` iff service running ∧ credentials present ∧ (groups > 0 ∨ wiring pending); exits 1 otherwise |
 
 Step output is parsed from the `=== NANOCLAW SETUP: <STEP> === … STATUS: … === END ===`
@@ -521,6 +526,8 @@ ignoring it.
 | `supports claude only` / `supervised-human-auth` (exit `1`/`64`) | the `--provider`/`--auth-method` pair | headless runs drive Claude only; other providers need `--interactive`, and Codex `device` also `--supervised-human-auth`; nothing was created |
 | `device pairing requested` in the driver output | `<result-file>.handoff` (private, `0600`) | Codex is waiting for you: open the link and enter the code within the wizard's 10-minute handoff window |
 | `result-identity-mismatch` on export after a green install | `logs/e2e/result.json` `gateway` on the VM vs. the driver's `--gateway` | the installer ran another gateway than requested (an inherited setting on a base VM, or a stale installer copy); the VM is kept |
+| exit `2`, `ping reply is NanoClaw's failure notice` | `logs/e2e/ping.out`, `logs/e2e/failure-notices.new`, `logs/nanoclaw.log` around the ping | the agent run failed and the runner sent its notice instead of a reply: usually a bad credential in the gateway (a provider error text is marked the same way), else read the container error in the log |
+| exit `1`/`66`, `empty or an unfilled placeholder` / `expected sk-ant-...` | the credential file you selected (do not paste it anywhere) | the file is a template or holds something other than an Anthropic API key (`sk-ant-api…`) or OAuth token (`sk-ant-oat…`); fill it or pass the right `--credential-file`; nothing was created |
 | exit `2`, no reply at all | `logs/nanoclaw.log` around the ping timestamp, `bin/ncl sessions list` | container failed to spawn (OneCLI "not applied"), or the agent errored — container logs are gone after exit, so check the outbound DB: `pnpm exec tsx scripts/q.ts data/v2-sessions/<group>/<session>/outbound.db "select * from messages_out"` |
 | `verify reported failed` after a green ping | the `SERVICE:` / `CREDENTIALS:` / `REGISTERED_GROUPS:` fields | agent deleted (`KEEP_AGENT=0`); or `SERVICE: not_found` on a nohup-started host — see the source-review limitation above |
 | `snapshot … creation was not confirmed` / `NAME creation was not confirmed` | the lobby response right above it | name taken, malformed response, or copy source/destination mismatch — check before retrying |
