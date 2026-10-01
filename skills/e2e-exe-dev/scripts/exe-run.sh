@@ -222,7 +222,8 @@ PYMODEL
   [ -z "$OPENCODE_MODEL" ] || MODEL_ARGS=(--opencode-model "$OPENCODE_MODEL")
   [ -z "$OPENCODE_BASE_URL" ] || MODEL_ARGS+=(--opencode-base-url "$OPENCODE_BASE_URL")
   [ -z "$OPENCODE_PROVIDER" ] || MODEL_ARGS+=(--opencode-provider "$OPENCODE_PROVIDER")
-  DISCOVERY=(python3 "$WIZARD_DIR/scripts/provider-options.py" --root "$PWD" --revision "$COMMIT" --provider "$PROVIDER")
+  DISCOVERY=(python3 "$WIZARD_DIR/scripts/provider-options.py" --root "$PWD" --revision "$COMMIT" --provider "$PROVIDER"
+    --gateway "$GATEWAY")
   [ -z "$PAYLOAD_REF" ] || DISCOVERY+=(--payload-ref "$PAYLOAD_REF")
   PROVIDER_JSON="$("${DISCOVERY[@]}")" || fail "could not discover provider/auth choices from the exact revision" 65
   AUTH_SOURCE_COMMIT="$(printf '%s' "$PROVIDER_JSON" | python3 -c '
