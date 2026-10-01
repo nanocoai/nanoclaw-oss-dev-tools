@@ -107,7 +107,8 @@ milestone and is not yet released.
   NanoClaw's failure notice as a ping reply. A bad credential used to end in
   `PING: ok` with `REPLY: The agent run failed. Check the logs for details.`
   The ping is now `agent_failure` (exit 2) when a session gets a new
-  `cli/local` row marked `failureNotice` (nanocoai/nanoclaw#3908). Runners that
+  `cli/local` row marked `failureNotice` (nanocoai/nanoclaw#3908), or when
+  `chat.ts` exits 4 for a flagged reply (nanocoai/nanoclaw#3980). Runners that
   may predate the marker also match the notice text or a reply starting
   `Error: ` (cores before #3746).
 - `exe-run.sh` and `proxmox-run.py` refuse an empty or placeholder Anthropic

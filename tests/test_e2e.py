@@ -770,6 +770,7 @@ sys.exit(0)
             ({"MOCK_PING_ERR": "authentication_error"}, 2, "auth_error"),
             ({"MOCK_PING_RC": "2"}, 3, "socket_error"),
             ({"MOCK_PING_RC": "3"}, 2, "no_reply"),
+            ({"MOCK_PING": "The agent run failed.", "MOCK_PING_RC": "4"}, 2, "agent_failure"),
         ]
         for settings, rc, ping in cases:
             with self.subTest(settings=settings):

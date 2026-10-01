@@ -563,6 +563,8 @@ fi
 case "$PING_RC" in
   0) [ -n "$(printf '%s' "$PING_OUT" | tr -d '[:space:]')" ] || die "ping exited 0 with an empty reply" 2 ;;
   2) PING_RESULT=socket_error; die "CLI socket unreachable (chat.ts exit 2)" 3 ;;
+  # chat.ts exits 4 when a reply carried the failureNotice flag (nanocoai/nanoclaw#3980).
+  4) PING_RESULT=agent_failure; die "ping reply is NanoClaw's failure notice, not an agent reply (chat.ts exit 4) — logs/nanoclaw.log, logs/e2e/ping.out" 2 ;;
   *) die "no reply from the agent (chat.ts exit $PING_RC) — logs/nanoclaw.log, logs/e2e/ping.err" 2 ;;
 esac
 # A failure notice is never a reply. The marker covers every notice text.
