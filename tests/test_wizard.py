@@ -700,9 +700,8 @@ class GatewaySeamTests(unittest.TestCase):
             wizard.pinned_codex_cli(self.root)
 
     def test_seam_ref_runs_the_wizard_with_the_gateway_flag(self):
-        # Discovery is mocked: on a seam ref Claude's picker lives in the
-        # gateway's own auth script, which provider-options.py cannot read yet
-        # (documented; Claude under the seam stays on the headless driver).
+        # Discovery is mocked here; test_provider_options covers reading
+        # Claude's picker from the gateway skill's scripts/auth.ts.
         from unittest.mock import patch
         (self.root / 'nanoclaw.sh').write_text('# fixture')
         (self.root / 'package.json').write_text('{"name":"nanoclaw"}')

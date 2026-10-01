@@ -11,7 +11,7 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.12.0); supersedes the unreleased 0.11.0
+Development milestone (plugin 0.12.1); supersedes the unreleased 0.11.0
 milestone and is not yet released.
 
 ### Added
@@ -103,6 +103,17 @@ milestone and is not yet released.
 
 ### Fixed
 
+- `provider-options.py --provider claude` works on gateway-seam refs again
+  (nanocoai/nanoclaw `d5c7cccc` onward). Claude's auth picker moved from
+  `setup/auto.ts` into each gateway skill's `scripts/auth.ts` and is no longer
+  logged, so discovery failed with "provider auth source does not expose an
+  auth-method choice". Discovery now reads the selected gateway's script
+  (`--gateway`, default the revision's default gateway), reports
+  `auth_gateway` and a null `auth_input_key`, and `wizard-run.py` passes its
+  `--gateway` through and stops requiring a logged auth choice for it.
+  `exe-run.sh --interactive` passes `--gateway` to its local discovery too.
+  Claude `oauth` passed the exe.dev wizard on nanoclaw `1778edc0` under
+  OneCLI and Iron Proxy.
 - Find Node, pnpm and OneCLI installed by the wizard in `~/.local/bin` (or pnpm
   in npm's global prefix) during post-wizard provider verification. The child
   wizard's PATH changes do not propagate to the parent harness.
