@@ -11,7 +11,7 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.12.3); supersedes the unreleased 0.11.0
+Development milestone (plugin 0.12.4); supersedes the unreleased 0.11.0
 milestone and is not yet released.
 
 ### Added
@@ -123,6 +123,12 @@ milestone and is not yet released.
   is listed, then deletes the older `anthropic` secrets for
   `api.anthropic.com`. It also stops any running container that mounts the
   checkout's `groups/e2e-agent`, so the ping does not reuse the old session.
+- `e2e-install.sh` and `exe-run.sh` check the whole Anthropic credential file,
+  with only CR/LF removed, exactly as it is sent. They used to read only the
+  first 4096 characters, so a valid key followed by enough blank lines and then
+  other text passed, the extra text was stored with the key, and
+  `NANOCLAW_E2E_FORCE_AUTH=1` then deleted the working old secret. A file over
+  64 KiB is refused.
 - `provider-options.py --provider claude` works on gateway-seam refs again
   (nanocoai/nanoclaw `d5c7cccc` onward). Claude's auth picker moved from
   `setup/auto.ts` into each gateway skill's `scripts/auth.ts` and is no longer

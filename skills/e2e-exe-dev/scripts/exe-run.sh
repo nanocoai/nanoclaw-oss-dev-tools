@@ -304,7 +304,10 @@ if [ -n "$KEY_FILE" ] && [ "$PROVIDER" = claude ] && [[ "$AUTH_METHOD" =~ ^(api|
   && [ -z "$BASE" ] && { [ "$GATEWAY" != onecli ] || [ -z "${NANOCLAW_ONECLI_API_HOST:-}" ]; }; then
   python3 - "$KEY_FILE" <<'PY' || KEY_CHECK=$?
 import re, sys
-value = open(sys.argv[1], errors="replace").read(4096).replace("\r", "").replace("\n", "")
+raw = open(sys.argv[1], "rb").read(65537)
+if len(raw) > 65536:
+    sys.exit(4)
+value = raw.decode("utf-8", "replace").replace("\r", "").replace("\n", "")
 if re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{9,1017}", value):
     sys.exit(0)
 sys.exit(3 if re.fullmatch(r"[A-Z0-9_.<>\s-]*", value) or "PASTE" in value.upper() else 4)
