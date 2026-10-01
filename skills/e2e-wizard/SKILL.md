@@ -328,9 +328,9 @@ On a seam ref Claude's picker lives in the gateway skill's own
 --gateway <kind>` reads that script (default: the revision's default gateway),
 reports `auth_gateway` and a null `auth_input_key`, and `wizard-run.py` passes
 its `--gateway` through and proves the choice from the PTY instead of the setup
-log. No live Claude wizard run on a seam ref is recorded yet; the headless
-[e2e-exe-dev](../e2e-exe-dev/SKILL.md#refs-on-the-gateway-seam) driver remains
-the proven route for Claude there.
+log. On **2026-10-01** Claude `oauth` passed this route on fresh exe.dev VMs
+against nanoclaw `1778edc0c3a1d3fd3578e24564eac3a4f4407e8d` with both
+`--gateway onecli` and `--gateway iron-proxy`.
 
 After the wizard, the runner binds the gateway the way the headless installer
 does: `gateway` is the `NANOCLAW_GATEWAY_PROVIDER` stamp `installGateway` wrote

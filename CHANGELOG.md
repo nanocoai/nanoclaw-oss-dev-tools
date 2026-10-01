@@ -111,6 +111,9 @@ milestone and is not yet released.
   (`--gateway`, default the revision's default gateway), reports
   `auth_gateway` and a null `auth_input_key`, and `wizard-run.py` passes its
   `--gateway` through and stops requiring a logged auth choice for it.
+  `exe-run.sh --interactive` passes `--gateway` to its local discovery too.
+  Claude `oauth` passed the exe.dev wizard on nanoclaw `1778edc0` under
+  OneCLI and Iron Proxy.
 - Find Node, pnpm and OneCLI installed by the wizard in `~/.local/bin` (or pnpm
   in npm's global prefix) during post-wizard provider verification. The child
   wizard's PATH changes do not propagate to the parent harness.
