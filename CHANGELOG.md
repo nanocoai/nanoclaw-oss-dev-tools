@@ -11,7 +11,7 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.12.2); supersedes the unreleased 0.11.0
+Development milestone (plugin 0.12.3); supersedes the unreleased 0.11.0
 milestone and is not yet released.
 
 ### Added
@@ -115,6 +115,14 @@ milestone and is not yet released.
   credential file, or one without an `sk-ant-` value, before creating a VM or
   guest; `e2e-install.sh` checks it before handing it to the gateway. The
   value is never printed.
+- `NANOCLAW_E2E_FORCE_AUTH=1` replaces the vault's Anthropic credential as
+  documented. It used to add another `anthropic` secret beside the old one on
+  both the gateway seam and the legacy `auth --create --force` path, and
+  OneCLI kept using an older one, so a rerun with a good key still failed with
+  "Invalid API key". The installer now creates the new secret, checks that it
+  is listed, then deletes the older `anthropic` secrets for
+  `api.anthropic.com`. It also stops any running container that mounts the
+  checkout's `groups/e2e-agent`, so the ping does not reuse the old session.
 - `provider-options.py --provider claude` works on gateway-seam refs again
   (nanocoai/nanoclaw `d5c7cccc` onward). Claude's auth picker moved from
   `setup/auto.ts` into each gateway skill's `scripts/auth.ts` and is no longer

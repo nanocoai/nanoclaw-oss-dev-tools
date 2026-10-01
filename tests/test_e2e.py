@@ -645,6 +645,10 @@ if "--step" in args:
         print("step returned without a status")
         sys.exit(0)
     status = "success"
+    if name == "auth" and "--create" in args and os.environ.get("MOCK_ONECLI_VAULT"):
+        import subprocess
+        subprocess.run(["onecli", "secrets", "create", "--type", "anthropic", "--value",
+                        args[args.index("--value") + 1], "--host-pattern", "api.anthropic.com"], check=True)
     if name == "auth" and "--check" in args:
         status = os.environ.get("MOCK_AUTH_STATUS", "success")
     if os.environ.get("MOCK_FAIL_STEP") == name:
@@ -660,6 +664,11 @@ if "--step" in args:
         print("GATEWAY: " + installed)
     print("=== END ===")
     sys.exit(int(os.environ.get("MOCK_STEP_RC", "0")))
+if "chat" in args and os.environ.get("MOCK_STALE_CONTAINER_STOPPED"):
+    from pathlib import Path
+    if not Path(os.environ["MOCK_STALE_CONTAINER_STOPPED"]).exists():
+        print("Invalid API key")
+        sys.exit(0)
 if "chat" in args:
     if os.environ.get("MOCK_OUTBOUND"):
         import json, sqlite3
@@ -1028,6 +1037,67 @@ with socket.socket(socket.AF_UNIX) as sock:
         self.assertNotEqual(run.returncode, 0)
         self.assertNotIn("--create", calls.read_text())
 
+    # OneCLI vault: `secrets create` appends a new id, `secrets delete --id`
+    # removes one; MOCK_ONECLI_CREATE_NOOP / MOCK_ONECLI_DELETE_NOOP make them
+    # exit 0 without changing the vault.
+    def fake_onecli(self, secrets):
+        onecli_calls = self.root / "onecli-calls"
+        vault = self.root / "onecli-vault.json"
+        vault.write_text(json.dumps(secrets))
+        self.executable("onecli", PYTHON + r'''
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["MOCK_ONECLI_CALLS"], "a") as calls:
+    calls.write(repr(args) + "\n")
+vault = Path(os.environ["MOCK_ONECLI_VAULT"])
+data = json.loads(vault.read_text())
+if args[:2] == ["secrets", "list"]:
+    print(json.dumps({"data": data}))
+elif args[:2] == ["secrets", "create"] and not os.environ.get("MOCK_ONECLI_CREATE_NOOP"):
+    value = args[args.index("--value") + 1] if "--value" in args else os.environ.get("MOCK_AUTH_VALUE")
+    data.append({"id": "new%d" % len(data), "name": "Anthropic", "type": "anthropic",
+                 "hostPattern": args[args.index("--host-pattern") + 1], "value": value})
+elif args[:2] == ["secrets", "delete"] and not os.environ.get("MOCK_ONECLI_DELETE_NOOP"):
+    data = [s for s in data if s["id"] != args[args.index("--id") + 1]]
+vault.write_text(json.dumps(data))
+sys.exit(0)
+''')
+        self.env.update(MOCK_ONECLI_CALLS=str(onecli_calls), MOCK_ONECLI_VAULT=str(vault))
+        return onecli_calls
+
+    def vault(self):
+        return json.loads((self.root / "onecli-vault.json").read_text())
+
+    # Two running agent containers: c0ffee (left by an earlier run of this
+    # checkout, so its session holds the old credential) and beef (not this
+    # checkout's agent). The ping fails until c0ffee stops.
+    def fake_docker(self):
+        docker_calls = self.root / "docker-calls"
+        stopped = self.root / "stale-container-stopped"
+        self.executable("docker", PYTHON + r'''
+import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["MOCK_DOCKER_CALLS"], "a") as calls:
+    calls.write(repr(args) + "\n")
+# The bind source as the host passed it: MOCK_AGENT_SOURCE, else the resolved path.
+group = os.environ.get("MOCK_AGENT_SOURCE") or os.path.realpath(os.environ["MOCK_CHECKOUT"] + "/groups/e2e-agent")
+# beef is a backup job reading this checkout's group folder, not an agent.
+mounts = {"c0ffee": [group + " -> /workspace/agent", "/elsewhere/data -> /workspace"],
+          "beef": [group + " -> /backup", "/other/install/groups/e2e-agent -> /workspace/agent"]}
+if args[:2] == ["ps", "-q"]:
+    print("c0ffee\nbeef")
+elif args[:1] == ["inspect"]:
+    print("\n".join(mounts[args[-1]]))
+elif args[:1] == ["stop"] and "c0ffee" in args:
+    Path(os.environ["MOCK_STALE_CONTAINER_STOPPED"]).write_text("")
+sys.exit(0)
+''')
+        self.env.update(MOCK_DOCKER_CALLS=str(docker_calls), MOCK_CHECKOUT=str(self.checkout),
+                        MOCK_STALE_CONTAINER_STOPPED=str(stopped))
+        return docker_calls
+
     # ── Gateway seam (nanocoai/nanoclaw#3815 onward): setup/gateways/ replaces the
     # onecli and auth steps with `gateway <kind>` and `gateway-auth <provider>`.
     def gateway_seam(self, vault_has_secret=False):
@@ -1035,25 +1105,8 @@ with socket.socket(socket.AF_UNIX) as sock:
         (self.checkout / "setup/gateways/step.ts").write_text("export async function run() {}\n")
         calls = self.root / "step-calls"
         self.env["MOCK_STEP_CALLS"] = str(calls)
-        onecli_calls = self.root / "onecli-calls"
-        created = self.root / "onecli-created"
-        if vault_has_secret:
-            created.write_text("")
-        self.executable("onecli", PYTHON + r'''
-import json, os, sys
-from pathlib import Path
-args = sys.argv[1:]
-with open(os.environ["MOCK_ONECLI_CALLS"], "a") as calls:
-    calls.write(repr(args) + "\n")
-created = Path(os.environ["MOCK_ONECLI_CREATED"])
-if args[:2] == ["secrets", "list"]:
-    data = [{"id": "s1", "name": "Anthropic", "type": "anthropic"}] if created.exists() else []
-    print(json.dumps({"data": data}))
-elif args[:2] == ["secrets", "create"]:
-    created.write_text("")
-sys.exit(0)
-''')
-        self.env.update(MOCK_ONECLI_CALLS=str(onecli_calls), MOCK_ONECLI_CREATED=str(created))
+        onecli_calls = self.fake_onecli(
+            [{"id": "s1", "name": "Anthropic", "type": "anthropic"}] if vault_has_secret else [])
         # A host with a real systemctl but no user manager (CI) must not turn
         # the service-environment inspection into a failure of every seam test.
         self.executable("systemctl", PYTHON + r'''
@@ -1117,6 +1170,92 @@ sys.exit(0)
         self.assertEqual(self.result()["gateway"], "iron-proxy")
         self.assertIs(self.result()["gateway_seam"], True)
         self.assertIn("GATEWAY: iron-proxy", run.stdout)
+
+    # Duplicates from earlier FORCE_AUTH runs, plus secrets that are not ours.
+    STALE_VAULT = [
+        {"id": "old1", "name": "Anthropic", "type": "anthropic", "hostPattern": "api.anthropic.com"},
+        {"id": "old2", "name": "Anthropic", "type": "anthropic", "hostPattern": "api.anthropic.com"},
+        {"id": "proxy", "name": "Anthropic proxy", "type": "anthropic", "hostPattern": "llm.example.invalid"},
+        {"id": "gh", "name": "GitHub", "type": "generic", "hostPattern": "api.github.com"},
+    ]
+
+    def test_gateway_seam_force_auth_replaces_every_old_anthropic_secret(self):
+        _, onecli_calls = self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT)
+        docker_calls = self.fake_docker()
+        self.env["NANOCLAW_E2E_FORCE_AUTH"] = "1"
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(sorted(s["id"] for s in self.vault()), ["gh", "new4", "proxy"])
+        self.assertEqual(next(s["value"] for s in self.vault() if s["id"] == "new4"), "sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
+        calls = onecli_calls.read_text()
+        self.assertLess(calls.index("'secrets', 'create'"), calls.index("'secrets', 'delete'"))
+        self.assertIn("['stop', 'c0ffee']", docker_calls.read_text())
+        self.assertNotIn("beef", "".join(l for l in docker_calls.read_text().splitlines() if "'stop'" in l))
+        self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
+        self.assertEqual(self.result()["status"], "pass")
+        self.assertEqual(self.result()["ping"], "ok")
+
+    def test_gateway_seam_force_auth_keeps_the_old_secret_when_create_adds_none(self):
+        self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        self.env.update(NANOCLAW_E2E_FORCE_AUTH="1", MOCK_ONECLI_CREATE_NOOP="1")
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("no new anthropic secret is listed", run.stderr)
+        self.assertEqual([s["id"] for s in self.vault()], ["old1"])
+
+    def test_gateway_seam_without_force_auth_deletes_nothing_and_stops_nothing(self):
+        _, onecli_calls = self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT)
+        docker_calls = self.fake_docker()
+        del self.env["MOCK_STALE_CONTAINER_STOPPED"]
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("'secrets', 'delete'", onecli_calls.read_text())
+        self.assertEqual(len(self.vault()), len(self.STALE_VAULT))
+        self.assertNotIn("'stop'", docker_calls.read_text() if docker_calls.exists() else "")
+
+    def test_gateway_seam_force_auth_fails_when_an_old_secret_survives_delete(self):
+        self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        self.env.update(NANOCLAW_E2E_FORCE_AUTH="1", MOCK_ONECLI_DELETE_NOOP="1")
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("old1 exited 0 but the secret is still listed", run.stderr)
+
+    def test_force_auth_finds_the_stale_container_through_a_symlinked_group_folder(self):
+        self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        docker_calls = self.fake_docker()
+        state = self.root / "agent-state"
+        state.mkdir()
+        (self.checkout / "groups").mkdir()
+        (self.checkout / "groups/e2e-agent").symlink_to(state)
+        self.env["NANOCLAW_E2E_FORCE_AUTH"] = "1"
+        # The installer runs through an alias of the checkout; the host started
+        # the container through the physical checkout path, which matches
+        # neither the alias nor the fully resolved group folder.
+        alias = self.root / "alias"
+        alias.symlink_to(self.checkout)
+        self.env["NANOCLAW_E2E_ROOT"] = str(alias)
+        self.env["MOCK_AGENT_SOURCE"] = os.path.realpath(self.checkout) + "/groups/e2e-agent"
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("['stop', 'c0ffee']", docker_calls.read_text())
+
+    def test_legacy_force_auth_replaces_the_old_anthropic_secret(self):
+        self.fake_onecli(self.STALE_VAULT[:2])
+        docker_calls = self.fake_docker()
+        key = self.root / "credential"
+        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
+        self.env.update(NANOCLAW_E2E_FORCE_AUTH="1", NANOCLAW_E2E_KEY_FILE=str(key))
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual([(s["id"], s["value"]) for s in self.vault()], [("new2", "sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")])
+        self.assertIn("['stop', 'c0ffee']", docker_calls.read_text())
+        self.assertEqual(self.result()["ping"], "ok")
+        self.assertIs(self.result()["gateway_seam"], False)
 
     def test_gateway_seam_api_key_uses_only_the_api_key_variable(self):
         calls, _ = self.gateway_seam()

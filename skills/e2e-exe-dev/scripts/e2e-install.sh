@@ -25,7 +25,10 @@
 #   NANOCLAW_E2E_KEEP_AGENT    1 (default) keeps the e2e agent so `verify` sees
 #                              a registered group; 0 deletes it after the ping
 #   NANOCLAW_E2E_FORCE_AUTH    1 replaces an existing vault secret with the key
-#                              file (token rotation on a --base VM)
+#                              file (token rotation on a --base VM): the new
+#                              secret is created, the old anthropic ones are
+#                              deleted, and a running e2e agent container is
+#                              stopped so the ping starts a fresh session
 #   NANOCLAW_E2E_GATEWAY      gateway kind on the gateway seam (setup/gateways/):
 #                             onecli (default) or iron-proxy; refs without the
 #                             seam accept only onecli. result.json records the
@@ -247,6 +250,42 @@ ok = any(s.get("type") == "anthropic" or re.search("anthropic", s.get("name") or
 sys.exit(0 if ok else 1)
 ' 2>/dev/null
 }
+# IDs of the vault's anthropic secrets for api.anthropic.com, one per line.
+onecli_anthropic_secret_ids() {
+  local listing
+  listing="$(onecli secrets list 2>/dev/null)" || return 1
+  printf '%s' "$listing" | python3 -c '
+import json, sys
+for s in json.load(sys.stdin).get("data", []) or []:
+    host = (s.get("hostPattern") or "api.anthropic.com").lower()
+    if s.get("type") == "anthropic" and host == "api.anthropic.com" and s.get("id"):
+        print(s["id"])
+'
+}
+# Neither `onecli secrets create` nor setup/auth.ts --force replaces a secret,
+# and OneCLI keeps injecting an older duplicate. Delete the IDs listed before
+# the create only after it succeeded, so the vault is never left empty.
+REPLACED_SECRET_IDS=""
+delete_replaced_secrets() {
+  local id old current fresh=false
+  [ -n "$REPLACED_SECRET_IDS" ] || return 0
+  old=" $(printf '%s' "$REPLACED_SECRET_IDS" | tr '\n' ' ') "
+  current="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
+  for id in $current; do
+    case "$old" in *" $id "*) ;; *) fresh=true ;; esac
+  done
+  [ "$fresh" = true ] || die "no new anthropic secret is listed; the old one was kept"
+  for id in $REPLACED_SECRET_IDS; do
+    say "onecli secrets delete --id $id (replaced)"
+    onecli secrets delete --id "$id" >/dev/null 2>>"$LOGS/onecli-secrets.err" \
+      || die "onecli secrets delete --id $id failed (see $LOGS/onecli-secrets.err)"
+  done
+  current="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
+  for id in $current; do
+    case "$old" in *" $id "*) die "onecli secrets delete --id $id exited 0 but the secret is still listed" ;; esac
+  done
+  [ -n "$current" ] || die "no anthropic secret is listed after replacing the old one"
+}
 field() {
   printf '%s' "$LAST_BLOCK" | awk -v k="$1: " 'index($0, k)==1 {print substr($0, length(k)+1)}' | tail -n1
 }
@@ -368,12 +407,14 @@ if [ "$SEAM_PRESENT" = true ]; then
       if [ "$STATUS" = missing ] || [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ]; then
         [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
         check_key_file
+        REPLACED_SECRET_IDS="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
         say "onecli secrets create --name Anthropic --type anthropic --value <redacted> --host-pattern api.anthropic.com"
         # The value rides argv into onecli for one process (visible to ps). Disposable VMs only.
         onecli secrets create --name Anthropic --type anthropic --value "$(tr -d '\r\n' < "$KEY_FILE")" \
           --host-pattern api.anthropic.com >/dev/null 2>"$LOGS/onecli-secrets.err" \
           || die "onecli secrets create failed (see $LOGS/onecli-secrets.err)"
         onecli_has_anthropic_secret || die "onecli secrets create reported success but no anthropic secret is listed"
+        delete_replaced_secrets
       fi
       step gateway-auth claude || die "gateway-auth claude failed" ;;
     iron-proxy)
@@ -425,8 +466,10 @@ else
   if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ] && [ "$STATUS" = "success" ]; then
     [ -r "$KEY_FILE" ] || die "NANOCLAW_E2E_FORCE_AUTH=1 but $KEY_FILE is unreadable"
     check_key_file
+    REPLACED_SECRET_IDS="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
     step auth --create --force --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create --force failed"
     [ "$STATUS" = "success" ] || die "auth --create --force reported $STATUS"
+    delete_replaced_secrets
   elif [ "$STATUS" = "missing" ]; then
     [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
     check_key_file
@@ -491,6 +534,31 @@ if [ "$GATEWAY_SEAM" = true ] && [[ "$SERVICE_TYPE" = systemd-* ]] && command -v
   if [ -n "$SERVICE_GATEWAY" ] && [ "$SERVICE_GATEWAY" != "$REQUESTED_GATEWAY" ]; then
     GATEWAY="$SERVICE_GATEWAY"
     die "the service environment selects gateway '$SERVICE_GATEWAY', not the installed '$REQUESTED_GATEWAY'; clear NANOCLAW_GATEWAY_PROVIDER from the systemd environment"
+  fi
+fi
+
+# An agent container that is still running keeps the session it started with
+# the old credential, and the ping would reuse it. Container names differ by
+# ref (nanoclaw-v2-<folder>-<ms>, later ncl-<install>-<session>); every ref
+# mounts this checkout's group folder at /workspace/agent, which also leaves
+# other installs on the same Docker daemon alone. Docker keeps the source as
+# the host passed it, so compare the logical, physical-checkout and fully
+# resolved forms. A container that exits
+# between ps and inspect needs no stop.
+if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ]; then
+  RUNNING_CONTAINERS="$(docker ps -q)" || die "docker ps failed"
+  AGENT_MOUNTS="$(printf '%s\n' "$ROOT/groups/e2e-agent" "$(pwd -P)/groups/e2e-agent" \
+    "$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$ROOT/groups/e2e-agent")" \
+    | sed 's|$| -> /workspace/agent|')"
+  STALE_CONTAINERS=""
+  for id in $RUNNING_CONTAINERS; do
+    MOUNTS="$(docker inspect --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' "$id" 2>/dev/null)" || continue
+    if grep -qxF -f <(printf '%s\n' "$AGENT_MOUNTS") <<<"$MOUNTS"; then STALE_CONTAINERS="$STALE_CONTAINERS $id"; fi
+  done
+  if [ -n "$STALE_CONTAINERS" ]; then
+    say "stopping e2e agent container(s) started before the credential was replaced:$STALE_CONTAINERS"
+    # shellcheck disable=SC2086
+    docker stop $STALE_CONTAINERS >/dev/null || die "docker stop failed for the old e2e agent container"
   fi
 fi
 
