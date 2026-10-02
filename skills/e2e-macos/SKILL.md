@@ -166,7 +166,9 @@ The shared installer drives bootstrap, environment, OneCLI/auth, image build,
 mount configuration, timezone, CLI-agent creation, the model ping, and final
 NanoClaw verification. The Mac-specific service helper builds the host, stamps
 the upgrade marker through NanoClaw's CLI, asks NanoClaw for its actual service
-label, and creates only that checkout's LaunchAgent.
+label, and creates only that checkout's LaunchAgent. It refuses a checkout
+whose HEAD moved past the tested commit by anything other than setup's own
+`setup: apply <skill>` commits.
 
 This deliberately replaces the **service setup step** for this test workflow:
 NanoClaw's normal `setup/service.ts` may clean up unhealthy/dead peer services

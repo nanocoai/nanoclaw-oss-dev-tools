@@ -177,6 +177,26 @@ class EvidenceTests(unittest.TestCase):
         local, result = self.collect(remote, code=1)
         self.assertEqual((result["gateway"], result["gateway_seam"]), ("iron-proxy", False))
 
+    def commit_on_top(self, message):
+        (self.root / "applied.txt").write_text(message + "\n")
+        subprocess.run(["git", "add", "applied.txt"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", message], cwd=self.root, check=True)
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+    def test_setup_commits_after_the_tested_commit_are_exported(self):
+        head = self.commit_on_top("setup: apply add-onecli")
+        local, result = self.collect(self.export())
+        self.assertEqual((result["status"], result["commit"]), ("pass", self.commit))
+        state = json.loads((local / "runtime-state.json").read_text())
+        self.assertEqual((state["nanoclaw_commit"], state["checkout_head"]), (self.commit, head))
+
+    def test_any_other_commit_after_the_tested_commit_fails_export(self):
+        self.commit_on_top("fix: edited after the run")
+        with self.assertRaises(evidence.EvidenceError) as caught:
+            self.export()
+        self.assertEqual(caught.exception.code, "result-identity-mismatch")
+        self.assertFalse((Path(self.temporary.name) / "remote-sanitized").exists())
+
     def test_failed_run_is_preserved_with_pending_triage(self):
         self.write_result("failed", 2)
         remote = self.export()
