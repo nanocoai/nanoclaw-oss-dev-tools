@@ -19,13 +19,58 @@ def checked(args, *, capture=False):
     return result.stdout.strip() if capture else None
 
 
+# Kept identical to the copy in e2e-exe-dev/scripts/e2e-evidence.py (tests/test_setup_commits.py).
+def only_setup_commits_since(root, tested, head):
+    """HEAD is the tested commit, or it plus only NanoClaw setup's own commits.
+
+    Setup commits each skill apply unsigned, as one line "setup: apply <skill>"
+    with one parent, under the identity `git commit` uses in this checkout
+    (setup sets "NanoClaw setup <setup@nanoclaw.invalid>" when there is none).
+    Raw objects are read, so grafts and replace refs cannot rewrite the chain.
+    """
+    sha = re.compile(r"[a-f0-9]{40}")
+    if not (isinstance(tested, str) and isinstance(head, str)
+            and sha.fullmatch(tested) and sha.fullmatch(head)):
+        return False
+    if tested == head:
+        return True
+
+    def git(*args):
+        result = subprocess.run(["git", "--no-replace-objects", *args], cwd=root,
+                                capture_output=True, timeout=15)
+        if result.returncode:
+            raise ValueError("git " + args[0] + " failed")
+        return result.stdout
+
+    try:
+        expected = [rb"tree [a-f0-9]{40}", rb"parent [a-f0-9]{40}"] + [
+            role + b" " + re.escape(git("var", variable).strip().rsplit(b" ", 2)[0]) + rb" \d+ [+-]\d{4}"
+            for role, variable in ((b"author", "GIT_AUTHOR_IDENT"), (b"committer", "GIT_COMMITTER_IDENT"))]
+        commit = head
+        for _ in range(100):  # an install makes a handful of setup commits
+            header, _, message = git("cat-file", "commit", commit).partition(b"\n\n")
+            lines = header.split(b"\n")
+            if (len(lines) not in (4, 5)
+                    or not all(re.fullmatch(pattern, line) for pattern, line in zip(expected, lines))
+                    or (len(lines) == 5 and not re.fullmatch(rb"encoding [!-~]+", lines[4]))
+                    or not re.fullmatch(rb"setup: apply [^\x00-\x20\x7f][^\x00-\x1f\x7f]*\n?", message)):
+                return False
+            commit = lines[1][len(b"parent "):].decode()
+            if commit == tested:
+                return True
+        return False
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
 def install():
     root = Path.cwd().resolve()
     private = root / ".git/nanoclaw-e2e"
     owner = json.loads((private / "run.json").read_text())
     if (owner.get("run_id") != os.environ.get("NANOCLAW_E2E_RUN_ID")
             or owner.get("root") != str(root)
-            or checked(["git", "rev-parse", "HEAD"], capture=True) != owner.get("commit")):
+            or not only_setup_commits_since(root, owner.get("commit"),
+                                            checked(["git", "rev-parse", "HEAD"], capture=True))):
         raise ValueError("checkout ownership or commit changed")
     if sys.platform != "darwin" or os.getuid() == 0:
         raise ValueError("a non-root macOS user is required")

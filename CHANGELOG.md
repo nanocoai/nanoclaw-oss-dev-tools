@@ -11,7 +11,7 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.12.4); supersedes the unreleased 0.11.0
+Development milestone (plugin 0.12.5); supersedes the unreleased 0.11.0
 milestone and is not yet released.
 
 ### Added
@@ -129,6 +129,18 @@ milestone and is not yet released.
   other text passed, the extra text was stored with the key, and
   `NANOCLAW_E2E_FORCE_AUTH=1` then deleted the working old secret. A file over
   64 KiB is refused.
+- The exe.dev evidence export and the macOS service helper accept NanoClaw
+  setup's own commits after the tested commit. Setup is gaining one commit per
+  skill apply (`setup: apply <skill>`, nanocoai/nanoclaw#3997), which moves
+  HEAD during the install, so every exe.dev export would exit 74 with
+  `result-identity-mismatch` and every macOS run would stop at the service
+  step. HEAD is accepted only when every commit between it and the tested
+  commit is what setup writes: unsigned, one parent, the single line
+  `setup: apply <skill>`, authored and committed by the identity `git commit`
+  uses in that checkout (setup sets `NanoClaw setup <setup@nanoclaw.invalid>`
+  when there is none). Raw commit objects are read, so grafts and replace refs
+  cannot hide another commit. Anything else still fails. `runtime-state.json`
+  records the accepted `checkout_head`.
 - `provider-options.py --provider claude` works on gateway-seam refs again
   (nanocoai/nanoclaw `d5c7cccc` onward). Claude's auth picker moved from
   `setup/auto.ts` into each gateway skill's `scripts/auth.ts` and is no longer

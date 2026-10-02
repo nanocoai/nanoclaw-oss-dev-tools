@@ -224,7 +224,10 @@ Read a credential only after the operator chooses its matching method.
    The evidence binds the run ID, NanoClaw SHA, provider, auth method, provider
    auth-source SHA, gateway kind, dev-tools SHA when available, and exact
    harness digest; an installer result naming a different gateway fails the
-   export and keeps the VM. A driver-only failure report has a null `gateway`. It
+   export and keeps the VM. The checkout's HEAD must be the tested SHA, or that
+   SHA plus only setup's own `setup: apply <skill>` commits (recorded as
+   `checkout_head`); any other commit fails the export.
+   A driver-only failure report has a null `gateway`. It
    includes checksummed setup/runtime logs and a service/container/socket state
    snapshot. Otherwise the driver records the driver
    failure, exit code, phase and requested ref/commit; `commit` is null because
