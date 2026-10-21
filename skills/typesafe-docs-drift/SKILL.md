@@ -1,17 +1,17 @@
 ---
 name: typesafe-docs-drift
-description: Detect and rank drift between the NanoClaw code and the nanoclaw-docs Mintlify portal with the TypeSafe System One decision API. Deterministic code extracts facts (ncl verbs and flags, environment variables, container_configs and cli_scope, workspace skills, gateway selection, timestamp rules), lexical search picks candidate doc sections, and one fan-out request per fact x section asks contradicts / covers / staleness. Prints DRIFT, MISSING, UNSURE and OK rows with the model's numbers; writes nothing to either repository. Use to find doc pages that need a fix, or replay the offline fixture without a key.
+description: Detect and rank drift between the NanoClaw code and the nanoclaw-docs Mintlify portal with the TypeSafe System One decision API. Deterministic code extracts facts (ncl verbs and flags, environment variables, container_configs and cli_scope, workspace skills, gateway selection, timestamp rules), lexical search picks candidate doc sections, and one fan-out request per fact x section asks contradicts / covers / staleness. Prints DRIFT, MISSING, UNSURE and OK rows with the model's numbers; writes nothing to either repository. The release gate (docs-drift-gate.py) adds the pull requests merged since the last stable tag that touch files the docs cite and never name them, the verified-against stamp check, a baseline for decided rows, and per-page briefs. Use to find doc pages that need a fix at a release, or replay the offline fixture without a key.
 license: MIT
 ---
 
-# TypeSafe docs drift (phase 1)
+# TypeSafe docs drift (phase 1) and the release gate
 
 Extract facts from a NanoClaw checkout with deterministic code, find the top
 doc sections for each fact by lexical search over the docs portal, ask TypeSafe
 one fan-out request per fact x section pair, gate on the answers, and print a
 ranked drift report. The model only judges; it never writes text. Phase 2 (an
-agent writing doc PRs from confirmed `DRIFT` rows) consumes the JSON this
-script saves.
+agent writing doc PRs) consumes the JSON this script saves and the briefs the
+[release gate](#release-gate) writes from it.
 
 Entry point: [typesafe-docs-drift.py](scripts/typesafe-docs-drift.py) (Python
 3.10+, standard library only). Offline fixture:
@@ -86,6 +86,54 @@ gateway,timestamps`), `--limit-facts`, `--top-k` (3), `--include-changelog`,
 `--model`, `--timeout`, `--json`, `--strict` (exit 1 when any pair failed after
 retries; by default failures are listed under `partial` and the exit status is 0).
 
+## Release gate
+
+[docs-drift-gate.py](scripts/docs-drift-gate.py) is what to run when a NanoClaw
+release is cut. It clones the release and the docs into a scratch directory
+(URLs or local paths; neither source is changed) and writes a run directory
+with `digest.md`, `gate.json` and one brief per page that needs work.
+
+```bash
+export TYPESAFE_API_KEY=...   # this shell only; or use --no-model / --fixture
+python3 skills/typesafe-docs-drift/scripts/docs-drift-gate.py \
+  --release v2026.10.1-rc.1 --baseline ~/path/to/docs-drift-baseline.json
+```
+
+It runs three checks:
+
+1. **Pull request queue** (free). Pull requests merged since the previous
+   stable tag (`--since` to override) that change a file some docs page cites,
+   minus those whose number (four digits or more) the docs history or pages
+   already name, and minus CI, test and release chores (a `!` breaking marker
+   keeps a change in). A page is hit only by a change merged after the stamp
+   that cites the file: a stamped commit that already contains the pull request
+   was verified with it in place. This is the list to work from; pages are
+   ranked by how many of a pull request's files they cite.
+2. **Stamp staleness** (free). Each `{/* verified-against: ... @ <sha> */}`
+   anchor is diffed against the release. On a busy tree most pages come out
+   stale, so `gate.json` keeps the full map and the digest only counts it.
+   Anchors whose SHA is not in the NanoClaw repository (the templates repo, a
+   rewritten branch) are listed for a manual look.
+3. **Detector** (the phase-1 script, needs the key unless `--fixture`). A
+   DRIFT row whose best section never mentions the fact's terms is demoted to
+   UNSURE. `--baseline` holds rows a person already decided:
+   `{"entries": [{"fact": "env:X", "status": "held|false-positive|accepted", "reason": "...", "section": "optional#id"}]}`.
+   An entry with a `section` holds only that section's DRIFT pair, so a second
+   drifting section is still raised. A partial detector run is reported, and
+   fails a `--strict` gate (exit 2).
+
+Read `digest.md` first, then work the briefs in order as stacked **draft** docs
+PRs: each brief lists the pull requests, the cited files they changed, the
+detector rows and the docs repo's rules. Nothing in a brief is generated prose.
+Bump a page's stamp only for claims re-verified at that SHA, and report product
+bugs found on the way instead of documenting around them.
+
+Flags: `--release` (required), `--since`, `--code-repo`, `--docs-repo`,
+`--docs-ref` (main), `--output-dir`, `--baseline`, `--fixture`, `--no-model`,
+`--max-briefs` (15), `--workdir`, `--keep`, `--json`, `--concurrency`,
+`--strict` with `--max-undocumented` (exit 1 on new DRIFT rows or a longer
+queue; the default exit status is 0). Exit 2 is an operational failure.
+
 ## Benchmark
 
 [drift-benchmark.py](scripts/drift-benchmark.py) compares TypeSafe with a
@@ -110,6 +158,17 @@ reports tokens and wall time.
 ## Limits
 
 - Detection only. Nothing is written to NanoClaw, nanoclaw-docs or GitHub.
+- Detector rows are model judgments. On the first live release run (rc.1, 2026-10-21)
+  none of four `DRIFT` rows was a docs error: three came from extractor bugs
+  (enums built from `[...CONSTANT]` read as empty, a raw empty default), now
+  fixed, and one from a SKILL.md description that the docs rightly contradict.
+  Check every row against the code before editing a page.
+- The detector covers six fact areas. Channel flows, setup behaviour and
+  lifecycle prose are only reachable through the pull request queue and the
+  stamps.
+- A pull request counts as documented when its number appears in the docs
+  history or pages; an open docs PR, or a page that describes the change
+  without the number, leaves it in the queue.
 - Candidate sections come from a small BM25 index over headings and
   paragraphs; a fact whose true home is not in its top-k sections shows as
   `MISSING` or `UNSURE`. Raise `--top-k` or read the `pairs` in the JSON.

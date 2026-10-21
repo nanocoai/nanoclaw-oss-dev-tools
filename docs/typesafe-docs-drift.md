@@ -134,7 +134,75 @@ use:
 
 `MISSING` rows list the closest section (highest `covers`) and are the input
 for a "document this" pass rather than a fix. Nothing in the payload is
-generated text; phase 2 writes the prose.
+generated text; phase 2 writes the prose. Result rows also carry the fact's
+`terms`.
+
+## Release gate
+
+`scripts/docs-drift-gate.py` wraps the detector for the moment a NanoClaw
+release is cut. Usage and flags are in the skill's `SKILL.md`; this section
+records how it works and what the first release run showed.
+
+**Why more than the detector.** The detector sees six fact areas. The docs
+sweep of 2026-10-09 fixed 143 findings, mostly channel flows, setup behaviour
+and lifecycle prose, which no extractor reaches. Every docs page already
+carries `verified-against: <files> @ <sha>` stamps, and every release is a list
+of merged pull requests, so the gate asks git two free questions first.
+
+**Pull request queue.** `git log --first-parent <previous stable tag>..<release>`
+lists the merged pull requests (squash commits and `Merge pull request`
+commits). For each, the files it changed (test files dropped) are matched
+against every path any page cites; a page is hit only when its stamp for that
+file does not already contain the pull request (`git merge-base
+--is-ancestor`). A pull request is `documented` when its
+number (four digits or more, so the docs repository's own numbers do not
+collide) appears in the docs history or pages, and `internal` when its title is
+a `ci`, `test`, `build`, `style`, `chore(release)` or `chore(deps)` change. The
+rest is the queue, ranked by how many pages cite the files it touched.
+
+**Stamp staleness.** A stamp body is split at each `@ <sha>` (optionally
+`@ channels branch <sha>`). The words before an anchor are expanded
+(`{a,b}` braces, nested), filtered to path-like tokens, and matched as an exact
+file, a directory prefix or a glob. For each anchor, `git diff --name-only
+<sha> <ref>` names the files that moved. The ref is the release; a hinted
+`channels` or `providers` branch is preferred; an anchor newer than the
+release is `ahead`; a SHA missing from the repository (another repository, a
+rewritten branch) is `unknown-anchor`. On a busy tree this flags nearly every
+page, so it is context for the queue, not a gate.
+
+**Detector rows.** The phase-1 payload is read in process. A `DRIFT` row whose
+best section never mentions any of the fact's terms is demoted to `UNSURE`. A
+baseline file holds rows a person decided (`held`, `false-positive`,
+`accepted`), matched by fact id and optionally section id, so a settled row is
+not raised again at the next release.
+
+**Extractor fixes from the first run.** Enums written as `[...CONSTANT]` were
+read as empty lists and compared with the docs as "accepts exactly these
+values: ." (`ncl approvals` `status`, `ncl messaging-groups`
+`unknown_sender_policy`); constants are now resolved from `src/`, and an enum
+that cannot be read is skipped. An env fact built from `process.env.X ||
+envConfig.X || ''` claimed "unset by default" although the real default is
+applied where the value is used (`NANOCLAW_ABSOLUTE_CEILING_MS`); an empty
+literal now makes no default claim. Skill facts carried the SKILL.md
+description as the claim, so a stale description (`/add-ollama-provider`) read
+as a docs error; they now assert existence only and keep the description as
+evidence.
+
+**First release run.** 2026-10-21, NanoClaw `v2026.10.1-rc.1` (`2dfe9376`)
+against nanoclaw-docs `main` (`0b86a2ab`):
+
+| | |
+|---|---|
+| Pull requests in `v2026.10.0..rc.1` | 43 merged; 35 touch a cited file; 8 already named in the docs; 5 CI or test chores; 22 to document |
+| Stamps | 52 of 55 pages cite a changed file; 11 anchors cannot be checked (other repositories, rewritten branches, two stamps with no path) |
+| Detector, before the fixes | 148 facts, 444 requests, 30 s: DRIFT 4, MISSING 1, UNSURE 6, OK 137 |
+| Detector, after the fixes | DRIFT 1, 0 and 1 on three runs (one 0.74 row the model scored differently each time; a baseline entry holds it), MISSING 1, UNSURE 5 to 7 |
+| Wall time, whole gate with the detector | about 50 s |
+
+All four first-run `DRIFT` rows were checked against the code and none needed
+a docs change (see the extractor fixes). The queue includes two merged pull
+requests whose docs follow-ups were already tracked by hand (#3980 and #4108),
+which is the check that it finds the real backlog.
 
 ## First live run
 

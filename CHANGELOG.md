@@ -16,6 +16,16 @@ milestone and is not yet released.
 
 ### Added
 
+- `docs-drift-gate.py` for `typesafe-docs-drift`, the release-day docs gate:
+  clones a NanoClaw release and the docs into a scratch directory and writes a
+  digest, `gate.json` and per-page briefs. It queues the pull requests merged
+  since the previous stable tag that touch files a docs page cites and that the
+  docs history and pages never name (CI, test and release chores counted, not
+  queued), maps every `verified-against` stamp against the release, runs the
+  detector with a term guard that demotes a DRIFT row whose best section never
+  mentions the fact, and holds decided rows back with a baseline file.
+  `--no-model` and `--fixture` run without the key; `--strict` with
+  `--max-undocumented` sets the exit status.
 - The exe.dev public-wizard driver forwards `--gateway onecli|iron-proxy` as
   `nanoclaw.sh --gateway-provider` on gateway-seam refs, adapts the bundled
   scenario to the seam (no `onecli` step; `auth` only for providers that log
@@ -93,6 +103,13 @@ milestone and is not yet released.
 
 ### Changed
 
+- `typesafe-docs-drift` extractor fixes from the first release run
+  (`v2026.10.1-rc.1`, where none of four DRIFT rows was a docs error): enums
+  written as `[...CONSTANT]` are resolved from `src/` and an unreadable enum is
+  skipped instead of asserted as empty; an empty raw default
+  (`process.env.X || envConfig.X || ''`) no longer claims "unset by default";
+  skill facts assert existence only and keep the SKILL.md description as
+  evidence. Result rows carry the fact's `terms`.
 - Headless installer follows NanoClaw's credential-gateway seam
   (nanocoai/nanoclaw#3815 onward): when the checkout has `setup/gateways/`,
   it runs `--step gateway <kind>` and `--step gateway-auth claude` instead of
