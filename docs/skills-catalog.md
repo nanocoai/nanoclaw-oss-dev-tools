@@ -371,7 +371,11 @@ merged since the last stable tag that touch files the docs cite and that the
 docs never name, checks every `verified-against` stamp, and runs the detector
 with a guard and a baseline for decided rows. Python 3.9 or newer; the key is
 needed only for the detector (`--no-model` and `--fixture` run without it).
-Writes nothing to either repository.
+Writes nothing to either repository. **Phase 2:**
+[docs-drift-fix.py](../skills/typesafe-docs-drift/scripts/docs-drift-fix.py) and
+[phase2.md](../skills/typesafe-docs-drift/references/phase2.md) prepare and check the agent loop that turns a gate run
+into verified docs edits (blind row verifier, drafter, blind proposal verifier, mechanical apply); it never calls a
+model. Decisions live in `docs/drift-baseline.json` in the docs repository.
 
 Validation: fixture replay through the full pipeline and the mocked tests in
 `tests/test_typesafe_docs_drift.py`, plus one live run on 2026-09-16 whose

@@ -204,6 +204,37 @@ a docs change (see the extractor fixes). The queue includes two merged pull
 requests whose docs follow-ups were already tracked by hand (#3980 and #4108),
 which is the check that it finds the real backlog.
 
+## Phase 2: verified docs edits
+
+`scripts/docs-drift-fix.py` and `references/phase2.md` turn a gate run into docs edits without letting one model's
+guess through. Code prepares every input and checks every output; three agent roles sit between: a **row verifier**
+(blind to the detector's numbers; a wrong DRIFT row is dropped before anyone drafts), a **drafter** (one per queued
+pull request and per kept row, answering with exact text replacements or `no_change`), and a **proposal verifier**
+(blind to the drafter's reasoning; CONFIRM, CONFIRM-WITH-CORRECTION or REJECT). `apply` then makes the kept
+replacements, all or nothing, in a docs worktree. A changed input moves its old verdict aside, a fix drafted from a row
+is dropped with its row, a missing or invalid proposal fails `check --strict`, and every verdict must carry the digest
+(`fingerprint`) of the exact input it read. The proof run below used the earlier revision of `check`, which tied a
+verdict to its input by content and timestamps rather than by digest; its verdicts and numbers are unchanged by that.
+
+**Proof run.** 2026-10-21, NanoClaw `v2026.10.1-rc.1` (`2dfe9376`, read-only worktree), docs cut from origin/main
+`0b86a2a`, Sonnet subagents for every agent role, one input file each:
+
+| | |
+|---|---|
+| Gate on real docs main | 148 facts, 444 requests, 0 DRIFT, 22 pull requests to document |
+| Gate on a scratch copy with one seeded error (`ASSISTANT_NAME` default changed) | 148 facts, DRIFT 2: the seeded error (0.95) and one model false positive (0.77) |
+| Row verifier | 6 rows in (the two above plus 4 replayed first-run rows): 1 REAL (the seeded error), 5 NOT-A-DOCS-ERROR; all 6 correct, 0 unverified |
+| Drafters | 5 queued pull requests: 3 changes (#4110: 2 edits, #4141: 1, #4139: 15 across 4 pages), 2 `no_change` (#4106, #4120); 1 kept row |
+| Proposal verifier | 4 proposals, 19 edits: 0 rejected; 8 edits corrected (7 of the 15 in #4139, the 1 row fix); 11 confirmed as drafted |
+| Applied | 3 stacked local commits for the queue (each `mint validate`; the last also `mint broken-links`), each with its Docs updates entry; the row fix applied to the scratch copy |
+| Agent tokens (harness-reported subagent totals) | about 1.42M: row verifiers 0.43M, drafters 0.61M, proposal verifiers 0.38M |
+| Detector tokens | about 0.65M in and 24k out per live run; TypeSafe reports no price |
+
+Two things to read from it. Drafting alone is not trustworthy: 8 of 19 edits needed a correction, which is the case for
+the second verifier. And the loop finds more than the detector row it started from: while fixing the seeded line the
+drafter and verifier found that `ASSISTANT_NAME` is deprecated and the host does not use it, so the sentence "also sets
+the default trigger" on the configuration and environment pages is wrong on current docs.
+
 ## First live run
 
 Run on 2026-09-16 22:29 UTC from this repository against nanocoai/nanoclaw

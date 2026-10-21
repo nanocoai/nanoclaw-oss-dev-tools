@@ -452,12 +452,16 @@ class RowTests(unittest.TestCase):
     def test_a_malformed_baseline_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "baseline.json"
-            for content in ('{"entries": [{"fact": "x", "status": "maybe"}]}', '{"entries": "x"}', "not json", '{"entries": [{"status": "held"}]}'):
+            for content in ('{"entries": [{"fact": "x", "status": "maybe"}]}', '{"entries": "x"}', "not json", '{"entries": [{"status": "held"}]}',
+                            '{"entries": [{"fact": "x", "pr": 5, "status": "held"}]}', '{"entries": [{"pr": true, "status": "held"}]}',
+                            '{"entries": [{"pr": "5", "status": "held"}]}', '{"entries": [{"fact": "x", "pr": null, "status": "held"}]}',
+                            '{"entries": [{"pr": [], "status": "held"}]}', '{"entries": [{"pr": 0, "status": "held"}]}',
+                            '{"entries": [{"fact": 5, "status": "held"}]}'):
                 path.write_text(content)
                 with self.assertRaises(gate.GateError):
                     gate.load_baseline(path)
-            path.write_text('{"entries": [{"fact": "x", "status": "held"}]}')
-            self.assertEqual(len(gate.load_baseline(path)), 1)
+            path.write_text('{"entries": [{"fact": "x", "status": "held"}, {"pr": 5, "status": "no-docs-needed"}]}')
+            self.assertEqual(len(gate.load_baseline(path)), 2)
             self.assertEqual(gate.load_baseline(None), [])
 
 
@@ -565,6 +569,35 @@ class CommandTests(Fixtures):
         code, out, _err = self.run_gate("--fixture", str(FIXTURE), "--strict", "--baseline", str(baseline), environ={"TYPESAFE_API_KEY": ""})
         self.assertEqual(code, 0)
         self.assertIn("held back 1", out)
+
+    def test_the_baseline_in_the_docs_repository_is_used_when_none_is_given(self):
+        import shutil
+        docs = self.work / "docs2"
+        shutil.copytree(self.docs, docs)
+        write(docs, "docs/drift-baseline.json", json.dumps({"entries": [{"pr": 1104, "status": "no-docs-needed", "reason": "x.sh wording only"}]}))
+        commit(docs, "docs: add the drift baseline")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        code = gate.main(["--release", "v1.1.0-rc.1", "--code-repo", str(self.code), "--docs-repo", str(docs), "--no-model",
+                          "--output-dir", str(self.work / "o5")], dict(os.environ), stdout, stderr)
+        self.assertEqual(code, 0)
+        data = json.loads((next((self.work / "o5").iterdir()) / "gate.json").read_text())
+        self.assertEqual((data["baseline"], data["prs"]["held"], data["prs"]["undocumented"]), ("docs/drift-baseline.json", 1, 1))
+        code, _out, _err = self.run_gate("--no-model")  # the unmodified docs repository has none
+        self.assertIsNone(json.loads((self.run_dir() / "gate.json").read_text())["baseline"])
+
+    def test_a_held_pull_request_leaves_the_queue_and_is_listed_as_held(self):
+        baseline = self.work / "baseline.json"
+        baseline.write_text(json.dumps({"entries": [{"pr": 1102, "status": "no-docs-needed", "reason": "internal rename"}]}))
+        code, out, _err = self.run_gate("--no-model", "--strict", "--max-undocumented", "1", "--baseline", str(baseline))
+        self.assertEqual(code, 0)  # 1104 is the only one left to document
+        self.assertIn("1 held, 1 to document", out)
+        run = self.run_dir()
+        digest = (run / "digest.md").read_text()
+        self.assertNotIn("| #1102 |", digest)
+        self.assertIn("- #1102 feat: change b (no-docs-needed): internal rename", digest)
+        data = json.loads((run / "gate.json").read_text())
+        self.assertEqual((data["prs"]["held"], data["prs"]["undocumented"]), (1, 1))
+        self.assertEqual({item["number"]: bool(item["baseline"]) for item in data["prs"]["items"]}[1102], True)
 
     def test_max_undocumented_gates_the_queue_under_strict(self):
         self.assertEqual(self.run_gate("--no-model", "--strict", "--max-undocumented", "5")[0], 0)

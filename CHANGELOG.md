@@ -26,6 +26,13 @@ milestone and is not yet released.
   mentions the fact, and holds decided rows back with a baseline file.
   `--no-model` and `--fixture` run without the key; `--strict` with
   `--max-undocumented` sets the exit status.
+- `docs-drift-fix.py` and `references/phase2.md` for `typesafe-docs-drift`: phase 2 of the docs loop. It prepares blind
+  inputs for a row verifier (a wrong DRIFT row is dropped before anyone drafts), drafter inputs per queued pull request
+  and per kept row, and blind inputs for a proposal verifier; it validates the agents' JSON, writes a keep/drop ledger,
+  and applies the kept exact-text replacements to a docs worktree (`apply --only` for one concern per commit). It never
+  calls a model, pushes or opens a PR.
+- The release gate reads decisions from `docs/drift-baseline.json` in the docs repository by default, and the baseline
+  accepts `{"pr": N, "status": "no-docs-needed"}` entries that hold a queued pull request.
 - The exe.dev public-wizard driver forwards `--gateway onecli|iron-proxy` as
   `nanoclaw.sh --gateway-provider` on gateway-seam refs, adapts the bundled
   scenario to the seam (no `onecli` step; `auth` only for providers that log

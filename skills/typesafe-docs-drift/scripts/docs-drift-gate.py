@@ -46,8 +46,9 @@ DEFAULT_DOCS_REPO = "https://github.com/glifocat/nanoclaw-docs.git"
 BRANCH_REFS = ("channels", "providers")
 GIT_TIMEOUT = 600
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+DOCS_BASELINE = "docs/drift-baseline.json"
 KEY_ENV = "TYPESAFE_API_KEY"
-BASELINE_STATUSES = ("held", "false-positive", "accepted")
+BASELINE_STATUSES = ("held", "false-positive", "accepted", "no-docs-needed")
 BRIEF_COMMIT_LIMIT = 12
 STAMP = re.compile(r"\{/\*\s*verified-against(.*?)\*/\}", re.S)
 ANCHOR = re.compile(r"@\s*(?:([A-Za-z][\w./-]*)\s+(?:branch\s+)?)?([0-9a-f]{7,40})\b")
@@ -483,8 +484,12 @@ def load_baseline(path):
     if not isinstance(entries, list):
         raise GateError('baseline %s must be {"entries": [...]}' % path)
     for entry in entries:
-        if not isinstance(entry, dict) or not entry.get("fact") or entry.get("status") not in BASELINE_STATUSES:
-            raise GateError("baseline entry needs a fact id and a status in %s: %r" % (", ".join(BASELINE_STATUSES), entry))
+        keyed = isinstance(entry, dict) and (
+            ("fact" in entry and "pr" not in entry and isinstance(entry["fact"], str) and bool(entry["fact"]))
+            or ("pr" in entry and "fact" not in entry and isinstance(entry["pr"], int) and not isinstance(entry["pr"], bool) and entry["pr"] > 0))
+        if not keyed or entry.get("status") not in BASELINE_STATUSES:
+            raise GateError("baseline entry needs a fact id or a pull request number (not both) and a status in %s: %r"
+                            % (", ".join(BASELINE_STATUSES), entry))
     return entries
 
 
@@ -498,7 +503,7 @@ def baseline_status(entries, row):
     An entry without a section holds the whole fact. One with a section holds only DRIFT pairs in that section,
     so a second drifting section stays open, and a pair the guard rejected needs no entry.
     """
-    matching = [entry for entry in entries if entry["fact"] == row["id"]]
+    matching = [entry for entry in entries if entry.get("fact") == row["id"]]
     drifting = drifting_pairs(row) if row["verdict"] == "DRIFT" else []
     if not matching:
         return None, drifting
@@ -553,7 +558,7 @@ def apply_guard(rows, section_text):
 
 
 def has_entry(entries, row):
-    return any(entry["fact"] == row["id"] for entry in entries)
+    return any(entry.get("fact") == row["id"] for entry in entries)
 
 
 def slim(row, **extra):
@@ -652,8 +657,8 @@ def render_digest(gate):
         "",
     ]
     if prs["base"]:
-        lines.append("- Pull requests in %s: %d. Touching files the docs cite: %d (named in the docs: %d, CI or test chores: %d, to document: %d)." % (
-            prs["range"], prs["total"], prs["touching"], prs["documented"], prs["internal"], prs["undocumented"]))
+        lines.append("- Pull requests in %s: %d. Touching files the docs cite: %d (named in the docs: %d, CI or test chores: %d, held by the baseline: %d, to document: %d)." % (
+            prs["range"], prs["total"], prs["touching"], prs["documented"], prs["internal"], prs["held"], prs["undocumented"]))
     else:
         lines.append("- Pull request queue skipped: no earlier stable tag found. Pass --since <tag>.")
     lines.append("- Stamps: %d of %d pages cite a file that changed since their stamp (full list in gate.json). %d anchors could not be checked." % (
@@ -667,7 +672,7 @@ def render_digest(gate):
     if rows.get("partial"):
         lines.append("- **Detector run was partial** (%s): its rows are incomplete." % rows["partial"])
     lines += ["", "## Pull requests to document", ""]
-    queue = [item for item in prs["items"] if not item["documented"] and not item["internal"]]
+    queue = [item for item in prs["items"] if not item["documented"] and not item["internal"] and not item["baseline"]]
     if not queue:
         lines.append("None.")
     else:
@@ -696,11 +701,15 @@ def render_digest(gate):
                   " Re-verify these by hand.", ""]
         for page, entry in unchecked:
             lines.append("- %s line %d: `%s` (%s)" % (page, entry["line"], entry["sha"], entry["status"]))
-    if rows["known"]:
+    held = [item for item in prs["items"] if item["baseline"]]
+    if rows["known"] or held:
         lines += ["", "## Held back by the baseline", ""]
         for row in rows["known"]:
             entry = row["baseline"]
             lines.append("- `%s` (%s): %s" % (row["id"], entry["status"], one_line(entry.get("reason", ""), 90)))
+        for item in held:
+            lines.append("- %s %s (%s): %s" % (pr_label(item), one_line(item["title"], 60), item["baseline"]["status"],
+                                              one_line(item["baseline"].get("reason", ""), 90)))
     lines += ["", "## What to do next", "",
               "1. Check each new DRIFT row against the code; hold the ones that are not docs errors.",
               "2. Work the briefs in order as stacked draft docs PRs (the docs repo's drift-sweep skill describes the loop).",
@@ -779,7 +788,8 @@ def parse_args(argv):
     parser.add_argument("--docs-repo", default=DEFAULT_DOCS_REPO, help="nanoclaw-docs repository URL or local path (cloned, never changed)")
     parser.add_argument("--docs-ref", default="main", help="docs ref to check (default: main)")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="where the run directory goes (default: the skill's gitignored output/gate)")
-    parser.add_argument("--baseline", help='JSON file {"entries": [{"fact", "status", "reason", "section"?}]} of decided detector rows')
+    parser.add_argument("--baseline", help='JSON file {"entries": [{"fact" or "pr", "status", "reason", "section"?}]} of decided rows and pull requests '
+                        '(default: %s in the docs repository, when it exists)' % DOCS_BASELINE)
     parser.add_argument("--fixture", help="replay recorded detector answers offline (no key, no network for the detector)")
     parser.add_argument("--no-model", action="store_true", help="skip the detector and the key; stamps and the pull request queue only")
     parser.add_argument("--concurrency", type=int, default=4, help="detector requests in flight (default 4)")
@@ -805,7 +815,7 @@ def summary_lines(gate, directory, briefs):
     detector = ("skipped (%s)" % rows["reason"] if rows["mode"] == "skipped" else
                 "%s, %d facts: new DRIFT %d, MISSING %d, UNSURE %d, held back %d" % (
                     rows["mode"], rows["facts"], counts["new_drift"], counts["new_missing"], counts["new_unsure"], counts["known"]))
-    queue = ("%d merged in %s, %d touch cited files, %d to document" % (prs["total"], prs["range"], prs["touching"], prs["undocumented"])
+    queue = ("%d merged in %s, %d touch cited files, %d held, %d to document" % (prs["total"], prs["range"], prs["touching"], prs["held"], prs["undocumented"])
              if prs["base"] else "skipped (no earlier stable tag; pass --since)")
     return [
         "Docs drift gate: %s (%s) against docs %s (%s)" % (
@@ -861,7 +871,11 @@ def main(argv=None, environ=None, stdout=None, stderr=None):
         label = "%s-%s" % (re.sub(r"[^\w.\-]+", "-", args.release), utc_now().strftime("%Y%m%dT%H%M%SZ"))
         run_dir = unique_dir(Path(args.output_dir), label)
         pages = evaluate_pages(detector, code_repo, docs_repo.path, code_sha)
-        entries = load_baseline(args.baseline)
+        baseline_path = args.baseline
+        shared = Path(docs_repo.path) / DOCS_BASELINE
+        if not baseline_path and shared.is_file() and DETECTOR.inside_checkout(docs_repo.path, shared):
+            baseline_path = shared  # decisions live in the docs repository, so a maintainer reviews them in a pull request
+        entries = load_baseline(baseline_path)
         base = args.since or previous_stable(code_repo, code_sha)
         base_sha = code_repo.commit(base) if base else None
         if args.since and not base_sha:
@@ -874,7 +888,10 @@ def main(argv=None, environ=None, stdout=None, stderr=None):
             prs = release_prs(code_repo, base_sha, code_sha)
             total = len(prs)
             items = build_queue(prs, pages, docs_mentions(docs_repo, docs_repo.path), code_repo)
-        undocumented = [item for item in items if not item["documented"] and not item["internal"]]
+        held_prs = {entry["pr"]: entry for entry in entries if "pr" in entry}
+        for item in items:
+            item["baseline"] = held_prs.get(item["number"]) if not item["documented"] else None
+        undocumented = [item for item in items if not item["documented"] and not item["internal"] and not item["baseline"]]
         for page in pages:
             hits = [item for item in undocumented if page["page"] in item["hits"]]
             page["queue"] = [item["number"] for item in hits]
@@ -888,7 +905,7 @@ def main(argv=None, environ=None, stdout=None, stderr=None):
         if payload:
             rows = [dict(row) for row in payload["results"]]
             demoted = apply_guard(rows, section_texts(detector, docs_repo.path))
-            new, known = classify_rows(rows, entries)
+            new, known = classify_rows(rows, [entry for entry in entries if "fact" in entry])
             facts = payload["summary"]["facts"]
         else:
             new, known, demoted, facts = [], [], 0, 0
@@ -906,9 +923,11 @@ def main(argv=None, environ=None, stdout=None, stderr=None):
             "release": {"ref": args.release, "sha": code_sha, "repo": public(args.code_repo)},
             "docs": {"ref": args.docs_ref, "sha": docs_sha, "repo": public(args.docs_repo)},
             "counts": counts,
+            "baseline": str(baseline_path) if args.baseline else (DOCS_BASELINE if baseline_path else None),
             "prs": {"base": base if base_sha else None, "range": "%s..%s" % (base, args.release) if base_sha else None,
                     "total": total, "touching": len(items), "documented": sum(1 for item in items if item["documented"]),
-                    "internal": sum(1 for item in items if item["internal"] and not item["documented"]),
+                    "internal": sum(1 for item in items if item["internal"] and not item["documented"] and not item["baseline"]),
+                    "held": sum(1 for item in items if item["baseline"]),
                     "undocumented": len(undocumented), "items": items},
             "pages": pages,
             "detector": {"mode": mode, "reason": "--no-model" if mode == "skipped" else None, "facts": facts,

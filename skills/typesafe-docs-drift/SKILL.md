@@ -134,6 +134,31 @@ Flags: `--release` (required), `--since`, `--code-repo`, `--docs-repo`,
 `--strict` with `--max-undocumented` (exit 1 on new DRIFT rows or a longer
 queue; the default exit status is 0). Exit 2 is an operational failure.
 
+## Phase 2 and the release routine
+
+[docs-drift-fix.py](scripts/docs-drift-fix.py) prepares and checks the agent loop that turns a gate run into
+verified docs edits; the roles, file formats and prompts are in
+[references/phase2.md](references/phase2.md). In short: blind inputs for each new DRIFT row, a verifier agent per
+row (a wrong row is dropped before anyone drafts), a drafter agent per queued pull request and per kept row, a blind
+verifier agent per proposal, and `apply`, which makes the kept exact-text replacements in a docs worktree. A person
+or agent then runs `mint validate` and makes one local, unsigned commit per concern, stacked. It never calls a model,
+pushes, or opens a PR.
+
+Decisions live in the docs repository: `docs/drift-baseline.json` is read by default. A `fact` entry holds a detector
+row; a `pr` entry (`{"pr": 4088, "status": "no-docs-needed", "reason": "..."}`) holds a queued pull request. Changing
+the file is an ordinary docs PR, so a maintainer reviews every decision.
+
+At each release, after the GitHub Release read-back:
+
+1. Run the gate (about a minute, key in this shell): `docs-drift-gate.py --release vX.Y.Z[-rc.N]`.
+2. Read `digest.md` and decide (about 15 minutes): for each queued pull request choose "needs docs" or record
+   `no-docs-needed` in the baseline. Decisions count once merged in the docs repository; until then pass
+   `--baseline <file>`.
+3. Run the phase-2 loop on the pull requests that need docs: verifiers drop wrong rows and proposals, and what
+   survives is applied as stacked local commits in a docs worktree.
+4. Read `ledger.md` and the diff of those commits (about 5 minutes) before anyone pushes. Open draft docs PRs only on
+   the maintainer's yes.
+
 ## Benchmark
 
 [drift-benchmark.py](scripts/drift-benchmark.py) compares TypeSafe with a
