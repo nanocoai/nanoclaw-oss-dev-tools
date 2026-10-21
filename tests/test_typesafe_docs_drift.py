@@ -289,6 +289,95 @@ class ExtractionTests(TempDirs):
         self.assertIn("widgets", facts["ncl:widgets-state-enum"]["terms"])
         self.assertNotIn("ncl:ghosts-verbs", facts)
 
+    def test_enum_spreads_resolve_through_constants_and_unreadable_enums_are_skipped(self):
+        root = self.base / "spread"
+        write(root, "src/types.ts", """
+            export const KINDS = ['a', 'b'] as const;
+            export const MORE = [...KINDS, 'c'] as const;
+            """)
+        write(root, "src/cli/resources/gizmos.ts", """
+            registerResource({
+              name: 'gizmo',
+              plural: 'gizmos',
+              columns: [
+                { name: 'kind', type: 'string', description: 'Kind.', enum: [...MORE] },
+                { name: 'mode', type: 'string', description: 'Mode.', enum: [...UNKNOWN] },
+                { name: 'tier', type: 'string', description: 'Tier.', enum: ['x', ...KINDS] },
+              ],
+              operations: { list: 'open' },
+            });
+            """)
+        facts = self.by_id(drift.extract_facts(root, ["ncl"]))
+        self.assertIn("`a`, `b`, `c`.", facts["ncl:gizmos-kind-enum"]["statement"])
+        self.assertIn("`x`, `a`, `b`.", facts["ncl:gizmos-tier-enum"]["statement"])
+        self.assertNotIn("ncl:gizmos-mode-enum", facts)
+
+    def test_a_constant_defined_differently_in_two_modules_is_skipped_unless_the_resource_defines_it(self):
+        root = self.base / "ambiguous"
+        write(root, "src/a.ts", "export const STATES = ['wrong'] as const;\n")
+        write(root, "src/b.ts", "export const STATES = ['right'] as const;\n")
+        write(root, "src/cli/resources/gizmos.ts", """
+            registerResource({
+              name: 'gizmo',
+              plural: 'gizmos',
+              columns: [
+                { name: 'state', type: 'string', description: 'State.', enum: [...STATES] },
+              ],
+              operations: { list: 'open' },
+            });
+            """)
+        self.assertNotIn("ncl:gizmos-state-enum", self.by_id(drift.extract_facts(root, ["ncl"])))
+        write(root, "src/cli/resources/gadgets.ts", """
+            const STATES = ['local'] as const;
+            registerResource({
+              name: 'gadget',
+              plural: 'gadgets',
+              columns: [
+                { name: 'state', type: 'string', description: 'State.', enum: [...STATES] },
+              ],
+              operations: { list: 'open' },
+            });
+            """)
+        facts = self.by_id(drift.extract_facts(root, ["ncl"]))
+        self.assertIn("`local`.", facts["ncl:gadgets-state-enum"]["statement"])
+        write(root, "src/c.ts", "export const SAME = ['x'] as const;\n")
+        write(root, "src/d.ts", "export const SAME = [ 'x' ] as const;\n")
+        self.assertEqual(drift.load_string_constants(root)["SAME"], ["x"])
+
+    def test_line_comments_inside_a_constant_do_not_cut_the_list_short(self):
+        root = self.base / "comments"
+        write(root, "src/types.ts", "export const STATES = ['pending', // waiting\n  'approved', 'denied'] as const;\n")
+        self.assertEqual(drift.load_string_constants(root)["STATES"], ["pending", "approved", "denied"])
+
+    def test_a_commented_out_declaration_is_not_a_definition(self):
+        root = self.base / "commented"
+        write(root, "src/a.ts", "/* const STATES = ['retired']; */\nexport const STATES = getCurrentStates();\n")
+        write(root, "src/b.ts", "/*\n export const OLD = ['gone'] as const;\n*/\nexport const LIVE = ['here'] as const;\n")
+        constants = drift.load_string_constants(root)
+        self.assertNotIn("STATES", constants)
+        self.assertNotIn("OLD", constants)
+        self.assertEqual(constants["LIVE"], ["here"])
+
+    def test_a_name_defined_elsewhere_by_anything_but_the_same_literal_is_ambiguous(self):
+        root = self.base / "elsewhere"
+        write(root, "src/a.ts", "export const STATES = ['wrong'] as const;\n")
+        write(root, "src/b.ts", "export const STATES = getStates();\n")
+        write(root, "src/c.ts", "export const ONLY = ['x'] as const;\n")
+        constants = drift.load_string_constants(root)
+        self.assertNotIn("STATES", constants)
+        self.assertEqual(constants["ONLY"], ["x"])
+
+    def test_an_empty_raw_default_makes_no_default_claim(self):
+        root = self.base / "raw"
+        write(root, "src/config.ts", """
+            const envConfig = readEnvFile(['CEILING_MS']);
+            export const CEILING_MS_RAW = process.env.CEILING_MS || envConfig.CEILING_MS || '';
+            """)
+        statement = self.by_id(drift.extract_facts(root, ["env"]))["env:CEILING_MS"]["statement"]
+        self.assertIn("process environment first, then from `.env`", statement)
+        self.assertNotIn("unset", statement)
+        self.assertIn("sets no default", statement)
+
     def test_env_facts_capture_precedence_defaults_and_boolean_flags(self):
         facts = self.by_id(drift.extract_facts(self.code(), ["env"]))
         self.assertIn("default is `Andy`", facts["env:ASSISTANT_NAME"]["statement"])
@@ -316,7 +405,8 @@ class ExtractionTests(TempDirs):
     def test_skills_come_from_frontmatter_and_directories_without_a_skill_file_are_ignored(self):
         facts = self.by_id(drift.extract_facts(self.code(), ["skills"]))
         self.assertEqual(set(facts), {"skills:catalog", "skills:add-foo", "skills:bar"})
-        self.assertIn("Add the Foo channel via Chat SDK.", facts["skills:add-foo"]["statement"])
+        self.assertEqual(facts["skills:add-foo"]["statement"], "A workspace skill `/add-foo` exists under `.claude/skills/`.")
+        self.assertIn("Add the Foo channel via Chat SDK.", facts["skills:add-foo"]["evidence"]["excerpt"])
         self.assertIn("exactly 2 workspace skills", facts["skills:catalog"]["statement"])
         self.assertEqual(facts["skills:add-foo"]["evidence"]["file"], ".claude/skills/add-foo/SKILL.md")
         self.assertIn("/add-foo", facts["skills:add-foo"]["terms"])
@@ -359,6 +449,25 @@ class SectionTests(TempDirs):
     def test_navigation_pages_are_collected_in_order_without_duplicates(self):
         config = json.loads((self.docs() / "docs.json").read_text())
         self.assertEqual(drift.navigation_pages(config), ["operate/ncl-cli", "changelog/index", "reference/env", "missing/page"])
+
+    def test_a_page_that_links_out_of_the_docs_checkout_is_never_loaded(self):
+        docs = self.docs()
+        outside = self.base / "outside.mdx"
+        outside.write_text("---\ntitle: Secret\n---\n## Private\nnot for the API\n")
+        (docs / "reference" / "env.mdx").unlink()
+        (docs / "reference" / "env.mdx").symlink_to(outside)
+        pages = {section["page"] for section in drift.load_sections(docs)}
+        self.assertNotIn("reference/env", pages)
+        self.assertIn("operate/ncl-cli", pages)
+
+    def test_a_page_that_links_into_the_git_directory_is_never_loaded(self):
+        docs = self.docs()
+        write(docs, ".git/config", '[remote "origin"]\n\turl = https://user:secret@example.com/org/repo.git\n')
+        (docs / "reference" / "env.mdx").unlink()
+        (docs / "reference" / "env.mdx").symlink_to(docs / ".git" / "config")
+        self.assertNotIn("reference/env", {section["page"] for section in drift.load_sections(docs)})
+        self.assertFalse(drift.inside_checkout(docs, docs / ".git" / "config"))
+        self.assertTrue(drift.inside_checkout(docs, docs / "operate" / "ncl-cli.mdx"))
 
     def test_sections_split_on_headings_and_skip_code_fences_comments_and_tags(self):
         sections = {section["id"]: section for section in drift.load_sections(self.docs())}

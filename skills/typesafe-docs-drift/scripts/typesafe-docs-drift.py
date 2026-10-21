@@ -89,10 +89,32 @@ def line_of(text, offset):
     return text.count("\n", 0, offset) + 1
 
 
+# Repository-location variables an operator's shell may export; git would follow them out of the checkout.
+GIT_LOCATION_ENV = frozenset((
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_QUARANTINE_PATH"))
+
+
+def clean_git_env(environ=None):
+    environ = os.environ if environ is None else environ
+    env = {key: value for key, value in environ.items() if key not in GIT_LOCATION_ENV}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def inside_checkout(root, path):
+    """True for a regular file of the checkout: no link out of it and nothing under ``.git`` (it holds remote URLs)."""
+    try:
+        relative = Path(path).resolve().relative_to(Path(root).resolve())
+    except (OSError, ValueError):
+        return False
+    return not Path(path).is_symlink() and ".git" not in relative.parts
+
+
 def git_commit(root):
     try:
         result = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=10, env=clean_git_env())
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
@@ -127,8 +149,64 @@ _FLAG = re.compile(r"--[a-z][a-z0-9-]*")
 _ARG_NAME = re.compile(r"name: '(\w+)'")
 
 
-def parse_resource(text):
+_CONSTANT_ARRAY = re.compile(r"^(?:export\s+)?const\s+([A-Za-z_]\w*)(?::[^=]+)?\s*=\s*\[([^\]]*)\](?:\s+as\s+const)?\s*;", re.M)
+_LINE_COMMENT = re.compile(r"//[^\n]*")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+
+
+def parse_array_values(values, constants):
+    """Literal strings of a TypeScript array body, with `...CONSTANT` spreads resolved; None when any entry is unknown."""
+    resolved = []
+    for token in _LINE_COMMENT.sub("", values).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        quoted = re.fullmatch(r"'([^']*)'|\"([^\"]*)\"", token)
+        if quoted:
+            resolved.append(quoted.group(1) if quoted.group(1) is not None else quoted.group(2))
+        elif token.startswith("...") and token[3:].strip() in constants:
+            resolved.extend(constants[token[3:].strip()])
+        else:
+            return None
+    return resolved
+
+
+_CONSTANT_DEFINITION = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_]\w*)", re.M)
+
+
+def load_string_constants(root):
+    """`const NAME = ['a', 'b'] as const` arrays under src/, so `enum: [...NAME]` can be read.
+
+    Imports are not followed, so a name defined in more than one module is used only when every definition is
+    the same literal array; any other definition (a call, a different list) makes it ambiguous and it is skipped.
+    """
+    definitions = {}
+    src = Path(root) / "src"
+    for path in sorted(src.rglob("*.ts")) if src.is_dir() else []:
+        if path.name.endswith(".test.ts"):
+            continue
+        text = _BLOCK_COMMENT.sub("", read_text(path))  # a commented-out declaration is not a definition
+        literals = {name: " ".join(_LINE_COMMENT.sub("", body).split()) for name, body in _CONSTANT_ARRAY.findall(text)}
+        for name in set(_CONSTANT_DEFINITION.findall(text)) | set(literals):
+            definitions.setdefault(name, []).append(literals.get(name))
+    constants = {}
+    for _ in range(3):  # a constant may spread an earlier one
+        for name, bodies in definitions.items():
+            if name in constants or None in bodies or len(set(bodies)) != 1:
+                continue
+            values = parse_array_values(bodies[0], constants)
+            if values is not None:
+                constants[name] = values
+    return constants
+
+
+def parse_resource(text, constants=None):
     """Pull plural, standard operations, custom verbs and column enums out of one resource module."""
+    constants = dict(constants or {})
+    for name, body in _CONSTANT_ARRAY.findall(_BLOCK_COMMENT.sub("", text)):  # a constant defined in this module wins
+        values = parse_array_values(body, constants)
+        if values is not None:
+            constants[name] = values
     start = text.find("registerResource({")
     if start < 0:
         return None
@@ -145,7 +223,9 @@ def parse_resource(text):
     columns = re.search(r"^  columns: \[(.*?)^  \],", body, re.M | re.S)
     if columns:
         for name, values in re.findall(r"name: '(\w+)'[^{}]*?enum: \[([^\]]*)\]", columns.group(1), re.S):
-            resource["enums"].append((name, re.findall(r"'([^']*)'", values)))
+            literals = parse_array_values(values, constants)
+            if literals:  # an enum that cannot be read is skipped, never asserted as empty
+                resource["enums"].append((name, literals))
     custom = re.search(r"^\s*customOperations: \{\s*$", body, re.M)
     if custom:
         lines = body[custom.end():].splitlines()
@@ -192,11 +272,12 @@ def parse_resource(text):
 def extract_ncl(root):
     facts = []
     directory = Path(root) / "src" / "cli" / "resources"
+    constants = load_string_constants(root)
     for path in sorted(directory.glob("*.ts")) if directory.is_dir() else []:
         if path.name.endswith(".test.ts") or path.name == "index.ts":
             continue
         text = read_text(path)
-        resource = parse_resource(text)
+        resource = parse_resource(text, constants)
         if not resource:
             continue
         plural = resource["plural"]
@@ -272,7 +353,9 @@ def extract_env(root):
             elif default is None:
                 statement = "`%s` is read from the process environment first, then from `.env`; it has no default." % key
             elif default == "":
-                statement = "`%s` is read from the process environment first, then from `.env`; it is unset (empty) by default." % key
+                # An empty literal is a raw string that is range-checked and given its real default where it is used.
+                statement = ("`%s` is read from the process environment first, then from `.env`; this line sets no default "
+                             "(a built-in default may be applied where the value is used)." % key)
             else:
                 statement = "`%s` is read from the process environment first, then from `.env`; its default is `%s`." % (key, default)
             if match.group(1) == "??":
@@ -396,7 +479,8 @@ def extract_skills(root):
         names.append(name)
         facts.append(fact(
             "skills", name,
-            "A workspace skill `/%s` exists under `.claude/skills/`; it is invoked when: %s" % (name, description or "(no description)"),
+            # SKILL.md prose drifts from the code; the description stays in the evidence, never in the claim.
+            "A workspace skill `/%s` exists under `.claude/skills/`." % name,
             relative(root, skill_file), 2, "name: %s / description: %s" % (name, description), terms=[name, "/" + name]))
     if names:
         facts.insert(0, fact(
@@ -617,6 +701,8 @@ def load_sections(docs_root, include_changelog=False):
             path = docs_root / (page + ".md")
             if not path.is_file():
                 continue
+        if not inside_checkout(docs_root, path):
+            continue
         sections.extend(split_sections(page, read_text(path)))
     if not sections:
         raise DriftError("no documentation sections found under %s" % docs_root)
@@ -946,7 +1032,8 @@ def decide_pair(answers, thresholds):
 def decide_fact(entry, pairs, thresholds, failed=0):
     """Fold the pair decisions of one fact into a fact-level verdict; ``failed`` counts pairs with no answer."""
     result = {"id": entry["id"], "area": entry["area"], "statement": entry["statement"], "evidence": entry["evidence"],
-              "pairs": pairs, "failed_pairs": failed, "documented_anywhere": None, "verdict": "MISSING", "best": None, "note": ""}
+              "terms": entry.get("terms", []), "pairs": pairs, "failed_pairs": failed, "documented_anywhere": None,
+              "verdict": "MISSING", "best": None, "note": ""}
     if not pairs:
         if failed:
             result["verdict"] = "UNSURE"
