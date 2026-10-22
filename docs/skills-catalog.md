@@ -7,7 +7,8 @@ researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
 provides a local terminal for human and agent handoffs. `typesafe-docs-drift`
 ranks where the docs portal disagrees with the code through the TypeSafe
-decision API and writes nothing.
+decision API, lists the merged pull requests a release leaves undocumented, and
+writes nothing to either repository.
 
 Installed skill copies must be updated separately, and the manifest version
 does not imply a tagged GitHub release.
@@ -33,7 +34,7 @@ attempt exposed a harness tool-path bug and remains a retained failure. See the
 | [e2e-wizard](../skills/e2e-wizard/SKILL.md) | Public interactive setup in a fresh exe.dev VM or Proxmox LXC, driven through a real PTY and terminal emulator. | Fresh Proxmox wizard completed on 2026-09-11, with a retained agent's real reply and exact service verification. On 2026-09-15 a fresh exe.dev VM passed the distributed harness with OpenCode through a custom OpenAI-compatible endpoint. | Native macOS, OpenCode on Proxmox/WSL2 and the OpenRouter/DeepSeek backends, post-install channel/provider refresh and restart paths, reboot recovery, and real messaging channels remain unqualified. |
 | [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed again on 2026-09-14 at current NanoClaw `main`; terminal-close and post-Windows-reboot inference also passed with locally validated sanitized evidence. | WSL-only restart still left the service/socket unavailable, and Docker Desktop did not start automatically after Windows reboot. |
 | [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
-| [typesafe-docs-drift](../skills/typesafe-docs-drift/SKILL.md) | Ranks disagreements between a NanoClaw checkout and the nanoclaw-docs portal through the TypeSafe System One API: deterministic facts, lexical candidate sections, one fan-out request per pair, gated DRIFT / MISSING / UNSURE / OK verdicts. | Offline fixture replay and mocked-transport tests; one live run on 2026-09-16 (142 facts, 426 requests, 71.5 s: DRIFT 7, MISSING 1, UNSURE 11, OK 123; see [typesafe-docs-drift.md](typesafe-docs-drift.md)). | Detection only; candidate recall is lexical top-3; fixture answers are hand-written. |
+| [typesafe-docs-drift](../skills/typesafe-docs-drift/SKILL.md) | Ranks disagreements between a NanoClaw checkout and the nanoclaw-docs portal through the TypeSafe System One API: deterministic facts, lexical candidate sections, one fan-out request per pair, gated DRIFT / MISSING / UNSURE / OK verdicts. | Offline fixture replay and mocked-transport tests; one live run on 2026-09-16 (142 facts, 426 requests, 71.5 s: DRIFT 7, MISSING 1, UNSURE 11, OK 123) and one live release-gate run on 2026-10-21 (see [typesafe-docs-drift.md](typesafe-docs-drift.md)). | Detection only; candidate recall is lexical top-3; detector rows are model judgments to check against the code; fixture answers are hand-written. |
 | [shared-terminal](../skills/shared-terminal/SKILL.md) | One local PTY with browser and agent control, for supervised interactive work. | macOS browser typing, interactive prompts, agent/human handoff and shutdown passed; real HTTP/PTY tests passed. | Native Windows, WSL and browser forwarding are unqualified. |
 
 The shared baseline for the three headless skills tested NanoClaw
@@ -363,9 +364,25 @@ checkout (`--docs`).
   saves a live run in that format. Raw answers go to a gitignored directory.
 - Writes nothing anywhere. Details: [typesafe-docs-drift.md](typesafe-docs-drift.md).
 
+**Release gate:** [docs-drift-gate.py](../skills/typesafe-docs-drift/scripts/docs-drift-gate.py)
+`--release <tag>` clones the release and the docs into a scratch directory and
+writes a digest, a JSON payload and per-page briefs. It lists the pull requests
+merged since the last stable tag that touch files the docs cite and that the
+docs never name, checks every `verified-against` stamp, and runs the detector
+with a guard and a baseline for decided rows. Python 3.9 or newer; the key is
+needed only for the detector (`--no-model` and `--fixture` run without it).
+Writes nothing to either repository. **Phase 2:**
+[docs-drift-fix.py](../skills/typesafe-docs-drift/scripts/docs-drift-fix.py) and
+[phase2.md](../skills/typesafe-docs-drift/references/phase2.md) prepare and check the agent loop that turns a gate run
+into verified docs edits (blind row verifier, drafter, blind proposal verifier, mechanical apply); it never calls a
+model. Decisions live in `docs/drift-baseline.json` in the docs repository.
+
 Validation: fixture replay through the full pipeline and the mocked tests in
 `tests/test_typesafe_docs_drift.py`, plus one live run on 2026-09-16 whose
-sanitized summary is recorded on the detail page.
+sanitized summary is recorded on the detail page. The gate has local-repository
+tests in `tests/test_docs_drift_gate.py` and one live release run on 2026-10-21
+(`v2026.10.1-rc.1`: 43 pull requests, 22 to document), recorded on the detail
+page.
 
 ## Installation and maintenance
 
