@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
 Verified: **2026-09-17**. This checkout contains **9 skills**, with plugin
-manifest version **0.13.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
+manifest version **0.13.1** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
@@ -398,6 +398,9 @@ the [channel manifest](../skills/e2e-channels/channels.json) and the
   set wins. Otherwise X is skipped with the missing or invalid variables named.
 - Rejects placeholders, unresolved `op://` references, wrong token shapes and
   files readable by others. Reports and logs carry names, never values.
+- [op-create-items.py](../skills/e2e-channels/scripts/op-create-items.py)
+  creates the vault's channel items with placeholder fields through the
+  1Password CLI, adding only missing fields on re-runs.
 - CI loads values from the `nanoclaw-e2e` 1Password vault through a service
   account in the protected `channel-e2e` environment, on dispatch and nightly
   only. Missing vault items produce skips, not failures.
