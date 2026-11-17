@@ -1,7 +1,7 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
-Verified: **2026-09-17**. This checkout contains **8 skills**, with plugin
-manifest version **0.12.5** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
+Verified: **2026-09-17**. This checkout contains **9 skills**, with plugin
+manifest version **0.13.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
@@ -35,6 +35,7 @@ attempt exposed a harness tool-path bug and remains a retained failure. See the
 | [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed again on 2026-09-14 at current NanoClaw `main`; terminal-close and post-Windows-reboot inference also passed with locally validated sanitized evidence. | WSL-only restart still left the service/socket unavailable, and Docker Desktop did not start automatically after Windows reboot. |
 | [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
 | [typesafe-docs-drift](../skills/typesafe-docs-drift/SKILL.md) | Ranks disagreements between a NanoClaw checkout and the nanoclaw-docs portal through the TypeSafe System One API: deterministic facts, lexical candidate sections, one fan-out request per pair, gated DRIFT / MISSING / UNSURE / OK verdicts. | Offline fixture replay and mocked-transport tests; one live run on 2026-09-16 (142 facts, 426 requests, 71.5 s: DRIFT 7, MISSING 1, UNSURE 11, OK 123) and one live release-gate run on 2026-10-21 (see [typesafe-docs-drift.md](typesafe-docs-drift.md)). | Detection only; candidate recall is lexical top-3; detector rows are model judgments to check against the code; fixture answers are hand-written. |
+| [e2e-channels](../skills/e2e-channels/SKILL.md) | Credential lookup for all 20 NanoClaw channels on the operator machine or in the `channel-e2e` CI workflow; reports ready or skipped per channel. | Offline tests only; no live channel run yet. | Resolves credentials only: the drivers' `--channel` flag, webhook tunnel and reply proof are not built. |
 | [shared-terminal](../skills/shared-terminal/SKILL.md) | One local PTY with browser and agent control, for supervised interactive work. | macOS browser typing, interactive prompts, agent/human handoff and shutdown passed; real HTTP/PTY tests passed. | Native Windows, WSL and browser forwarding are unqualified. |
 
 The shared baseline for the three headless skills tested NanoClaw
@@ -313,7 +314,7 @@ run inside the dedicated WSL2 distribution from the NanoClaw checkout.
 
 **Entry point:** [SKILL.md](../skills/e2e-triage/SKILL.md), invoked by the testing
 agent after an unexpected failure or directly against a retained run. Install it
-alongside the E2E skill; the plugin includes all eight. This workflow adds no
+alongside the E2E skill; the plugin includes all nine. This workflow adds no
 runtime or GitHub dependency to the shell/Python test drivers.
 
 - Captures distinct failures without rewriting installation/recovery outcomes.
@@ -383,6 +384,26 @@ sanitized summary is recorded on the detail page. The gate has local-repository
 tests in `tests/test_docs_drift_gate.py` and one live release run on 2026-10-21
 (`v2026.10.1-rc.1`: 43 pull requests, 22 to document), recorded on the detail
 page.
+
+## e2e-channels
+
+**Entry points:** [channel-creds.py](../skills/e2e-channels/scripts/channel-creds.py),
+the [channel manifest](../skills/e2e-channels/channels.json) and the
+[channel-e2e workflow](../.github/workflows/channel-e2e.yml).
+
+- Lists each channel's bot-side (NanoClaw `.env`) and tester-side variable
+  names, taken from NanoClaw's `add-<channel>` skills at `e533969`.
+- Looks for channel X in a `--channel-env-file`, then `NC_E2E_<X>_<VAR>`
+  variables, then `~/.nanoclaw-e2e/channels/<x>.env`; the first complete, valid
+  set wins. Otherwise X is skipped with the missing or invalid variables named.
+- Rejects placeholders, unresolved `op://` references, wrong token shapes and
+  files readable by others. Reports and logs carry names, never values.
+- CI loads values from the `nanoclaw-e2e` 1Password vault through a service
+  account in the protected `channel-e2e` environment, on dispatch and nightly
+  only. Missing vault items produce skips, not failures.
+
+Validation: offline tests in `tests/test_channel_creds.py`. No live channel has
+been driven yet; real-channel testing remains an explicit milestone.
 
 ## Installation and maintenance
 

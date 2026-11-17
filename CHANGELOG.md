@@ -11,11 +11,20 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.12.5); supersedes the unreleased 0.11.0
+Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0
 milestone and is not yet released.
 
 ### Added
 
+- `e2e-channels` skill: a committed manifest of the bot-side and tester-side
+  variables for all 20 NanoClaw channels, and `channel-creds.py`, which finds a
+  channel's credentials in a `--channel-env-file`, then `NC_E2E_<X>_<VAR>`
+  variables, then `~/.nanoclaw-e2e/channels/<x>.env`, and reports the channel
+  ready or skipped with the missing variable named. It also prints `op inject`
+  templates and writes a channel's bot side to a private file.
+- `channel-e2e.yml` workflow (dispatch and nightly only) that loads channel
+  credentials from the `nanoclaw-e2e` 1Password vault in the protected
+  `channel-e2e` environment and reports every channel's status.
 - `docs-drift-gate.py` for `typesafe-docs-drift`, the release-day docs gate:
   clones a NanoClaw release and the docs into a scratch directory and writes a
   digest, `gate.json` and per-page briefs. It queues the pull requests merged

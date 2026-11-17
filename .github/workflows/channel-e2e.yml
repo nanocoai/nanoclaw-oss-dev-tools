@@ -1,0 +1,160 @@
+name: Channel E2E
+
+# Resolves each NanoClaw channel's test credentials from 1Password and reports
+# the channel as ready or skipped (naming the missing variables). Runs only on
+# manual dispatch and a nightly schedule, never on pull requests, so fork code
+# never reaches the channel-e2e environment or its secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      channels:
+        description: Channels to check, comma-separated (see skills/e2e-channels/channels.json), or "all"
+        default: all
+        required: true
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan channels
+    if: github.repository == 'nanocoai/nanoclaw-oss-dev-tools'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      channels: ${{ steps.plan.outputs.channels }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: plan
+        name: Select channels from the manifest
+        env:
+          REQUESTED: ${{ github.event.inputs.channels || 'all' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          manifest = json.load(open("skills/e2e-channels/channels.json"))["channels"]
+          requested = os.environ["REQUESTED"].strip()
+          if requested in ("", "all"):
+              names = list(manifest)
+          else:
+              names = [n.strip() for n in requested.split(",") if n.strip()]
+              unknown = [n for n in names if n not in manifest]
+              if unknown:
+                  sys.exit("unknown channel(s): " + ", ".join(unknown))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("channels=" + json.dumps(names) + "\n")
+          PY
+
+  channel:
+    name: ${{ matrix.channel }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: channel-e2e
+    concurrency:
+      # One live connection per bot token (Telegram polling, Slack socket).
+      group: channel-e2e-${{ matrix.channel }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.plan.outputs.channels) }}
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      CREDS: skills/e2e-channels/scripts/channel-creds.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: refs
+        name: Point NC_E2E_* variables at 1Password
+        env:
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          refs="$(python3 "$CREDS" refs "$CHANNEL")"
+          if [ -n "$refs" ]; then
+            printf '%s\n' "$refs" >> "$GITHUB_ENV"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure 1Password service account
+        if: steps.refs.outputs.needed == 'true'
+        uses: 1password/load-secrets-action/configure@eb2efd0703da22a93c467f2d1ffbb6826c11e19c # v4.1.1
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # A vault item or field that does not exist yet fails this step; the
+      # references it could not read stay op:// strings, which the loader
+      # treats as missing, so the channel is reported skipped, not failed.
+      - name: Load secrets from 1Password
+        if: steps.refs.outputs.needed == 'true'
+        continue-on-error: true
+        uses: 1password/load-secrets-action@eb2efd0703da22a93c467f2d1ffbb6826c11e19c # v4.1.1
+        with:
+          export-env: true
+
+      - id: check
+        name: Resolve credentials (names only, never values)
+        env:
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/channel-e2e"
+          python3 "$CREDS" check "$CHANNEL" \
+            --json-out "$RUNNER_TEMP/channel-e2e/$CHANNEL.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Summarize
+        if: always() && steps.check.outcome == 'success'
+        env:
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          path = os.path.join(os.environ["RUNNER_TEMP"], "channel-e2e", os.environ["CHANNEL"] + ".json")
+          for r in json.load(open(path))["channels"]:
+              detail = r.get("source") if r["status"] == "ready" else r.get("reason")
+              print(f"**{r['channel']}**: {r['status']} ({detail})")
+          PY
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.check.outcome == 'success'
+        with:
+          name: channel-${{ matrix.channel }}
+          path: ${{ runner.temp }}/channel-e2e/${{ matrix.channel }}.json
+          retention-days: 14
+
+  report:
+    name: Report
+    needs: [plan, channel]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: channel-*
+          path: results
+          merge-multiple: true
+      - name: Write the channel table
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          rows = []
+          for path in sorted(pathlib.Path("results").glob("*.json")):
+              rows.extend(json.loads(path.read_text())["channels"])
+          rows.sort(key=lambda r: (r.get("wave") or 0, r["channel"]))
+          print("| Wave | Channel | Status | Source or reason |")
+          print("|---|---|---|---|")
+          for r in rows:
+              detail = r.get("source") if r["status"] == "ready" else r.get("reason")
+              print(f"| {r.get('wave')} | {r['channel']} | {r['status']} | {detail} |")
+          ready = sum(r["status"] == "ready" for r in rows)
+          print(f"\n{ready} of {len(rows)} channels ready.")
+          PY
