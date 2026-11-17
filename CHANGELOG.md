@@ -11,11 +11,18 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.13.1); supersedes the unreleased 0.11.0
-milestone and is not yet released.
+Development milestone (plugin 0.14.0); supersedes the unreleased 0.11.0,
+0.12.0, 0.13.0 and 0.13.1 milestones and is not yet released.
 
 ### Added
 
+- `typesafe-triage` skill: a dry-run label triage of open nanocoai/nanoclaw
+  issues and PRs through the TypeSafe System One API. One fan-out request per
+  item (area, kind, priority, needs-repro or PR readiness), a confidence gate
+  that falls back to `triage/unresolved`, AGREE/DISAGREE/NEW against existing
+  labels, a summary with agreement rates, token usage and wall time, raw answers
+  saved under a gitignored directory, and `--fixture` replay for offline runs.
+  Reads `TYPESAFE_API_KEY` from the environment only and never writes to GitHub.
 - `e2e-channels` treats `NC_E2E_PLACEHOLDER` as a placeholder and reports
   placeholder and empty values as missing rather than invalid, so vault items
   created ahead of their real values keep a channel skipped.
