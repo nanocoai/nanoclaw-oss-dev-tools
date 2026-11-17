@@ -23,8 +23,10 @@ import tempfile
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 MANIFEST = SKILL_DIR / 'channels.json'
+# Value for a vault field created before its real value exists; never counts as a value.
+PLACEHOLDER_VALUE = 'NC_E2E_PLACEHOLDER'
 PLACEHOLDER = re.compile(
-    r'^(op://.*|<.*>|\$\{.*\}|changeme|change-me|todo|tbd|xxx+|placeholder|replace[-_ ]?me|'
+    r'^(op://.*|<.*>|\$\{.*\}|nc_e2e_placeholder.*|changeme|change-me|todo|tbd|xxx+|placeholder|replace[-_ ]?me|'
     r'(paste|your|insert)[-_ ].*)$',
     re.IGNORECASE,
 )
@@ -130,6 +132,8 @@ def pick_set(spec, values, shapes):
         if var not in values or values[var] is None:
             return False
         reason = check_value(var, values[var], shapes)
+        if reason in ('empty', 'placeholder'):
+            return False  # not filled in yet: reported as missing
         if reason:
             invalid[var] = reason
             return False

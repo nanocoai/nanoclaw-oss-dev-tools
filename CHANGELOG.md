@@ -11,11 +11,14 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0
+Development milestone (plugin 0.13.1); supersedes the unreleased 0.11.0
 milestone and is not yet released.
 
 ### Added
 
+- `e2e-channels` treats `NC_E2E_PLACEHOLDER` as a placeholder and reports
+  placeholder and empty values as missing rather than invalid, so vault items
+  created ahead of their real values keep a channel skipped.
 - `e2e-channels` skill: a committed manifest of the bot-side and tester-side
   variables for all 20 NanoClaw channels, and `channel-creds.py`, which finds a
   channel's credentials in a `--channel-env-file`, then `NC_E2E_<X>_<VAR>`

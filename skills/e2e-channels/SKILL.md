@@ -53,8 +53,10 @@ set** and never mixes values across sources:
 Session directories come from `NC_E2E_<X>_SESSION_DIR`, then
 `~/.nanoclaw-e2e/channels/<x>/session/`; it must be a non-empty directory.
 
-A value is not usable when it is empty, an unresolved `op://` reference, a
-placeholder (`<...>`, `changeme`, `PASTE_...`, `YOUR_...`) or the wrong shape.
+A value is not usable when it is empty, a placeholder (`NC_E2E_PLACEHOLDER`,
+`<...>`, `changeme`, `PASTE_...`, `YOUR_...`), an unresolved `op://` reference
+or the wrong shape. Empty and placeholder values are reported as missing; the
+others as invalid, with the reason.
 Files readable by group or others are ignored with a reason; keep them `0600`.
 
 ## Check channels
@@ -83,12 +85,18 @@ the file when the run ends.
 
 ## Store credentials in 1Password
 
-The source of truth is the `nanoclaw-e2e` vault. Create one item per channel,
-titled with the channel name from `channels.json` (`slack`, `whatsapp-cloud`),
-with one field per variable, labelled with the variable name. Add every field
-listed for the channel; leave an unused alternative (for example
-`LINEAR_CLIENT_ID` when you use `LINEAR_API_KEY`) present but empty. The
-reference for a field is `op://nanoclaw-e2e/<channel>/<VAR>`.
+The source of truth is the `nanoclaw-e2e` vault: one item per channel, titled
+with the channel name from `channels.json` (`slack`, `whatsapp-cloud`), with one
+field per variable, labelled with the variable name. The reference for a field
+is `op://nanoclaw-e2e/<channel>/<VAR>`.
+
+Items may be created ahead of time with every field set to the placeholder
+`NC_E2E_PLACEHOLDER`, so each reference resolves before the real value exists.
+
+Replace a placeholder with the real value in 1Password. A placeholder or empty
+field counts as missing, so the channel stays skipped until every field it needs
+is real. For alternatives, fill one group and leave the other as a placeholder
+(Linear: `LINEAR_API_KEY`, or `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET`).
 
 Fill local files from the vault without copying values by hand:
 
