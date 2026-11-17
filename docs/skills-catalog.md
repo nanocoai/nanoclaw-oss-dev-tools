@@ -1,15 +1,18 @@
 # NanoClaw OSS Dev Tools: skill catalog
 
 Verified: **2026-11-17**. This checkout contains **10 skills**, with plugin
-manifest version **0.14.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
+manifest version **0.15.0** (development, unreleased). Three drive headless setup steps; `e2e-wizard` and
 `e2e-windows` drive the public interactive wizard. The shared `e2e-triage` skill
 researches unexpected failures and prepares reporting recommendations. The
 workflows and their qualifications are listed separately below. `shared-terminal`
 provides a local terminal for human and agent handoffs. `typesafe-docs-drift`
 ranks where the docs portal disagrees with the code through the TypeSafe
 decision API, lists the merged pull requests a release leaves undocumented, and
-writes nothing to either repository. `typesafe-triage` previews confidence-gated
-issue and PR labels from the TypeSafe decision API without writing to GitHub.
+writes nothing to either repository. `typesafe-triage` proposes confidence-gated
+issue and PR labels from the TypeSafe decision API, dry run by default; an
+`--apply` flag (also run on a schedule via
+`.github/workflows/typesafe-triage.yml`) writes only the `kind` and
+`needs_repro` labels that measured 100% agreement on a live run.
 
 Installed skill copies must be updated separately, and the manifest version
 does not imply a tagged GitHub release.
@@ -36,7 +39,7 @@ attempt exposed a harness tool-path bug and remains a retained failure. See the
 | [e2e-windows](../skills/e2e-windows/SKILL.md) | Fresh Windows WSL2 distribution using the local Docker Desktop Linux engine. | Public wizard passed again on 2026-09-14 at current NanoClaw `main`; terminal-close and post-Windows-reboot inference also passed with locally validated sanitized evidence. | WSL-only restart still left the service/socket unavailable, and Docker Desktop did not start automatically after Windows reboot. |
 | [e2e-triage](../skills/e2e-triage/SKILL.md) | Agent workflow on the operator machine, using retained evidence and current upstream trackers. | Replayed retained Windows CA failure against live issues/PRs and the current NanoClaw bug form on 2026-09-12. | Instruction-driven; direct shell runs do not invoke it. No public submission was performed during validation. |
 | [typesafe-docs-drift](../skills/typesafe-docs-drift/SKILL.md) | Ranks disagreements between a NanoClaw checkout and the nanoclaw-docs portal through the TypeSafe System One API: deterministic facts, lexical candidate sections, one fan-out request per pair, gated DRIFT / MISSING / UNSURE / OK verdicts. | Offline fixture replay and mocked-transport tests; one live run on 2026-09-16 (142 facts, 426 requests, 71.5 s: DRIFT 7, MISSING 1, UNSURE 11, OK 123) and one live release-gate run on 2026-10-21 (see [typesafe-docs-drift.md](typesafe-docs-drift.md)). | Detection only; candidate recall is lexical top-3; detector rows are model judgments to check against the code; fixture answers are hand-written. |
-| [typesafe-triage](../skills/typesafe-triage/SKILL.md) | Dry-run label triage of open nanocoai/nanoclaw issues and PRs through the TypeSafe System One API, with a confidence gate and comparison against existing labels. | Offline fixture replay and mocked-transport tests only; no live TypeSafe call has been recorded yet. | Live agreement rates are unmeasured; the fixture answers are hand-written. It proposes labels only and never applies them. |
+| [typesafe-triage](../skills/typesafe-triage/SKILL.md) | Dry-run label triage of open nanocoai/nanoclaw issues and PRs through the TypeSafe System One API, with a confidence gate and comparison against existing labels. | Offline fixture replay and mocked-transport tests only; no live TypeSafe call has been recorded yet. | Live agreement rates are unmeasured; the fixture answers are hand-written. Dry run by default; `--apply` adds only `kind/*` and `triage/needs-repro` labels and never removes one. |
 | [e2e-channels](../skills/e2e-channels/SKILL.md) | Credential lookup for all 20 NanoClaw channels on the operator machine or in the `channel-e2e` CI workflow; reports ready or skipped per channel. | Offline tests only; no live channel run yet. | Resolves credentials only: the drivers' `--channel` flag, webhook tunnel and reply proof are not built. |
 | [shared-terminal](../skills/shared-terminal/SKILL.md) | One local PTY with browser and agent control, for supervised interactive work. | macOS browser typing, interactive prompts, agent/human handoff and shutdown passed; real HTTP/PTY tests passed. | Native Windows, WSL and browser forwarding are unqualified. |
 
@@ -420,13 +423,19 @@ run from any directory; it needs no NanoClaw checkout.
   (`gh api`), sends one fan-out request per item (area, kind, priority, and
   `needs_repro` for issues or `pr_ready` for PRs), and prints proposed labels
   with confidence, the existing labels and an AGREE / DISAGREE / NEW verdict.
-- Gates on confidence (area and kind 0.6, priority 0.8, yes/no 0.7, all
+- Gates on confidence (area, kind and priority 0.6, yes/no 0.7, all
   overridable) and proposes `triage/unresolved` below the gate instead of guessing.
 - `--fixture` replays recorded items and responses offline; the shipped fixture
   holds five real items fetched on 2026-09-16 with hand-written answers.
   `--record` saves a live run in the same format. Raw answers go to a gitignored
   output directory.
-- Writes nothing to GitHub. Details: [typesafe-triage.md](typesafe-triage.md).
+- Dry run by default: writes nothing to GitHub. `--apply` writes only the
+  ungated `kind/*` proposal and, on issues, an ungated `triage/needs-repro` —
+  the two questions that measured 100% agreement on a live run — via
+  `gh issue edit` / `gh pr edit --add-label`, never removing a label or
+  touching `area/*`/`priority/*`/`pr_ready`. `--since` and `--only-unlabeled`
+  narrow which items are considered; `.github/workflows/typesafe-triage.yml`
+  runs it on a schedule. Details: [typesafe-triage.md](typesafe-triage.md).
 
 Validation is offline only: fixture replay through the full pipeline and the
 mocked-transport tests in `tests/test_typesafe_triage.py`. No live TypeSafe
