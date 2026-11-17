@@ -47,6 +47,19 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def anthropic_credential_problem(raw):
+    """Why an Anthropic credential cannot work, or None. Never quotes the value.
+
+    Checks the value as e2e-install.sh sends it: only CR/LF removed.
+    """
+    value = raw.decode("utf-8", "replace").replace("\r", "").replace("\n", "")
+    if re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{9,1017}", value):
+        return None
+    if re.fullmatch(r"[A-Z0-9_.<>\s-]*", value) or "PASTE" in value.upper():
+        return "Anthropic credential file is empty or an unfilled placeholder"
+    return "Anthropic credential file does not hold an API key or OAuth token (expected sk-ant-...)"
+
+
 def atomic_json(path, data):
     fd, temporary = tempfile.mkstemp(prefix=".proxmox-result-", dir=path.parent)
     try:
@@ -376,6 +389,15 @@ exec runuser -u nanoclaw -- env HOME=/home/nanoclaw USER=nanoclaw LOGNAME=nanocl
                             raise ValueError("empty key")
                     except (OSError, ValueError):
                         raise Failure("Anthropic key file is unreadable or empty", 66)
+                    # A fresh guest hands the credential to its gateway; a bad
+                    # one would only fail at the ping. A remote OneCLI vault may
+                    # hold the secret, so e2e-install.sh checks it when read.
+                    remote_vault = (self.gateway in (None, "onecli")
+                                    and os.environ.get("NANOCLAW_ONECLI_API_HOST"))
+                    problem = (anthropic_credential_problem(key) if self.args.provider == "claude"
+                               and self.args.auth_method in ("api", "oauth") and not remote_vault else None)
+                    if problem:
+                        raise Failure(problem, 66)
                 self.create()
                 self.install(key)
         except KeyboardInterrupt:

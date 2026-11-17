@@ -1,0 +1,148 @@
+{
+  "$comment": "Variable names per NanoClaw channel; never values. bot = NanoClaw .env on the target, tester = harness only. Names follow NanoClaw's add-<channel> skills at e533969 (2026-11-17). 1Password item = channel name, field = variable name.",
+  "vault": "nanoclaw-e2e",
+  "channels": {
+    "cli": {
+      "wave": 1,
+      "provisioned_in_run": true,
+      "bot": [],
+      "tester": []
+    },
+    "emacs": {
+      "wave": 1,
+      "provisioned_in_run": true,
+      "runtime": ["EMACS_ENABLED", "EMACS_AUTH_TOKEN"],
+      "bot": [],
+      "tester": []
+    },
+    "matrix": {
+      "wave": 1,
+      "provisioned_in_run": true,
+      "runtime": ["MATRIX_BASE_URL", "MATRIX_USER_ID", "MATRIX_ACCESS_TOKEN"],
+      "bot": [],
+      "tester": []
+    },
+    "mattermost": {
+      "wave": 1,
+      "provisioned_in_run": true,
+      "runtime": ["MATTERMOST_BASE_URL", "MATTERMOST_BOT_TOKEN"],
+      "bot": [],
+      "tester": []
+    },
+    "slack": {
+      "wave": 2,
+      "bot": ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+      "tester": ["SLACK_TESTER_USER_TOKEN"],
+      "shapes": {
+        "SLACK_BOT_TOKEN": "^xoxb-",
+        "SLACK_APP_TOKEN": "^xapp-",
+        "SLACK_TESTER_USER_TOKEN": "^xoxp-"
+      }
+    },
+    "discord": {
+      "wave": 2,
+      "bot": ["DISCORD_BOT_TOKEN"],
+      "tester": ["DISCORD_TESTER_BOT_TOKEN"]
+    },
+    "telegram": {
+      "wave": 2,
+      "bot": ["TELEGRAM_BOT_TOKEN"],
+      "tester": ["TELEGRAM_TESTER_API_ID", "TELEGRAM_TESTER_API_HASH", "TELEGRAM_TESTER_SESSION"],
+      "shapes": {
+        "TELEGRAM_BOT_TOKEN": "^[0-9]+:[A-Za-z0-9_-]+$",
+        "TELEGRAM_TESTER_API_ID": "^[0-9]+$"
+      }
+    },
+    "github": {
+      "wave": 3,
+      "public_url": true,
+      "bot": ["GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "GITHUB_BOT_USERNAME"],
+      "tester": ["GITHUB_TESTER_TOKEN"]
+    },
+    "linear": {
+      "wave": 3,
+      "public_url": true,
+      "bot": ["LINEAR_WEBHOOK_SECRET", "LINEAR_TEAM_KEY"],
+      "bot_any_of": [["LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"], ["LINEAR_API_KEY"]],
+      "tester": ["LINEAR_TESTER_API_KEY"]
+    },
+    "resend": {
+      "wave": 3,
+      "public_url": true,
+      "bot": ["RESEND_API_KEY", "RESEND_WEBHOOK_SECRET", "RESEND_FROM_ADDRESS"],
+      "tester": ["RESEND_TESTER_API_KEY"],
+      "shapes": {
+        "RESEND_API_KEY": "^re_",
+        "RESEND_TESTER_API_KEY": "^re_"
+      }
+    },
+    "webex": {
+      "wave": 3,
+      "public_url": true,
+      "bot": ["WEBEX_BOT_TOKEN", "WEBEX_WEBHOOK_SECRET"],
+      "tester": ["WEBEX_TESTER_CLIENT_ID", "WEBEX_TESTER_CLIENT_SECRET", "WEBEX_TESTER_REFRESH_TOKEN"]
+    },
+    "gchat": {
+      "wave": 3,
+      "public_url": true,
+      "bot": ["GCHAT_CREDENTIALS", "GOOGLE_CHAT_PROJECT_NUMBER", "GOOGLE_CHAT_ENDPOINT_URL", "GOOGLE_CHAT_BOT_USER_ID"],
+      "tester": ["GCHAT_TESTER_CLIENT_ID", "GCHAT_TESTER_CLIENT_SECRET", "GCHAT_TESTER_REFRESH_TOKEN"],
+      "shapes": {
+        "GCHAT_CREDENTIALS": "service_account",
+        "GOOGLE_CHAT_PROJECT_NUMBER": "^[0-9]+$"
+      }
+    },
+    "teams": {
+      "wave": 3,
+      "public_url": true,
+      "bot": ["TEAMS_APP_ID", "TEAMS_APP_PASSWORD", "TEAMS_APP_TENANT_ID"],
+      "tester": ["TEAMS_TESTER_CLIENT_ID", "TEAMS_TESTER_REFRESH_TOKEN"]
+    },
+    "whatsapp-cloud": {
+      "wave": 3,
+      "public_url": true,
+      "bot": ["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_APP_SECRET", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_VERIFY_TOKEN"],
+      "tester": [],
+      "session": true,
+      "shapes": {
+        "WHATSAPP_PHONE_NUMBER_ID": "^[0-9]+$"
+      }
+    },
+    "whatsapp": {
+      "wave": 4,
+      "bot": [],
+      "tester": [],
+      "session": true
+    },
+    "signal": {
+      "wave": 4,
+      "bot": ["SIGNAL_ACCOUNT"],
+      "tester": ["SIGNAL_TESTER_ACCOUNT"],
+      "session": true
+    },
+    "wechat": {
+      "wave": 4,
+      "bot": [],
+      "tester": [],
+      "session": true
+    },
+    "imessage": {
+      "wave": 4,
+      "bot": ["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
+      "tester": [],
+      "blocked": "no tester identity chosen yet (second Apple ID or Photon send API)"
+    },
+    "deltachat": {
+      "wave": 4,
+      "bot": ["DC_EMAIL", "DC_PASSWORD", "DC_IMAP_HOST", "DC_SMTP_HOST"],
+      "tester": ["DC_TESTER_EMAIL", "DC_TESTER_PASSWORD"]
+    },
+    "dial": {
+      "wave": 4,
+      "bot": [],
+      "tester": [],
+      "session": true,
+      "blocked": "no tester SMS sender chosen yet"
+    }
+  }
+}

@@ -324,11 +324,12 @@ class MacServiceTests(Sandbox):
         self.agents.mkdir(parents=True)
         self.label = "com.nanoclaw-v2-owned"
         self.calls = []
+        self.head = self.commit
 
     def checked(self, args, capture=False):
         self.calls.append(args)
         if args[:2] == ["git", "rev-parse"]:
-            return self.commit
+            return self.head
         if "-e" in args:
             return json.dumps({"label": self.label, "node": sys.executable})
         if args[:2] == ["launchctl", "print"]:
@@ -337,6 +338,12 @@ class MacServiceTests(Sandbox):
 
     def install(self):
         previous = Path.cwd()
+        real_run = subprocess.run
+
+        def run(args, *rest, **options):
+            # Real Git for the commit check; every service probe reports "not loaded".
+            return real_run(args, *rest, **options) if args[0] == "git" else subprocess.CompletedProcess(args, 1)
+
         try:
             os.chdir(self.checkout)
             with patch.dict(os.environ, {**self.env, "NANOCLAW_E2E_RUN_ID": "owned-run"}), \
@@ -344,7 +351,9 @@ class MacServiceTests(Sandbox):
                     patch.object(self.service.os, "getuid", return_value=501), \
                     patch.object(self.service.Path, "home", return_value=self.home), \
                     patch.object(self.service, "checked", side_effect=self.checked), \
-                    patch.object(self.service.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
+                    patch.object(self.service.subprocess, "run", side_effect=run):
+                for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+                    os.environ.pop(name, None)  # the commit check reads the checkout's own identity
                 self.service.install()
         finally:
             os.chdir(previous)
@@ -375,6 +384,18 @@ class MacServiceTests(Sandbox):
             self.install()
         self.assertEqual(plist.read_text(), "belongs to somebody else")
         self.assertFalse(any(args[:3] == ["pnpm", "run", "build"] for args in self.calls))
+
+    def test_setup_commits_after_the_owned_commit_are_accepted(self):
+        self.head = self.commit_change("setup: apply add-onecli")
+        self.install()
+        self.assertTrue((self.agents / (self.label + ".plist")).is_file())
+
+    def test_other_commit_after_the_owned_commit_is_refused_before_service_operations(self):
+        self.head = self.commit_change("fix: edited after checkout")
+        with self.assertRaises(ValueError):
+            self.install()
+        self.assertEqual(self.calls, [["git", "rev-parse", "HEAD"]])
+        self.assertFalse((self.agents / (self.label + ".plist")).exists())
 
     def test_changed_checkout_marker_is_refused_before_service_operations(self):
         self.owner["run_id"] = "other-run"

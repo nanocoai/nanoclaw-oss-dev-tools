@@ -113,6 +113,50 @@ def safe_command(args, timeout=5):
 GATEWAYS = ("onecli", "iron-proxy")
 
 
+# Kept identical to the copy in e2e-macos/scripts/macos-service.py (tests/test_setup_commits.py).
+def only_setup_commits_since(root, tested, head):
+    """HEAD is the tested commit, or it plus only NanoClaw setup's own commits.
+
+    Setup commits each skill apply unsigned, as one line "setup: apply <skill>"
+    with one parent, under the identity `git commit` uses in this checkout
+    (setup sets "NanoClaw setup <setup@nanoclaw.invalid>" when there is none).
+    Raw objects are read, so grafts and replace refs cannot rewrite the chain.
+    """
+    sha = re.compile(r"[a-f0-9]{40}")
+    if not (isinstance(tested, str) and isinstance(head, str)
+            and sha.fullmatch(tested) and sha.fullmatch(head)):
+        return False
+    if tested == head:
+        return True
+
+    def git(*args):
+        result = subprocess.run(["git", "--no-replace-objects", *args], cwd=root,
+                                capture_output=True, timeout=15)
+        if result.returncode:
+            raise ValueError("git " + args[0] + " failed")
+        return result.stdout
+
+    try:
+        expected = [rb"tree [a-f0-9]{40}", rb"parent [a-f0-9]{40}"] + [
+            role + b" " + re.escape(git("var", variable).strip().rsplit(b" ", 2)[0]) + rb" \d+ [+-]\d{4}"
+            for role, variable in ((b"author", "GIT_AUTHOR_IDENT"), (b"committer", "GIT_COMMITTER_IDENT"))]
+        commit = head
+        for _ in range(100):  # an install makes a handful of setup commits
+            header, _, message = git("cat-file", "commit", commit).partition(b"\n\n")
+            lines = header.split(b"\n")
+            if (len(lines) not in (4, 5)
+                    or not all(re.fullmatch(pattern, line) for pattern, line in zip(expected, lines))
+                    or (len(lines) == 5 and not re.fullmatch(rb"encoding [!-~]+", lines[4]))
+                    or not re.fullmatch(rb"setup: apply [^\x00-\x20\x7f][^\x00-\x1f\x7f]*\n?", message)):
+                return False
+            commit = lines[1][len(b"parent "):].decode()
+            if commit == tested:
+                return True
+        return False
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
 def gateway_identity_ok(result, gateway):
     """The run asked for the selected gateway; a pass installed it and, for Iron, used the seam.
 
@@ -130,7 +174,7 @@ def gateway_identity_ok(result, gateway):
     return found == gateway and not (gateway == "iron-proxy" and not seam)
 
 
-def runtime_state(root, result, dev_tools_commit, harness_sha256):
+def runtime_state(root, result, head, dev_tools_commit, harness_sha256):
     sock = root / "data/cli.sock"
     socket_ready = False
     try:
@@ -159,6 +203,7 @@ def runtime_state(root, result, dev_tools_commit, harness_sha256):
         "schema_version": 1,
         "captured_at": now(),
         "nanoclaw_commit": result.get("commit"),
+        "checkout_head": head,
         "auth_source_commit": result.get("auth_source_commit"),
         "gateway": result.get("gateway"),
         "gateway_seam": result.get("gateway_seam"),
@@ -193,10 +238,11 @@ def export_bundle(root, destination, credential_file, run_id, provider, auth_met
     except (OSError, subprocess.SubprocessError):
         reject("source-identity-unavailable")
     if (not isinstance(result, dict) or result.get("schema_version") != 1
-            or result.get("commit") != head or result.get("provider") != provider
+            or result.get("provider") != provider
             or result.get("auth_method") != auth_method
             or result.get("auth_source_commit") != auth_source_commit
-            or not gateway_identity_ok(result, gateway)):
+            or not gateway_identity_ok(result, gateway)
+            or not only_setup_commits_since(root, result.get("commit"), head)):
         reject("result-identity-mismatch")
     if not re.fullmatch(r"[a-zA-Z0-9-]{8,64}", run_id):
         reject("invalid-run-id")
@@ -218,7 +264,7 @@ def export_bundle(root, destination, credential_file, run_id, provider, auth_met
     ):
         if source.exists() or source.is_symlink():
             files[name] = read_limited(source)
-    state = runtime_state(root, result, dev_tools_commit, harness_sha256)
+    state = runtime_state(root, result, head, dev_tools_commit, harness_sha256)
     files["runtime-state.json"] = json.dumps(state, indent=2) + "\n"
     files["triage.json"] = json.dumps({
         "schema_version": 1,
