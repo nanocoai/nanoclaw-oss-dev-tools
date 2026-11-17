@@ -24,6 +24,7 @@ selected provider's authentication choices from that exact Git revision.
 | [e2e-windows](skills/e2e-windows/SKILL.md) | Qualify Windows WSL2 with the local Docker Desktop engine, then run the public wizard with validated reply, service and sanitized evidence. |
 | [e2e-triage](skills/e2e-triage/SKILL.md) | Research unexpected E2E failures against upstream issues and PRs, recommend next actions, and prepare drafts using the target repository’s current issue forms. |
 | [typesafe-docs-drift](skills/typesafe-docs-drift/SKILL.md) | Rank where the docs portal disagrees with the NanoClaw code using the TypeSafe decision API: deterministic fact extraction, lexical section search, contradicts / covers / staleness per pair, DRIFT / MISSING / UNSURE / OK report; offline fixture replay. The release gate adds the merged pull requests the docs never name, the `verified-against` stamp check and per-page briefs. Nothing is written to either repository. |
+| [e2e-channels](skills/e2e-channels/SKILL.md) | Find each messaging channel's test credentials (CLI file, `NC_E2E_*` variables or `~/.nanoclaw-e2e/channels/`) and report it ready or skipped with the missing variable named; a dispatch-only CI workflow loads them from 1Password. |
 | [shared-terminal](skills/shared-terminal/SKILL.md) | One local browser terminal shared by the human and agent for supervised installers and interactive handoffs on macOS or Linux. |
 
 Each skill follows the [Agent Skills format](https://agentskills.io). Use it with
@@ -154,7 +155,7 @@ from the completed installer result.
 ## Failure triage
 
 Install `e2e-triage` alongside whichever E2E skills you use, or install the plugin,
-which includes all seven skills. Each E2E skill instructs the agent to invoke triage after
+which includes all nine skills. Each E2E skill instructs the agent to invoke triage after
 unexpected failures and include its findings at completion. The shell/Python
 drivers themselves do not search trackers; direct driver runs can be triaged
 later by asking the agent to use `e2e-triage` with the retained result.
