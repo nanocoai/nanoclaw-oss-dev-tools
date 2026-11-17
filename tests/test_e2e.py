@@ -10,6 +10,7 @@ import signal
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -83,7 +84,7 @@ class DriverTests(Sandbox):
         self.vm = self.root / "vm"
         self.vm.mkdir()
         self.key = self.root / "fake-key"
-        self.key.write_text("FAKE_ANTHROPIC_TOKEN")
+        self.key.write_text("sk-ant-api03-FAKE_ANTHROPIC_TOKEN")
         self.key.chmod(0o600)
         self.skill = self.root / "installed skill"
         self.skill.mkdir()
@@ -220,6 +221,25 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.assertIn("private regular file", run.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_placeholder_or_foreign_credential_allocates_nothing(self):
+        cases = (
+            ("PASTE_ANTHROPIC_KEY_HERE", "unfilled placeholder"),
+            ("", "unfilled placeholder"),
+            ("not-an-anthropic-credential-value", "expected sk-ant-"),
+            ("sk-ant-api03-FAKE SECRET_VALUE", "expected sk-ant-"),
+            # Valid key, then junk past the first 4096 characters.
+            ("sk-ant-api03-FAKE_KEY" + "\n" * 5000 + "# old notes", "expected sk-ant-"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.key.write_text(value + "\n")
+                run = self.run_driver()
+                self.assertEqual(run.returncode, 66, run.stderr)
+                self.assertIn(message, run.stderr)
+                if value:
+                    self.assertNotIn(value, run.stdout + run.stderr)
+                self.assertEqual(self.calls(), [])
+
     def test_invalid_input_allocates_nothing(self):
         for args in (("--ref",), ("--ref", "does-not-exist"), ("--cpu", "1; echo nope")):
             with self.subTest(args=args):
@@ -332,6 +352,15 @@ sys.exit(subprocess.run(["bash", "-c", " ".join(args)], env=remote_env).returnco
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.vm / "nanoclaw"), latest)
         self.assertEqual(json.loads((self.vm / "observed.json").read_text())["commit"], latest)
+
+    def test_base_leaves_the_credential_check_to_the_installer(self):
+        # A base VM's vault may already hold the secret; the installer checks
+        # the file only if it reads it.
+        self.git("clone", str(self.origin), str(self.vm / "nanoclaw"))
+        self.key.write_text("PASTE_ANTHROPIC_KEY_HERE\n")
+        run = self.run_driver("--base", "base-vm")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue((self.vm / "observed.json").exists())
 
     def test_base_uses_requested_repository(self):
         self.git("clone", str(self.origin), str(self.vm / "nanoclaw"))
@@ -618,6 +647,10 @@ if "--step" in args:
         print("step returned without a status")
         sys.exit(0)
     status = "success"
+    if name == "auth" and "--create" in args and os.environ.get("MOCK_ONECLI_VAULT"):
+        import subprocess
+        subprocess.run(["onecli", "secrets", "create", "--type", "anthropic", "--value",
+                        args[args.index("--value") + 1], "--host-pattern", "api.anthropic.com"], check=True)
     if name == "auth" and "--check" in args:
         status = os.environ.get("MOCK_AUTH_STATUS", "success")
     if os.environ.get("MOCK_FAIL_STEP") == name:
@@ -633,10 +666,31 @@ if "--step" in args:
         print("GATEWAY: " + installed)
     print("=== END ===")
     sys.exit(int(os.environ.get("MOCK_STEP_RC", "0")))
+if "chat" in args and os.environ.get("MOCK_STALE_CONTAINER_STOPPED"):
+    from pathlib import Path
+    if not Path(os.environ["MOCK_STALE_CONTAINER_STOPPED"]).exists():
+        print("Invalid API key")
+        sys.exit(0)
 if "chat" in args:
+    if os.environ.get("MOCK_OUTBOUND"):
+        import json, sqlite3
+        from pathlib import Path
+        session = Path("data/v2-sessions") / os.environ.get("MOCK_OUTBOUND_GROUP", "ag-e2e") / "sess-e2e"
+        session.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(session / "outbound.db")
+        db.execute("CREATE TABLE IF NOT EXISTS messages_out"
+                   " (id TEXT PRIMARY KEY, channel_type TEXT, platform_id TEXT, content TEXT NOT NULL)")
+        for row in json.loads(os.environ["MOCK_OUTBOUND"]):
+            row_id, content, channel, platform = (row + ["cli", "local"][len(row) - 2:])[:4]
+            db.execute("INSERT INTO messages_out VALUES (?, ?, ?, ?)",
+                       (row_id, channel, platform, json.dumps(content)))
+        db.commit()
+        db.close()
     print(os.environ.get("MOCK_PING", "pong"))
     print(os.environ.get("MOCK_PING_ERR", ""), file=sys.stderr)
     sys.exit(int(os.environ.get("MOCK_PING_RC", "0")))
+if "scripts/init-cli-agent.ts" in args and os.environ.get("MOCK_INIT_OUT"):
+    print(os.environ["MOCK_INIT_OUT"])
 if "scripts/init-cli-agent.ts" in args and os.environ.get("MOCK_MIGRATIONS_READY"):
     from pathlib import Path
     if not Path(os.environ["MOCK_MIGRATIONS_READY"]).exists():
@@ -727,6 +781,7 @@ sys.exit(0)
             ({"MOCK_PING_ERR": "authentication_error"}, 2, "auth_error"),
             ({"MOCK_PING_RC": "2"}, 3, "socket_error"),
             ({"MOCK_PING_RC": "3"}, 2, "no_reply"),
+            ({"MOCK_PING": "The agent run failed.", "MOCK_PING_RC": "4"}, 2, "agent_failure"),
         ]
         for settings, rc, ping in cases:
             with self.subTest(settings=settings):
@@ -737,6 +792,125 @@ sys.exit(0)
                 self.assertEqual(run.returncode, rc, run.stderr)
                 self.assertEqual(self.result()["ping"], ping)
                 self.assertEqual(self.result()["status"], "failed")
+
+    def test_failure_notice_reply_never_passes(self):
+        notice = [["n1", {"text": "Your credit balance is too low.", "failureNotice": True}]]
+        cases = [
+            ({"MOCK_PING": "The agent run failed. Check the logs for details."}, "notice text"),
+            ({"MOCK_PING": "Sent before failure.\nThe agent run failed. Check the logs for details."}, "late notice"),
+            ({"MOCK_PING": "\nError: Query failed: 401"}, "pre-#3746 error reply"),
+            ({"MOCK_PING": "Your credit balance is too low.", "MOCK_OUTBOUND": json.dumps(notice)}, "marker"),
+        ]
+        for settings, label in cases:
+            with self.subTest(label):
+                shutil.rmtree(self.checkout / "data/v2-sessions", ignore_errors=True)
+                for name in ("MOCK_PING", "MOCK_OUTBOUND"):
+                    self.env.pop(name, None)
+                self.env.update(settings)
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertIn("failure notice", run.stderr)
+                self.assertEqual(self.result()["ping"], "agent_failure")
+                self.assertEqual(self.result()["status"], "failed")
+                self.assertNotIn("PING: ok", run.stdout)
+
+    def marker_core(self):
+        runner = self.checkout / "container/agent-runner/src"
+        runner.mkdir(parents=True)
+        (runner / "formatter.ts").write_text("export const FAILURE_NOTICE_FIELD = 'failureNotice';\n")
+
+    def test_real_reply_passes_beside_earlier_and_other_channel_notices(self):
+        # A notice left by an earlier run on a reused checkout, or sent to
+        # another channel by another agent during the ping, is not its reply.
+        session = self.checkout / "data/v2-sessions/ag-e2e/sess-e2e"
+        session.mkdir(parents=True)
+        db = sqlite3.connect(session / "outbound.db")
+        db.execute("CREATE TABLE messages_out"
+                   " (id TEXT PRIMARY KEY, channel_type TEXT, platform_id TEXT, content TEXT NOT NULL)")
+        db.execute("INSERT INTO messages_out VALUES ('old', 'cli', 'local', ?)",
+                   (json.dumps({"text": "The agent run failed.", "failureNotice": True}),))
+        db.commit()
+        db.close()
+        notice = {"text": "The agent run failed.", "failureNotice": True}
+        self.env["MOCK_OUTBOUND"] = json.dumps([["r1", {"text": "pong"}], ["other", notice, "slack", "C1"],
+                                                ["dm", notice, "cli", "discord:@me:1"]])
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["ping"], "ok")
+        self.assertIn("PING: ok", run.stdout)
+
+    def test_marker_core_trusts_the_marker_over_reply_text(self):
+        self.marker_core()
+        quoted = "pong. Earlier you saw: The agent run failed. Check the logs for details."
+        for text in (quoted, "Error: codes are fine, pong"):
+            with self.subTest(text=text):
+                shutil.rmtree(self.checkout / "data/v2-sessions", ignore_errors=True)
+                self.env.update(MOCK_PING=text, MOCK_OUTBOUND=json.dumps([["r1", {"text": text}]]))
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual(self.result()["ping"], "ok")
+
+    def test_marker_core_counts_any_agents_notice_on_cli_local(self):
+        # chat.ts prints every agent's cli/local text, so another agent's
+        # notice is part of what the ping received.
+        self.marker_core()
+        self.env.update(MOCK_PING="pong", MOCK_OUTBOUND_GROUP="ag-other",
+                        MOCK_OUTBOUND=json.dumps([["n1", {"text": "failed", "failureNotice": True}]]))
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertEqual(self.result()["ping"], "agent_failure")
+
+    def test_hardened_image_keeps_the_text_fallback(self):
+        # A pulled runner image can predate the marker the checkout has.
+        self.marker_core()
+        text = "The agent run failed. Check the logs for details."
+        for setting in ({"env_file": "NANOCLAW_HARDENED_IMAGE=TRUE\n"}, {"NANOCLAW_HARDENED_IMAGE": "True"}):
+            with self.subTest(setting=setting):
+                shutil.rmtree(self.checkout / "data/v2-sessions", ignore_errors=True)
+                (self.checkout / ".env").write_text(setting.pop("env_file", ""))
+                self.env.pop("NANOCLAW_HARDENED_IMAGE", None)
+                self.env.update(setting, MOCK_PING=text, MOCK_OUTBOUND=json.dumps([["r1", {"text": text}]]))
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertEqual(self.result()["ping"], "agent_failure")
+
+    def test_marker_core_without_readable_db_falls_back_to_text(self):
+        self.marker_core()
+        self.env["MOCK_PING"] = "The agent run failed. Check the logs for details."
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertEqual(self.result()["ping"], "agent_failure")
+
+    def test_placeholder_or_foreign_credential_is_never_seeded(self):
+        key = self.root / "credential"
+        calls = self.root / "step-calls"
+        self.env.update(NANOCLAW_E2E_KEY_FILE=str(key), MOCK_AUTH_STATUS="missing", MOCK_STEP_CALLS=str(calls))
+        cases = (
+            ("PASTE_ANTHROPIC_KEY_HERE", "unfilled placeholder"),
+            ("not-an-anthropic-credential-value", "expected sk-ant-"),
+            ("sk-ant-api03-FAKE SECRET_VALUE", "expected sk-ant-"),
+            # Valid key, then junk past the first 4096 characters.
+            ("sk-ant-api03-FAKE_KEY" + "\n" * 5000 + "# old notes", "expected sk-ant-"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message, value_index=cases.index((value, message))):
+                calls.unlink(missing_ok=True)
+                key.write_text(value + "\n")
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 1, run.stderr)
+                self.assertIn(message, run.stderr)
+                self.assertNotIn(value, run.stdout + run.stderr)
+                self.assertEqual(self.result()["ping"], "not_run")
+                self.assertNotIn("--create", calls.read_text())
+                self.assertNotIn("'container'", calls.read_text())
+
+    def test_reused_vault_never_reads_a_placeholder_key_file(self):
+        key = self.root / "credential"
+        key.write_text("PASTE_ANTHROPIC_KEY_HERE\n")
+        self.env["NANOCLAW_E2E_KEY_FILE"] = str(key)
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(self.result()["ping"], "ok")
 
     def test_large_auth_error_output_never_passes(self):
         for stream in ("MOCK_PING", "MOCK_PING_ERR"):
@@ -759,7 +933,7 @@ sys.exit(0)
 
     def test_auth_create_redacts_key_and_accepts_missing_check(self):
         key = self.root / "fake-key"
-        key.write_text("FAKE_SECRET_DO_NOT_LOG")
+        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
         self.env.update({"MOCK_AUTH_STATUS": "missing", "NANOCLAW_E2E_KEY_FILE": str(key)})
         run = self.run_installer()
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -867,6 +1041,67 @@ with socket.socket(socket.AF_UNIX) as sock:
         self.assertNotEqual(run.returncode, 0)
         self.assertNotIn("--create", calls.read_text())
 
+    # OneCLI vault: `secrets create` appends a new id, `secrets delete --id`
+    # removes one; MOCK_ONECLI_CREATE_NOOP / MOCK_ONECLI_DELETE_NOOP make them
+    # exit 0 without changing the vault.
+    def fake_onecli(self, secrets):
+        onecli_calls = self.root / "onecli-calls"
+        vault = self.root / "onecli-vault.json"
+        vault.write_text(json.dumps(secrets))
+        self.executable("onecli", PYTHON + r'''
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["MOCK_ONECLI_CALLS"], "a") as calls:
+    calls.write(repr(args) + "\n")
+vault = Path(os.environ["MOCK_ONECLI_VAULT"])
+data = json.loads(vault.read_text())
+if args[:2] == ["secrets", "list"]:
+    print(json.dumps({"data": data}))
+elif args[:2] == ["secrets", "create"] and not os.environ.get("MOCK_ONECLI_CREATE_NOOP"):
+    value = args[args.index("--value") + 1] if "--value" in args else os.environ.get("MOCK_AUTH_VALUE")
+    data.append({"id": "new%d" % len(data), "name": "Anthropic", "type": "anthropic",
+                 "hostPattern": args[args.index("--host-pattern") + 1], "value": value})
+elif args[:2] == ["secrets", "delete"] and not os.environ.get("MOCK_ONECLI_DELETE_NOOP"):
+    data = [s for s in data if s["id"] != args[args.index("--id") + 1]]
+vault.write_text(json.dumps(data))
+sys.exit(0)
+''')
+        self.env.update(MOCK_ONECLI_CALLS=str(onecli_calls), MOCK_ONECLI_VAULT=str(vault))
+        return onecli_calls
+
+    def vault(self):
+        return json.loads((self.root / "onecli-vault.json").read_text())
+
+    # Two running agent containers: c0ffee (left by an earlier run of this
+    # checkout, so its session holds the old credential) and beef (not this
+    # checkout's agent). The ping fails until c0ffee stops.
+    def fake_docker(self):
+        docker_calls = self.root / "docker-calls"
+        stopped = self.root / "stale-container-stopped"
+        self.executable("docker", PYTHON + r'''
+import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["MOCK_DOCKER_CALLS"], "a") as calls:
+    calls.write(repr(args) + "\n")
+# The bind source as the host passed it: MOCK_AGENT_SOURCE, else the resolved path.
+group = os.environ.get("MOCK_AGENT_SOURCE") or os.path.realpath(os.environ["MOCK_CHECKOUT"] + "/groups/e2e-agent")
+# beef is a backup job reading this checkout's group folder, not an agent.
+mounts = {"c0ffee": [group + " -> /workspace/agent", "/elsewhere/data -> /workspace"],
+          "beef": [group + " -> /backup", "/other/install/groups/e2e-agent -> /workspace/agent"]}
+if args[:2] == ["ps", "-q"]:
+    print("c0ffee\nbeef")
+elif args[:1] == ["inspect"]:
+    print("\n".join(mounts[args[-1]]))
+elif args[:1] == ["stop"] and "c0ffee" in args:
+    Path(os.environ["MOCK_STALE_CONTAINER_STOPPED"]).write_text("")
+sys.exit(0)
+''')
+        self.env.update(MOCK_DOCKER_CALLS=str(docker_calls), MOCK_CHECKOUT=str(self.checkout),
+                        MOCK_STALE_CONTAINER_STOPPED=str(stopped))
+        return docker_calls
+
     # ── Gateway seam (nanocoai/nanoclaw#3815 onward): setup/gateways/ replaces the
     # onecli and auth steps with `gateway <kind>` and `gateway-auth <provider>`.
     def gateway_seam(self, vault_has_secret=False):
@@ -874,25 +1109,8 @@ with socket.socket(socket.AF_UNIX) as sock:
         (self.checkout / "setup/gateways/step.ts").write_text("export async function run() {}\n")
         calls = self.root / "step-calls"
         self.env["MOCK_STEP_CALLS"] = str(calls)
-        onecli_calls = self.root / "onecli-calls"
-        created = self.root / "onecli-created"
-        if vault_has_secret:
-            created.write_text("")
-        self.executable("onecli", PYTHON + r'''
-import json, os, sys
-from pathlib import Path
-args = sys.argv[1:]
-with open(os.environ["MOCK_ONECLI_CALLS"], "a") as calls:
-    calls.write(repr(args) + "\n")
-created = Path(os.environ["MOCK_ONECLI_CREATED"])
-if args[:2] == ["secrets", "list"]:
-    data = [{"id": "s1", "name": "Anthropic", "type": "anthropic"}] if created.exists() else []
-    print(json.dumps({"data": data}))
-elif args[:2] == ["secrets", "create"]:
-    created.write_text("")
-sys.exit(0)
-''')
-        self.env.update(MOCK_ONECLI_CALLS=str(onecli_calls), MOCK_ONECLI_CREATED=str(created))
+        onecli_calls = self.fake_onecli(
+            [{"id": "s1", "name": "Anthropic", "type": "anthropic"}] if vault_has_secret else [])
         # A host with a real systemctl but no user manager (CI) must not turn
         # the service-environment inspection into a failure of every seam test.
         self.executable("systemctl", PYTHON + r'''
@@ -907,7 +1125,7 @@ elif "show" in args:
 sys.exit(0)
 ''')
         key = self.root / "credential"
-        key.write_text("FAKE_SECRET_DO_NOT_LOG")
+        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
         self.env["NANOCLAW_E2E_KEY_FILE"] = str(key)
         return calls, onecli_calls
 
@@ -956,6 +1174,116 @@ sys.exit(0)
         self.assertEqual(self.result()["gateway"], "iron-proxy")
         self.assertIs(self.result()["gateway_seam"], True)
         self.assertIn("GATEWAY: iron-proxy", run.stdout)
+
+    # Duplicates from earlier FORCE_AUTH runs, plus secrets that are not ours.
+    STALE_VAULT = [
+        {"id": "old1", "name": "Anthropic", "type": "anthropic", "hostPattern": "api.anthropic.com"},
+        {"id": "old2", "name": "Anthropic", "type": "anthropic", "hostPattern": "api.anthropic.com"},
+        {"id": "proxy", "name": "Anthropic proxy", "type": "anthropic", "hostPattern": "llm.example.invalid"},
+        {"id": "gh", "name": "GitHub", "type": "generic", "hostPattern": "api.github.com"},
+    ]
+
+    def test_gateway_seam_force_auth_replaces_every_old_anthropic_secret(self):
+        _, onecli_calls = self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT)
+        docker_calls = self.fake_docker()
+        self.env["NANOCLAW_E2E_FORCE_AUTH"] = "1"
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(sorted(s["id"] for s in self.vault()), ["gh", "new4", "proxy"])
+        self.assertEqual(next(s["value"] for s in self.vault() if s["id"] == "new4"), "sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
+        calls = onecli_calls.read_text()
+        self.assertLess(calls.index("'secrets', 'create'"), calls.index("'secrets', 'delete'"))
+        self.assertIn("['stop', 'c0ffee']", docker_calls.read_text())
+        self.assertNotIn("beef", "".join(l for l in docker_calls.read_text().splitlines() if "'stop'" in l))
+        self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
+        self.assertEqual(self.result()["status"], "pass")
+        self.assertEqual(self.result()["ping"], "ok")
+
+    def test_gateway_seam_force_auth_keeps_the_old_secret_when_the_key_file_has_a_junk_tail(self):
+        _, onecli_calls = self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        (self.root / "credential").write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG" + "\n" * 5000 + "# old notes\n")
+        self.env["NANOCLAW_E2E_FORCE_AUTH"] = "1"
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("expected sk-ant-", run.stderr)
+        self.assertNotIn("'secrets', 'create'", onecli_calls.read_text() if onecli_calls.exists() else "")
+        self.assertEqual([s["id"] for s in self.vault()], ["old1"])
+        self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
+
+    def test_oversized_key_file_is_refused(self):
+        key = self.root / "credential"
+        self.env.update(NANOCLAW_E2E_KEY_FILE=str(key), MOCK_AUTH_STATUS="missing")
+        # The bound counts bytes, so CRLF padding cannot halve the file's size.
+        for padding in (b"\n" * 70000, b"\r\n" * 35000):
+            with self.subTest(crlf=padding.startswith(b"\r")):
+                key.write_bytes(b"sk-ant-api03-FAKE_SECRET_DO_NOT_LOG" + padding)
+                run = self.run_installer()
+                self.assertEqual(run.returncode, 1, run.stderr)
+                self.assertIn("expected sk-ant-", run.stderr)
+                self.assertNotIn("FAKE_SECRET_DO_NOT_LOG", run.stdout + run.stderr)
+
+    def test_gateway_seam_force_auth_keeps_the_old_secret_when_create_adds_none(self):
+        self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        self.env.update(NANOCLAW_E2E_FORCE_AUTH="1", MOCK_ONECLI_CREATE_NOOP="1")
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("no new anthropic secret is listed", run.stderr)
+        self.assertEqual([s["id"] for s in self.vault()], ["old1"])
+
+    def test_gateway_seam_without_force_auth_deletes_nothing_and_stops_nothing(self):
+        _, onecli_calls = self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT)
+        docker_calls = self.fake_docker()
+        del self.env["MOCK_STALE_CONTAINER_STOPPED"]
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("'secrets', 'delete'", onecli_calls.read_text())
+        self.assertEqual(len(self.vault()), len(self.STALE_VAULT))
+        self.assertNotIn("'stop'", docker_calls.read_text() if docker_calls.exists() else "")
+
+    def test_gateway_seam_force_auth_fails_when_an_old_secret_survives_delete(self):
+        self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        self.env.update(NANOCLAW_E2E_FORCE_AUTH="1", MOCK_ONECLI_DELETE_NOOP="1")
+        run = self.run_installer()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("old1 exited 0 but the secret is still listed", run.stderr)
+
+    def test_force_auth_finds_the_stale_container_through_a_symlinked_group_folder(self):
+        self.gateway_seam()
+        self.fake_onecli(self.STALE_VAULT[:1])
+        docker_calls = self.fake_docker()
+        state = self.root / "agent-state"
+        state.mkdir()
+        (self.checkout / "groups").mkdir()
+        (self.checkout / "groups/e2e-agent").symlink_to(state)
+        self.env["NANOCLAW_E2E_FORCE_AUTH"] = "1"
+        # The installer runs through an alias of the checkout; the host started
+        # the container through the physical checkout path, which matches
+        # neither the alias nor the fully resolved group folder.
+        alias = self.root / "alias"
+        alias.symlink_to(self.checkout)
+        self.env["NANOCLAW_E2E_ROOT"] = str(alias)
+        self.env["MOCK_AGENT_SOURCE"] = os.path.realpath(self.checkout) + "/groups/e2e-agent"
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("['stop', 'c0ffee']", docker_calls.read_text())
+
+    def test_legacy_force_auth_replaces_the_old_anthropic_secret(self):
+        self.fake_onecli(self.STALE_VAULT[:2])
+        docker_calls = self.fake_docker()
+        key = self.root / "credential"
+        key.write_text("sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")
+        self.env.update(NANOCLAW_E2E_FORCE_AUTH="1", NANOCLAW_E2E_KEY_FILE=str(key))
+        run = self.run_installer()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual([(s["id"], s["value"]) for s in self.vault()], [("new2", "sk-ant-api03-FAKE_SECRET_DO_NOT_LOG")])
+        self.assertIn("['stop', 'c0ffee']", docker_calls.read_text())
+        self.assertEqual(self.result()["ping"], "ok")
+        self.assertIs(self.result()["gateway_seam"], False)
 
     def test_gateway_seam_api_key_uses_only_the_api_key_variable(self):
         calls, _ = self.gateway_seam()

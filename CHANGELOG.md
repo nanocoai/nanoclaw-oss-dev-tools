@@ -11,11 +11,47 @@ instead of being backfilled as releases.
 
 ## Unreleased
 
-Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0 and
-0.12.0 milestones and is not yet released.
+Development milestone (plugin 0.14.0); supersedes the unreleased 0.11.0,
+0.12.0, 0.13.0 and 0.13.1 milestones and is not yet released.
 
 ### Added
 
+- `typesafe-triage` skill: a dry-run label triage of open nanocoai/nanoclaw
+  issues and PRs through the TypeSafe System One API. One fan-out request per
+  item (area, kind, priority, needs-repro or PR readiness), a confidence gate
+  that falls back to `triage/unresolved`, AGREE/DISAGREE/NEW against existing
+  labels, a summary with agreement rates, token usage and wall time, raw answers
+  saved under a gitignored directory, and `--fixture` replay for offline runs.
+  Reads `TYPESAFE_API_KEY` from the environment only and never writes to GitHub.
+- `e2e-channels` treats `NC_E2E_PLACEHOLDER` as a placeholder and reports
+  placeholder and empty values as missing rather than invalid, so vault items
+  created ahead of their real values keep a channel skipped.
+- `e2e-channels` skill: a committed manifest of the bot-side and tester-side
+  variables for all 20 NanoClaw channels, and `channel-creds.py`, which finds a
+  channel's credentials in a `--channel-env-file`, then `NC_E2E_<X>_<VAR>`
+  variables, then `~/.nanoclaw-e2e/channels/<x>.env`, and reports the channel
+  ready or skipped with the missing variable named. It also prints `op inject`
+  templates and writes a channel's bot side to a private file.
+- `channel-e2e.yml` workflow (dispatch and nightly only) that loads channel
+  credentials from the `nanoclaw-e2e` 1Password vault in the protected
+  `channel-e2e` environment and reports every channel's status.
+- `docs-drift-gate.py` for `typesafe-docs-drift`, the release-day docs gate:
+  clones a NanoClaw release and the docs into a scratch directory and writes a
+  digest, `gate.json` and per-page briefs. It queues the pull requests merged
+  since the previous stable tag that touch files a docs page cites and that the
+  docs history and pages never name (CI, test and release chores counted, not
+  queued), maps every `verified-against` stamp against the release, runs the
+  detector with a term guard that demotes a DRIFT row whose best section never
+  mentions the fact, and holds decided rows back with a baseline file.
+  `--no-model` and `--fixture` run without the key; `--strict` with
+  `--max-undocumented` sets the exit status.
+- `docs-drift-fix.py` and `references/phase2.md` for `typesafe-docs-drift`: phase 2 of the docs loop. It prepares blind
+  inputs for a row verifier (a wrong DRIFT row is dropped before anyone drafts), drafter inputs per queued pull request
+  and per kept row, and blind inputs for a proposal verifier; it validates the agents' JSON, writes a keep/drop ledger,
+  and applies the kept exact-text replacements to a docs worktree (`apply --only` for one concern per commit). It never
+  calls a model, pushes or opens a PR.
+- The release gate reads decisions from `docs/drift-baseline.json` in the docs repository by default, and the baseline
+  accepts `{"pr": N, "status": "no-docs-needed"}` entries that hold a queued pull request.
 - The exe.dev public-wizard driver forwards `--gateway onecli|iron-proxy` as
   `nanoclaw.sh --gateway-provider` on gateway-seam refs, adapts the bundled
   scenario to the seam (no `onecli` step; `auth` only for providers that log
@@ -63,13 +99,6 @@ Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0 and
   wall time, per-pair latency with startup overhead separated, tokens, cost,
   parse failures, run-to-run flips, agreement, and precision/recall on
   `contradicts` against a 30-pair gold file labeled by an LLM-assisted reviewer.
-- `typesafe-triage` skill: a dry-run label triage of open nanocoai/nanoclaw
-  issues and PRs through the TypeSafe System One API. One fan-out request per
-  item (area, kind, priority, needs-repro or PR readiness), a confidence gate
-  that falls back to `triage/unresolved`, AGREE/DISAGREE/NEW against existing
-  labels, a summary with agreement rates, token usage and wall time, raw answers
-  saved under a gitignored directory, and `--fixture` replay for offline runs.
-  Reads `TYPESAFE_API_KEY` from the environment only and never writes to GitHub.
 - OpenCode public-wizard E2E for OpenRouter, DeepSeek, and custom/self-hosted
   API-key endpoints across exe.dev, Proxmox and Windows WSL2. Select the model
   with `--opencode-model`, the endpoint with `--opencode-base-url`, and its API
@@ -100,6 +129,13 @@ Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0 and
 
 ### Changed
 
+- `typesafe-docs-drift` extractor fixes from the first release run
+  (`v2026.10.1-rc.1`, where none of four DRIFT rows was a docs error): enums
+  written as `[...CONSTANT]` are resolved from `src/` and an unreadable enum is
+  skipped instead of asserted as empty; an empty raw default
+  (`process.env.X || envConfig.X || ''`) no longer claims "unset by default";
+  skill facts assert existence only and keep the SKILL.md description as
+  evidence. Result rows carry the fact's `terms`.
 - Headless installer follows NanoClaw's credential-gateway seam
   (nanocoai/nanoclaw#3815 onward): when the checkout has `setup/gateways/`,
   it runs `--step gateway <kind>` and `--step gateway-auth claude` instead of
@@ -110,6 +146,55 @@ Development milestone (plugin 0.13.0); supersedes the unreleased 0.11.0 and
 
 ### Fixed
 
+- The headless installer (exe.dev, Proxmox and macOS runs) no longer scores
+  NanoClaw's failure notice as a ping reply. A bad credential used to end in
+  `PING: ok` with `REPLY: The agent run failed. Check the logs for details.`
+  The ping is now `agent_failure` (exit 2) when a session gets a new
+  `cli/local` row marked `failureNotice` (nanocoai/nanoclaw#3908), or when
+  `chat.ts` exits 4 for a flagged reply (nanocoai/nanoclaw#3980). Runners that
+  may predate the marker also match the notice text or a reply starting
+  `Error: ` (cores before #3746).
+- `exe-run.sh` and `proxmox-run.py` refuse an empty or placeholder Anthropic
+  credential file, or one without an `sk-ant-` value, before creating a VM or
+  guest; `e2e-install.sh` checks it before handing it to the gateway. The
+  value is never printed.
+- `NANOCLAW_E2E_FORCE_AUTH=1` replaces the vault's Anthropic credential as
+  documented. It used to add another `anthropic` secret beside the old one on
+  both the gateway seam and the legacy `auth --create --force` path, and
+  OneCLI kept using an older one, so a rerun with a good key still failed with
+  "Invalid API key". The installer now creates the new secret, checks that it
+  is listed, then deletes the older `anthropic` secrets for
+  `api.anthropic.com`. It also stops any running container that mounts the
+  checkout's `groups/e2e-agent`, so the ping does not reuse the old session.
+- `e2e-install.sh` and `exe-run.sh` check the whole Anthropic credential file,
+  with only CR/LF removed, exactly as it is sent. They used to read only the
+  first 4096 characters, so a valid key followed by enough blank lines and then
+  other text passed, the extra text was stored with the key, and
+  `NANOCLAW_E2E_FORCE_AUTH=1` then deleted the working old secret. A file over
+  64 KiB is refused.
+- The exe.dev evidence export and the macOS service helper accept NanoClaw
+  setup's own commits after the tested commit. Setup is gaining one commit per
+  skill apply (`setup: apply <skill>`, nanocoai/nanoclaw#3997), which moves
+  HEAD during the install, so every exe.dev export would exit 74 with
+  `result-identity-mismatch` and every macOS run would stop at the service
+  step. HEAD is accepted only when every commit between it and the tested
+  commit is what setup writes: unsigned, one parent, the single line
+  `setup: apply <skill>`, authored and committed by the identity `git commit`
+  uses in that checkout (setup sets `NanoClaw setup <setup@nanoclaw.invalid>`
+  when there is none). Raw commit objects are read, so grafts and replace refs
+  cannot hide another commit. Anything else still fails. `runtime-state.json`
+  records the accepted `checkout_head`.
+- `provider-options.py --provider claude` works on gateway-seam refs again
+  (nanocoai/nanoclaw `d5c7cccc` onward). Claude's auth picker moved from
+  `setup/auto.ts` into each gateway skill's `scripts/auth.ts` and is no longer
+  logged, so discovery failed with "provider auth source does not expose an
+  auth-method choice". Discovery now reads the selected gateway's script
+  (`--gateway`, default the revision's default gateway), reports
+  `auth_gateway` and a null `auth_input_key`, and `wizard-run.py` passes its
+  `--gateway` through and stops requiring a logged auth choice for it.
+  `exe-run.sh --interactive` passes `--gateway` to its local discovery too.
+  Claude `oauth` passed the exe.dev wizard on nanoclaw `1778edc0` under
+  OneCLI and Iron Proxy.
 - Find Node, pnpm and OneCLI installed by the wizard in `~/.local/bin` (or pnpm
   in npm's global prefix) during post-wizard provider verification. The child
   wizard's PATH changes do not propagate to the parent harness.

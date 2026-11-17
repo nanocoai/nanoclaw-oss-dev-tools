@@ -25,7 +25,10 @@
 #   NANOCLAW_E2E_KEEP_AGENT    1 (default) keeps the e2e agent so `verify` sees
 #                              a registered group; 0 deletes it after the ping
 #   NANOCLAW_E2E_FORCE_AUTH    1 replaces an existing vault secret with the key
-#                              file (token rotation on a --base VM)
+#                              file (token rotation on a --base VM): the new
+#                              secret is created, the old anthropic ones are
+#                              deleted, and a running e2e agent container is
+#                              stopped so the ping starts a fresh session
 #   NANOCLAW_E2E_GATEWAY      gateway kind on the gateway seam (setup/gateways/):
 #                             onecli (default) or iron-proxy; refs without the
 #                             seam accept only onecli. result.json records the
@@ -38,7 +41,8 @@
 #   NANOCLAW_E2E_MACOS_SERVICE_HELPER  e2e-macos's per-checkout LaunchAgent helper
 #
 # Exit codes: 0 pass · 1 a step failed (see the status block above the failure
-# and logs/e2e/<step>.log) · 2 ping got no reply · 3 CLI socket unreachable.
+# and logs/e2e/<step>.log) · 2 ping got no reply, an auth error or a failure
+# notice · 3 CLI socket unreachable.
 
 set -euo pipefail
 command -v python3 >/dev/null || { echo "[e2e] FAIL: python3 is required for result.json" >&2; exit 1; }
@@ -187,6 +191,28 @@ case "$AUTH_METHOD" in
     || die "auth method existing requires a reused gateway" ;;
   *) die "invalid NANOCLAW_E2E_AUTH_METHOD" ;;
 esac
+# Refuse a credential that cannot work before handing it to the gateway, so
+# the run stops here instead of ending in a failure notice. Checks the value
+# exactly as sent (only CR/LF removed); a file over 64 KiB is refused unread.
+# Never prints it.
+check_key_file() {
+  local shape=0
+  python3 - "$KEY_FILE" <<'PY' || shape=$?
+import re, sys
+raw = open(sys.argv[1], "rb").read(65537)
+if len(raw) > 65536:
+    sys.exit(4)
+value = raw.decode("utf-8", "replace").replace("\r", "").replace("\n", "")
+if re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{9,1017}", value):
+    sys.exit(0)
+sys.exit(3 if re.fullmatch(r"[A-Z0-9_.<>\s-]*", value) or "PASTE" in value.upper() else 4)
+PY
+  case "$shape" in
+    0) ;;
+    3) die "$KEY_FILE is empty or an unfilled placeholder, not an Anthropic credential" ;;
+    *) die "$KEY_FILE does not hold an Anthropic API key or OAuth token (expected sk-ant-...)" ;;
+  esac
+}
 
 # Run one wizard step exactly as setup/lib/runner.ts spawns it, capture the
 # last `=== NANOCLAW SETUP: … === … === END ===` block (setup/status.ts) and
@@ -227,6 +253,42 @@ data = json.load(sys.stdin).get("data", []) or []
 ok = any(s.get("type") == "anthropic" or re.search("anthropic", s.get("name") or "", re.I) for s in data)
 sys.exit(0 if ok else 1)
 ' 2>/dev/null
+}
+# IDs of the vault's anthropic secrets for api.anthropic.com, one per line.
+onecli_anthropic_secret_ids() {
+  local listing
+  listing="$(onecli secrets list 2>/dev/null)" || return 1
+  printf '%s' "$listing" | python3 -c '
+import json, sys
+for s in json.load(sys.stdin).get("data", []) or []:
+    host = (s.get("hostPattern") or "api.anthropic.com").lower()
+    if s.get("type") == "anthropic" and host == "api.anthropic.com" and s.get("id"):
+        print(s["id"])
+'
+}
+# Neither `onecli secrets create` nor setup/auth.ts --force replaces a secret,
+# and OneCLI keeps injecting an older duplicate. Delete the IDs listed before
+# the create only after it succeeded, so the vault is never left empty.
+REPLACED_SECRET_IDS=""
+delete_replaced_secrets() {
+  local id old current fresh=false
+  [ -n "$REPLACED_SECRET_IDS" ] || return 0
+  old=" $(printf '%s' "$REPLACED_SECRET_IDS" | tr '\n' ' ') "
+  current="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
+  for id in $current; do
+    case "$old" in *" $id "*) ;; *) fresh=true ;; esac
+  done
+  [ "$fresh" = true ] || die "no new anthropic secret is listed; the old one was kept"
+  for id in $REPLACED_SECRET_IDS; do
+    say "onecli secrets delete --id $id (replaced)"
+    onecli secrets delete --id "$id" >/dev/null 2>>"$LOGS/onecli-secrets.err" \
+      || die "onecli secrets delete --id $id failed (see $LOGS/onecli-secrets.err)"
+  done
+  current="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
+  for id in $current; do
+    case "$old" in *" $id "*) die "onecli secrets delete --id $id exited 0 but the secret is still listed" ;; esac
+  done
+  [ -n "$current" ] || die "no anthropic secret is listed after replacing the old one"
 }
 field() {
   printf '%s' "$LAST_BLOCK" | awk -v k="$1: " 'index($0, k)==1 {print substr($0, length(k)+1)}' | tail -n1
@@ -348,12 +410,15 @@ if [ "$SEAM_PRESENT" = true ]; then
       fi
       if [ "$STATUS" = missing ] || [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ]; then
         [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
+        check_key_file
+        REPLACED_SECRET_IDS="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
         say "onecli secrets create --name Anthropic --type anthropic --value <redacted> --host-pattern api.anthropic.com"
         # The value rides argv into onecli for one process (visible to ps). Disposable VMs only.
         onecli secrets create --name Anthropic --type anthropic --value "$(tr -d '\r\n' < "$KEY_FILE")" \
           --host-pattern api.anthropic.com >/dev/null 2>"$LOGS/onecli-secrets.err" \
           || die "onecli secrets create failed (see $LOGS/onecli-secrets.err)"
         onecli_has_anthropic_secret || die "onecli secrets create reported success but no anthropic secret is listed"
+        delete_replaced_secrets
       fi
       step gateway-auth claude || die "gateway-auth claude failed" ;;
     iron-proxy)
@@ -366,6 +431,7 @@ if [ "$SEAM_PRESENT" = true ]; then
         step gateway-auth claude || die "the selected gateway has no usable existing Anthropic credential; it was not changed"
       else
         [ -r "$KEY_FILE" ] || die "$KEY_FILE is unreadable"
+        check_key_file
         KEY_VALUE="$(tr -d '\r\n' < "$KEY_FILE")"
         if [ "$AUTH_METHOD" = oauth ]; then
           NANOCLAW_CLAUDE_CODE_OAUTH_TOKEN="$KEY_VALUE" NANOCLAW_ANTHROPIC_API_KEY="$KEY_VALUE" step gateway-auth claude \
@@ -403,10 +469,14 @@ else
   # rotating the token on a --base VM whose snapshot still holds the old one).
   if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ] && [ "$STATUS" = "success" ]; then
     [ -r "$KEY_FILE" ] || die "NANOCLAW_E2E_FORCE_AUTH=1 but $KEY_FILE is unreadable"
+    check_key_file
+    REPLACED_SECRET_IDS="$(onecli_anthropic_secret_ids)" || die "onecli secrets list failed"
     step auth --create --force --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create --force failed"
     [ "$STATUS" = "success" ] || die "auth --create --force reported $STATUS"
+    delete_replaced_secrets
   elif [ "$STATUS" = "missing" ]; then
     [ -r "$KEY_FILE" ] || die "vault has no anthropic secret and $KEY_FILE is unreadable"
+    check_key_file
     # --value rides argv into the step (which then execFileSync's onecli) — it
     # is visible to `ps` on this machine for the duration. Disposable VMs only.
     step auth --create --value "$(tr -d '\r\n' < "$KEY_FILE")" || die "auth --create failed"
@@ -471,6 +541,31 @@ if [ "$GATEWAY_SEAM" = true ] && [[ "$SERVICE_TYPE" = systemd-* ]] && command -v
   fi
 fi
 
+# An agent container that is still running keeps the session it started with
+# the old credential, and the ping would reuse it. Container names differ by
+# ref (nanoclaw-v2-<folder>-<ms>, later ncl-<install>-<session>); every ref
+# mounts this checkout's group folder at /workspace/agent, which also leaves
+# other installs on the same Docker daemon alone. Docker keeps the source as
+# the host passed it, so compare the logical, physical-checkout and fully
+# resolved forms. A container that exits
+# between ps and inspect needs no stop.
+if [ "${NANOCLAW_E2E_FORCE_AUTH:-0}" = 1 ]; then
+  RUNNING_CONTAINERS="$(docker ps -q)" || die "docker ps failed"
+  AGENT_MOUNTS="$(printf '%s\n' "$ROOT/groups/e2e-agent" "$(pwd -P)/groups/e2e-agent" \
+    "$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$ROOT/groups/e2e-agent")" \
+    | sed 's|$| -> /workspace/agent|')"
+  STALE_CONTAINERS=""
+  for id in $RUNNING_CONTAINERS; do
+    MOUNTS="$(docker inspect --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' "$id" 2>/dev/null)" || continue
+    if grep -qxF -f <(printf '%s\n' "$AGENT_MOUNTS") <<<"$MOUNTS"; then STALE_CONTAINERS="$STALE_CONTAINERS $id"; fi
+  done
+  if [ -n "$STALE_CONTAINERS" ]; then
+    say "stopping e2e agent container(s) started before the credential was replaced:$STALE_CONTAINERS"
+    # shellcheck disable=SC2086
+    docker stop $STALE_CONTAINERS >/dev/null || die "docker stop failed for the old e2e agent container"
+  fi
+fi
+
 # ── 4. Wire an agent to the always-on cli channel and ping it ─────────────────
 # src/index.ts completes host migrations before opening the CLI socket.
 # init-cli-agent.ts also migrates the DB: wait first so a fresh installation
@@ -489,10 +584,43 @@ pnpm exec tsx scripts/init-cli-agent.ts \
 
 # Same probe as setup/lib/agent-ping.ts: exit 0 + stdout = ok, 2 = socket,
 # 3 = no reply (chat.ts has its own 120s hard stop); auth failures show up in
-# the reply text.
+# the reply text. Unlike agent-ping.ts, a failure notice is not ok.
+# When the agent run fails, the runner replies with a failure notice instead
+# (nanocoai/nanoclaw#3746). Since #3908 its outbound row carries
+# content.failureNotice; the CLI socket passes only the text on, so read the
+# session outbound DBs for rows addressed to cli/local, the channel chat.ts
+# prints, whichever agent sent them. Rows from earlier runs on a reused
+# checkout are listed first and ignored. Exits 3 when no DB was read.
+failure_notice_ids() {
+  python3 - data/v2-sessions <<'PY'
+import glob, json, os, sqlite3, sys
+read = failed = 0
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "*", "*", "outbound.db"))):
+    try:
+        db = sqlite3.connect("file:" + path + "?mode=ro", uri=True, timeout=5)
+        try:
+            rows = db.execute("SELECT id, content FROM messages_out WHERE channel_type = 'cli'"
+                              " AND platform_id = 'local' AND content LIKE '%failureNotice%'").fetchall()
+        finally:
+            db.close()
+    except sqlite3.Error as error:
+        failed += 1
+        print("[e2e] note: cannot read " + path + ": " + str(error), file=sys.stderr)
+        continue
+    read += 1
+    for row_id, content in rows:
+        try:
+            if json.loads(content).get("failureNotice") is True:
+                print(row_id)
+        except (ValueError, AttributeError):
+            pass
+sys.exit(3 if failed or not read else 0)
+PY
+}
 say "ping (first container boot: 30–60s)"
 PHASE=ping
 PING_RESULT=no_reply
+failure_notice_ids > "$LOGS/failure-notices.before" || true
 set +e
 PING_OUT="$(run_bounded 150 pnpm --silent run chat ping 2>"$LOGS/ping.err")"
 PING_RC=$?
@@ -507,8 +635,30 @@ fi
 case "$PING_RC" in
   0) [ -n "$(printf '%s' "$PING_OUT" | tr -d '[:space:]')" ] || die "ping exited 0 with an empty reply" 2 ;;
   2) PING_RESULT=socket_error; die "CLI socket unreachable (chat.ts exit 2)" 3 ;;
+  # chat.ts exits 4 when a reply carried the failureNotice flag (nanocoai/nanoclaw#3980).
+  4) PING_RESULT=agent_failure; die "ping reply is NanoClaw's failure notice, not an agent reply (chat.ts exit 4) — logs/nanoclaw.log, logs/e2e/ping.out" 2 ;;
   *) die "no reply from the agent (chat.ts exit $PING_RC) — logs/nanoclaw.log, logs/e2e/ping.err" 2 ;;
 esac
+# A failure notice is never a reply. The marker covers every notice text.
+# Text patterns can match a real reply, so they apply only when the runner
+# may predate the marker (old checkout, or a pulled hardened image) or the
+# DBs could not be read ("Error: …" before #3746).
+NOTICE_SCAN=complete
+failure_notice_ids > "$LOGS/failure-notices.after" || NOTICE_SCAN=incomplete
+grep -vxFf "$LOGS/failure-notices.before" "$LOGS/failure-notices.after" > "$LOGS/failure-notices.new" || true
+NOTICE_TEXT=false
+if [ "$NOTICE_SCAN" = incomplete ] || ! grep -rqF failureNotice container/agent-runner/src 2>/dev/null \
+  || grep -qiE "^NANOCLAW_HARDENED_IMAGE=[\"']?true" .env 2>/dev/null \
+  || [ "$(printf '%s' "${NANOCLAW_HARDENED_IMAGE:-}" | tr '[:upper:]' '[:lower:]')" = true ]; then
+  if grep -F 'The agent run failed. Check the logs for details.' "$LOGS/ping.out" >/dev/null \
+    || [ "$(printf '%s\n' "$PING_OUT" | awk 'NF {print; exit}' | cut -c1-7)" = 'Error: ' ]; then
+    NOTICE_TEXT=true
+  fi
+fi
+if [ -s "$LOGS/failure-notices.new" ] || [ "$NOTICE_TEXT" = true ]; then
+  PING_RESULT=agent_failure
+  die "ping reply is NanoClaw's failure notice, not an agent reply — logs/nanoclaw.log, logs/e2e/ping.out" 2
+fi
 PING_RESULT=ok
 
 if [ "${NANOCLAW_E2E_KEEP_AGENT:-1}" = 0 ]; then
