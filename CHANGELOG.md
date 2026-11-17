@@ -16,11 +16,9 @@ milestone and is not yet released.
 
 ### Added
 
-- `op-create-items.py` for `e2e-channels`: creates one `nanoclaw-e2e` vault item
-  per channel through the 1Password CLI, with a concealed field per variable
-  set to `NC_E2E_PLACEHOLDER`. Re-runs only add missing fields and never change
-  an existing one; `--dry-run` shows the plan. The loader reports placeholder and
-  empty values as missing, so placeholder items keep a channel skipped.
+- `e2e-channels` treats `NC_E2E_PLACEHOLDER` as a placeholder and reports
+  placeholder and empty values as missing rather than invalid, so vault items
+  created ahead of their real values keep a channel skipped.
 - `e2e-channels` skill: a committed manifest of the bot-side and tester-side
   variables for all 20 NanoClaw channels, and `channel-creds.py`, which finds a
   channel's credentials in a `--channel-env-file`, then `NC_E2E_<X>_<VAR>`

@@ -90,22 +90,8 @@ with the channel name from `channels.json` (`slack`, `whatsapp-cloud`), with one
 field per variable, labelled with the variable name. The reference for a field
 is `op://nanoclaw-e2e/<channel>/<VAR>`.
 
-Create the items with placeholders, signed in to an account that can write the
-vault (the CI service account is read-only):
-
-```bash
-op signin
-python3 "$SKILL_DIR/scripts/op-create-items.py" --dry-run   # show the plan
-python3 "$SKILL_DIR/scripts/op-create-items.py"             # all channels
-python3 "$SKILL_DIR/scripts/op-create-items.py" slack telegram --account my.1password.com
-```
-
-Each item is a Secure Note tagged `nanoclaw-e2e`, with concealed fields in a
-`bot` and a `tester` section, each set to `NC_E2E_PLACEHOLDER`. Running it again
-only adds fields that are missing (for example after `channels.json` grows); it
-never changes a field that exists, so real values are safe. Channels that store
-nothing (CLI, Emacs, Matrix, Mattermost, and the session-only WhatsApp, WeChat
-and Dial) get no item.
+Items may be created ahead of time with every field set to the placeholder
+`NC_E2E_PLACEHOLDER`, so each reference resolves before the real value exists.
 
 Replace a placeholder with the real value in 1Password. A placeholder or empty
 field counts as missing, so the channel stays skipped until every field it needs

@@ -139,6 +139,21 @@ class ChannelCredsTests(unittest.TestCase):
                 self.assertIn('SLACK_BOT_TOKEN', report['reason'])
                 self.assertNotIn(bad, json.dumps(report))
 
+    def test_vault_placeholders_count_as_missing(self):
+        values = dict(SLACK, SLACK_APP_TOKEN='NC_E2E_PLACEHOLDER', SLACK_TESTER_USER_TOKEN='')
+        report = self.check('slack', env=self.prefixed('slack', values))['slack']
+        self.assertEqual(report['status'], 'skipped')
+        self.assertEqual(report['missing'], ['SLACK_APP_TOKEN', 'SLACK_TESTER_USER_TOKEN'])
+        self.assertEqual(report['invalid'], [])
+
+    def test_placeholder_alternative_does_not_block_the_filled_one(self):
+        values = {'LINEAR_WEBHOOK_SECRET': 'w', 'LINEAR_TEAM_KEY': 'ENG', 'LINEAR_TESTER_API_KEY': 't',
+                  'LINEAR_API_KEY': 'lin_api_x', 'LINEAR_CLIENT_ID': 'NC_E2E_PLACEHOLDER',
+                  'LINEAR_CLIENT_SECRET': 'NC_E2E_PLACEHOLDER'}
+        report = self.check('linear', env=self.prefixed('linear', values))['linear']
+        self.assertEqual(report['status'], 'ready')
+        self.assertNotIn('LINEAR_CLIENT_ID', report['variables'])
+
     def test_service_account_json_shape(self):
         base = {'GOOGLE_CHAT_PROJECT_NUMBER': '1234', 'GOOGLE_CHAT_ENDPOINT_URL': 'https://x.example/hook',
                 'GOOGLE_CHAT_BOT_USER_ID': 'users/1', 'GCHAT_TESTER_CLIENT_ID': 'cid',

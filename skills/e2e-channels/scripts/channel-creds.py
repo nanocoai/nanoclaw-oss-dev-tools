@@ -23,7 +23,7 @@ import tempfile
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 MANIFEST = SKILL_DIR / 'channels.json'
-# What op-create-items.py writes into a new vault field; it never counts as a value.
+# Value for a vault field created before its real value exists; never counts as a value.
 PLACEHOLDER_VALUE = 'NC_E2E_PLACEHOLDER'
 PLACEHOLDER = re.compile(
     r'^(op://.*|<.*>|\$\{.*\}|nc_e2e_placeholder.*|changeme|change-me|todo|tbd|xxx+|placeholder|replace[-_ ]?me|'

@@ -398,9 +398,8 @@ the [channel manifest](../skills/e2e-channels/channels.json) and the
   set wins. Otherwise X is skipped with the missing or invalid variables named.
 - Rejects placeholders, unresolved `op://` references, wrong token shapes and
   files readable by others. Reports and logs carry names, never values.
-- [op-create-items.py](../skills/e2e-channels/scripts/op-create-items.py)
-  creates the vault's channel items with placeholder fields through the
-  1Password CLI, adding only missing fields on re-runs.
+- Placeholder (`NC_E2E_PLACEHOLDER`) and empty vault fields count as missing,
+  so pre-created items keep a channel skipped.
 - CI loads values from the `nanoclaw-e2e` 1Password vault through a service
   account in the protected `channel-e2e` environment, on dispatch and nightly
   only. Missing vault items produce skips, not failures.
